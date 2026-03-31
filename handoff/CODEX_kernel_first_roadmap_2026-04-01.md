@@ -94,6 +94,20 @@
           - 券商/账户/持仓：broker/account provider 或手工快照导入接口，用于 `account_raw / live_portfolio`
           - 新闻：公开新闻源 + AKShare 能直接取的新闻接口
           - 政策：官方站点为主，配合 Claw 的 policy-news-search / analysis
+      - 第一版开源数据源候选池：
+          - 中国市场主源：`akfamily/akshare`
+          - 中国市场补位：`Micro-sheep/efinance`
+          - A 股历史补位：`shimencaiji/baostock`
+          - 海外与 cross-check：`ranaroussi/yfinance`
+          - 海外与 cross-check：`dpguthrie/yahooquery`
+          - 通用读取备选：`pydata/pandas-datareader`
+          - `Tushare` 可保留为后续扩展源，但不作为第一优先免费主源
+      - 第一版接入策略：
+          - `AKShare` 作为中国市场第一主源
+          - `efinance / baostock` 作为补位与交叉验证源
+          - `yfinance / yahooquery` 作为海外与 cross-check
+          - 政策数据仍以官网原文抓取为主
+          - 新闻先走公开源，后续再决定是否扩展
       - 输出进入 market_raw / account_raw / behavior_raw / live_portfolio 的标准化 contract
       - policy/news sidecar 只允许以结构化信号进入：
           - `policy_regime`
@@ -313,5 +327,6 @@
   - 短期内不做自动交易和代下单
   - 低频场景下，第一版实时/历史数据优先使用免费公开源
   - AKShare 可作为第一优先免费源，但不能假设其所有接口都长期稳定或全部免认证
+  - 当前目标不是商用级多租户平台，而是个人长期使用 + 对外开源时质量过关
   - 政策数据优先采用官方站点，news/policy 分析由 Claw sidecar 提供，不直接改写 solver 数学结论
   - agent 接入阶段放最后，等 kernel、数据底座和开源级硬化稳定后再开始，避免反复烧上下文和集成成本
