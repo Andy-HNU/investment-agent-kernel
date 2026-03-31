@@ -1,6 +1,13 @@
 # CODEX Progress Status
 
-更新日期: 2026-03-30
+更新日期: 2026-04-01
+
+## 2026-04-01 路线更正
+
+- 本文件继续保留为“模块完成状态基线”
+- 当前正式开发顺序已切换到 [`CODEX_kernel_first_roadmap_2026-04-01.md`](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_kernel_first_roadmap_2026-04-01.md)
+- 当前 active / historical 文档判定以 [`CODEX_artifact_registry_2026-04-01.md`](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_artifact_registry_2026-04-01.md) 为准
+- 本文件中提到的 `Round 6`、前台产品化优先顺序等内容，只保留为 2026-03-30 时点的历史语境，不再作为默认下一步
 
 ## 协作约定
 
@@ -31,7 +38,7 @@
 3. 已把 demo 入口收口到单一 canonical report path，并保留 legacy alias 兼容层
 4. `OrchestratorResult.to_dict()` 已加固为更稳定的 JSON-safe 输出
 
-下一步默认进入 [`CODEX_7_round_ship_plan.md`](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_7_round_ship_plan.md) 的 `Round 6`，但 OpenClaw skill 集成尚未开始。
+截至 2026-03-30，原先默认下一步是 [`CODEX_7_round_ship_plan.md`](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_7_round_ship_plan.md) 的 `Round 6`，但该顺序现已被 [`CODEX_kernel_first_roadmap_2026-04-01.md`](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_kernel_first_roadmap_2026-04-01.md) 取代。
 
 当前前台 / 外部数据方向的后续重点已收口为:
 
