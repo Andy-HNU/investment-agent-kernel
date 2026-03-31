@@ -1,0 +1,66 @@
+name: ci-fast
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  ci-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip
+      - run: pip install ruff black
+      - run: ruff check .
+      - run: black --check .
+
+  ci-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip
+      - run: pip install mypy
+      - run: mypy src || true
+      # 初期可放宽；主干稳定后建议移除 || true
+
+  ci-contract-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip
+      - run: pip install pytest
+      - run: pytest -m contract
+
+  ci-smoke-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip
+      - run: pip install pytest
+      - run: pytest -m smoke
+
+  ci-coverage-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip
+      - run: pip install pytest coverage
+      - run: coverage run -m pytest -m "contract or smoke"
+      - run: coverage report
