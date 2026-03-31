@@ -73,6 +73,22 @@
   - 2A. 03/05 实时输入
       - 建立 provider abstraction，不把单一源写死进主链
       - 第一版优先接免费公开源，低频场景先不要求付费 API
+      - 明确资产覆盖目标与能力矩阵：
+          - A 股
+          - 港股
+          - 美股
+          - ETF
+          - 公募基金
+          - 债券 / 国债 / 政金债
+          - 黄金
+          - 现金类 / 货基 / 短债替代
+          - QDII
+          - 行业指数 / 宽基指数 / 风格指数
+      - 对每类资产标注：
+          - 主源 / 备源 / 降级源
+          - 实时支持情况
+          - 历史支持情况
+          - 当前已验证状态
       - 建议分层：
           - 行情/快照：AKShare 优先，必要时加公开 HTTP/网页源备份
           - 券商/账户/持仓：broker/account provider 或手工快照导入接口，用于 `account_raw / live_portfolio`
@@ -86,8 +102,11 @@
           - `manual_review_required`
       - 保留 fail-open / fallback / freshness / provenance 体系
       - 同时建立免费源工程红线：
+          - monitoring / alerting
           - rate limit / retry / backoff
           - cache / TTL / refresh strategy
+          - persistence / audit logging
+          - validation / reconciliation
           - schema drift detection
           - source fallback priority
           - ToS / 商用边界 / 可持续性评估
@@ -108,6 +127,7 @@
 
   - 03/05 不再只靠通用 http_json adapter 演示
   - 02/04 不再主要依赖默认 expected_returns / volatility / correlation_matrix
+  - provider capability matrix 能明确说明各资产类别当前覆盖程度
   - 所有外部输入都能回答：
       - 来源是什么
       - 抓取时间是什么
@@ -155,8 +175,15 @@
 
   - provider 多源策略硬化
       - 主源 / 备源 / 降级源优先级
+      - 资产类别覆盖矩阵与缺口清单
       - 数据缺口与覆盖范围文档
       - drift 发现后的快速切换策略
+  - 工程运行硬化
+      - monitoring / alerting
+      - retry / backoff / rate limit
+      - cache / TTL / refresh discipline
+      - persistence / audit logging
+      - validation / reconciliation
   - 开源级可复现与可诊断能力
       - 一键 demo / sample dataset / frozen fixtures
       - run replay / dataset replay / seed pinning
@@ -176,6 +203,7 @@
   - 单用户长期低频使用足够稳定
   - 对外开源时，别人能理解边界、复现实验、跑通 sample flow
   - 即便不是商用级全覆盖，也不会因为明显粗糙的 provider / replay / docs 质量而失真
+  - 资产覆盖范围与工程边界都被明确披露，不靠暗含假设
 
   ### Phase 5. Advisor-agent / Claw integration
 
@@ -256,13 +284,19 @@
   - historical replay consistency tests
   - stale/fallback/fail-open acceptance
   - broker/account/live_portfolio provider contract tests
+  - asset-coverage matrix consistency tests
   - cache / TTL / refresh strategy tests
+  - monitoring / alerting smoke
+  - retry / rate-limit / backoff tests
+  - persistence / audit logging tests
+  - validation / reconciliation tests
   - data-version pinning / replay-dataset consistency tests
   - policy/news structured signal contract tests
 
   ### Open-source hardening gates
 
   - provider capability matrix 与已知缺口文档齐全
+  - 资产覆盖矩阵按 `A股/港股/美股/ETF/基金/债券/黄金/现金类/QDII/行业指数` 明示
   - sample dataset / frozen replay fixtures 可直接运行
   - 产品映射层有替代品回归与产品停用回归
   - README / install / local-run / risk-boundary 文档可供外部用户独立上手
