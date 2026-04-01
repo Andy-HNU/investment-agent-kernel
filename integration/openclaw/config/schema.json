@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "properties": {
+    "artifacts_dir": {"type": "string", "default": "artifacts/openclaw_bridge"},
+    "default_db_path": {"type": "string", "default": "data/investment_frontdesk.sqlite"}
+  }
+}
+

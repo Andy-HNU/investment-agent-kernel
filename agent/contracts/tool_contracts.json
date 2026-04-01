@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "frontdesk.onboarding",
+      "summary": "Create a new user baseline and decision card from NL profile.",
+      "inputs": [
+        "account_profile_id",
+        "display_name",
+        "current_total_assets",
+        "monthly_contribution",
+        "goal_amount",
+        "goal_horizon_months",
+        "risk_preference",
+        "max_drawdown_tolerance",
+        "current_holdings",
+        "restrictions"
+      ],
+      "outputs": ["workflow", "status", "run_id", "user_state"]
+    },
+    {
+      "name": "frontdesk.followup.monthly",
+      "summary": "Run monthly follow-up using saved baseline; optional minor profile overrides.",
+      "inputs": ["account_profile_id", "profile_json", "external_snapshot_source", "external_data_config"],
+      "outputs": ["workflow", "status", "run_id", "decision_card"]
+    },
+    {
+      "name": "frontdesk.status",
+      "summary": "Return persisted user_state snapshot for a profile.",
+      "inputs": ["account_profile_id"],
+      "outputs": ["user_state"]
+    },
+    {
+      "name": "frontdesk.feedback",
+      "summary": "Record whether the user executed a recommended action.",
+      "inputs": ["account_profile_id", "run_id", "executed", "actual_action", "executed_at", "note"],
+      "outputs": ["status", "execution_feedback", "execution_feedback_summary"]
+    },
+    {
+      "name": "frontdesk.approve_plan",
+      "summary": "Approve a pending execution plan and promote it to active.",
+      "inputs": ["account_profile_id", "plan_id", "plan_version", "approved_at"],
+      "outputs": ["status", "approved_execution_plan", "active_execution_plan"]
+    }
+  ]
+}
+

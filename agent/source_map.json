@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "external_skills": {
+    "OpenClaw": {
+      "repo": "openclaw",
+      "reference": "playbooks/advisor/frontdesk.md",
+      "notes": "Referenced for semantics only; implementation remains upstream."
+    }
+  }
+}
+

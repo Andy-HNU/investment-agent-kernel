@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "intents": [
+    {"name": "onboarding", "patterns": ["onboard", "onboarding", "create profile"], "tool": "frontdesk.onboarding"},
+    {"name": "status", "patterns": ["status", "show status", "how am i doing", "check user"], "tool": "frontdesk.status"},
+    {"name": "monthly", "patterns": ["monthly", "next month", "run monthly", "follow-up"], "tool": "frontdesk.followup.monthly"},
+    {"name": "feedback", "patterns": ["executed", "skipped", "i did", "took action"], "tool": "frontdesk.feedback"},
+    {"name": "approve_plan", "patterns": ["approve plan", "confirm plan", "promote"], "tool": "frontdesk.approve_plan"}
+  ]
+}
+
