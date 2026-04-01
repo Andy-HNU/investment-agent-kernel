@@ -194,7 +194,7 @@ def generate_candidates(
             )
         )
 
-    if drawdown_event:
+    if drawdown_event and mode == RuntimeOptimizerMode.EVENT:
         candidates.append(
             _build_action(
                 ActionType.ADD_DEFENSE,

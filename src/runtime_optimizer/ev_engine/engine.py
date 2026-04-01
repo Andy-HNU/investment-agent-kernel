@@ -215,7 +215,23 @@ def _generate_reason(
     score: EVComponentScore,
     rank: int,
     goal_solver_min_delta: float,
+    runner_up_score: EVComponentScore | None = None,
+    best_goal_impact: float | None = None,
 ) -> str:
+    if rank == 0 and runner_up_score is not None and best_goal_impact is not None:
+        penalty_advantages: list[str] = []
+        if score.risk_penalty < runner_up_score.risk_penalty:
+            penalty_advantages.append("风险惩罚")
+        if score.execution_penalty < runner_up_score.execution_penalty:
+            penalty_advantages.append("执行成本")
+        if score.soft_constraint_penalty < runner_up_score.soft_constraint_penalty:
+            penalty_advantages.append("软约束成本")
+        if score.behavior_penalty < runner_up_score.behavior_penalty:
+            penalty_advantages.append("行为惩罚")
+        if score.goal_impact < best_goal_impact and len(penalty_advantages) >= 2:
+            joined = "和".join(penalty_advantages[:2])
+            return f"该动作胜在{joined}更低，尽管目标提升不是最高"
+
     if (
         score.goal_impact > goal_solver_min_delta
         and score.goal_impact >= max(
@@ -275,10 +291,15 @@ def _build_confidence(
     diff = results[0].score.total - results[1].score.total
     high_diff = float(params.get("high_confidence_min_diff", 0.0) or 0.0)
     medium_diff = float(params.get("medium_confidence_min_diff", 0.0) or 0.0)
+    safe_types = {ActionType.FREEZE, ActionType.OBSERVE}
+    contains_safe = any(item.action.type in safe_types for item in results)
+    contains_active = any(item.action.type not in safe_types for item in results)
     if len(results) >= 3 and diff > high_diff:
         return "high", f"top1-top2 分差 {diff:.4f} 高于 high 阈值"
     if len(results) >= 2 and diff >= medium_diff:
         return "medium", f"top1-top2 分差 {diff:.4f} 达到 medium 阈值"
+    if contains_safe and contains_active:
+        return "low", f"top1-top2 分差 {diff:.4f} 低于 medium 阈值，且候选同时包含安全动作与主动动作"
     return "low", f"top1-top2 分差 {diff:.4f} 低于 medium 阈值"
 
 
@@ -319,14 +340,23 @@ def run_ev_engine(
     goal_solver_min_delta = float(_obj(state_dict["ev_params"]).get("goal_solver_min_delta", 0.0) or 0.0)
     passed.sort(key=lambda item: (-item[1].total, _action_priority(item[0].type), item[2]))
     results: list[EVResult] = []
+    best_goal_impact = max((item[1].goal_impact for item in passed), default=None)
     for rank, (action, score, _index) in enumerate(passed):
+        runner_up_score = passed[1][1] if rank == 0 and len(passed) > 1 else None
         results.append(
             EVResult(
                 action=action,
                 score=score,
                 rank=rank + 1,
                 is_recommended=rank == 0,
-                recommendation_reason=_generate_reason(action, score, rank, goal_solver_min_delta),
+                recommendation_reason=_generate_reason(
+                    action,
+                    score,
+                    rank,
+                    goal_solver_min_delta,
+                    runner_up_score=runner_up_score,
+                    best_goal_impact=best_goal_impact,
+                ),
             )
         )
 

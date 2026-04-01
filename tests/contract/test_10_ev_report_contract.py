@@ -165,6 +165,117 @@ def test_run_ev_engine_confidence_uses_thresholds_and_reason_priority(
 
 
 @pytest.mark.contract
+def test_run_ev_engine_recommendation_reason_explains_penalty_advantage_over_raw_goal_impact(
+    market_state_base,
+    constraint_state_base,
+    behavior_state_base,
+    ev_params_base,
+    goal_solver_input_base,
+    goal_solver_output_base,
+    live_portfolio_base,
+    monkeypatch,
+):
+    state = _ev_state(
+        market_state_base,
+        constraint_state_base,
+        behavior_state_base,
+        ev_params_base,
+        goal_solver_input_base,
+        goal_solver_output_base,
+        live_portfolio_base,
+    )
+    actions = [
+        _action(ActionType.ADD_CASH_TO_CORE, target_bucket="equity_cn", amount=5000.0, amount_pct=0.08),
+        _action(
+            ActionType.REBALANCE_LIGHT,
+            target_bucket="equity_cn",
+            amount=5000.0,
+            amount_pct=0.08,
+            from_bucket="bond_cn",
+            to_bucket="equity_cn",
+            cash_source="sell_rebalance",
+            requires_sell=True,
+            expected_turnover=0.08,
+        ),
+        _action(ActionType.OBSERVE, amount=0.0, amount_pct=0.0),
+    ]
+    score_by_type = {
+        ActionType.ADD_CASH_TO_CORE: EVComponentScore(0.045, 0.004, 0.001, 0.0, 0.001, 0.039),
+        ActionType.REBALANCE_LIGHT: EVComponentScore(0.065, 0.014, 0.003, 0.0, 0.010, 0.038),
+        ActionType.OBSERVE: EVComponentScore(0.001, 0.0, 0.0, 0.0, 0.0, 0.001),
+    }
+
+    monkeypatch.setattr(
+        ev_engine_module,
+        "_check_feasibility",
+        lambda action, _state: FeasibilityResult(True, []),
+    )
+    monkeypatch.setattr(
+        ev_engine_module,
+        "score_action",
+        lambda action, _state: score_by_type[action.type],
+    )
+
+    report = run_ev_engine(state=state, candidate_actions=actions, trigger_type="monthly")
+
+    assert report.recommended_action is not None
+    assert report.recommended_action.type == ActionType.ADD_CASH_TO_CORE
+    assert report.ranked_actions[0].recommendation_reason == "该动作胜在风险惩罚和执行成本更低，尽管目标提升不是最高"
+
+
+@pytest.mark.contract
+def test_run_ev_engine_low_confidence_reason_explains_mixed_safe_and_active_candidates(
+    market_state_base,
+    constraint_state_base,
+    behavior_state_base,
+    ev_params_base,
+    goal_solver_input_base,
+    goal_solver_output_base,
+    live_portfolio_base,
+    monkeypatch,
+):
+    state = _ev_state(
+        market_state_base,
+        constraint_state_base,
+        behavior_state_base,
+        {
+            **ev_params_base,
+            "high_confidence_min_diff": 0.02,
+            "medium_confidence_min_diff": 0.005,
+        },
+        goal_solver_input_base,
+        goal_solver_output_base,
+        live_portfolio_base,
+    )
+    actions = [
+        _action(ActionType.OBSERVE, amount=0.0, amount_pct=0.0),
+        _action(ActionType.ADD_CASH_TO_CORE, target_bucket="equity_cn", amount=4000.0, amount_pct=0.06),
+        _action(ActionType.FREEZE, amount=0.0, amount_pct=0.0),
+    ]
+    score_by_type = {
+        ActionType.OBSERVE: EVComponentScore(0.012, 0.001, 0.0, 0.0, 0.0, 0.011),
+        ActionType.ADD_CASH_TO_CORE: EVComponentScore(0.015, 0.003, 0.0, 0.0, 0.002, 0.008),
+        ActionType.FREEZE: EVComponentScore(0.010, 0.0, 0.0, 0.0, 0.0, 0.0075),
+    }
+
+    monkeypatch.setattr(
+        ev_engine_module,
+        "_check_feasibility",
+        lambda action, _state: FeasibilityResult(True, []),
+    )
+    monkeypatch.setattr(
+        ev_engine_module,
+        "score_action",
+        lambda action, _state: score_by_type[action.type],
+    )
+
+    report = run_ev_engine(state=state, candidate_actions=actions, trigger_type="monthly")
+
+    assert report.confidence_flag == "low"
+    assert report.confidence_reason == "top1-top2 分差 0.0030 低于 medium 阈值，且候选同时包含安全动作与主动动作"
+
+
+@pytest.mark.contract
 def test_run_ev_engine_low_confidence_under_emotion_and_cooldown_filters(
     market_state_base,
     constraint_state_base,

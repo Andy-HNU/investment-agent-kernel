@@ -135,6 +135,9 @@
 - `ADD_DEFENSE` reserved for drawdown-event path
 - runtime candidate-poverty protocol now patches EVReport to safe-action semantics
 - EV feasibility now consumes calibrated cooldown state in addition to emotion flags
+- quarterly drawdown path now filters `ADD_DEFENSE`, preserving event-only defensive injection semantics
+- `recommendation_reason` now explains when the winner beats the runner-up via lower penalties rather than the highest raw goal impact
+- `confidence_reason` now distinguishes mixed safe-vs-active low-spread candidate sets instead of emitting only generic spread text
 
 ### 07 orchestrator
 
@@ -235,6 +238,38 @@
 - 更细的五项分量公式与量纲校准
 - 推荐理由生成规则继续系统化
 - 更深的 mixed-candidate smoke / regression
+
+本轮收口：
+- calibrated cooldown state participates in feasibility filtering
+- low-confidence explanations now call out mixed safe/active candidate sets when spread is narrow
+- recommendation reasons now disclose penalty-led wins when raw goal impact is not the highest
+
+### 11 product_mapping / execution_planner
+
+状态：`v2 第一版骨架已落地`
+
+文档锚点：
+- [`system/11_product_mapping_and_execution_planner_v2.md#L1`](/root/AndyFtp/investment_system_codex_ready_repo/system/11_product_mapping_and_execution_planner_v2.md#L1)
+
+当前已实现：
+- `ProductCandidate`
+- `ExecutionPlanItem`
+- `ExecutionPlan`
+- builtin catalog for:
+  - `equity_cn`
+  - `bond_cn`
+  - `gold`
+  - `cash_liquidity`
+- deterministic `build_execution_plan(...)`
+- restriction-aware pruning for:
+  - `不碰股票`
+  - `只接受黄金和现金`
+- alternate-product surfacing at plan-item level
+
+仍缺：
+- 与 `07 orchestrator` / `09 decision_card` / `frontdesk` 的正式接线
+- `plan_id / plan_version` 的持久化与状态机落账
+- 更完整的产品池、替代规则、停用策略与用户解释层
 
 ## 优先级清单
 

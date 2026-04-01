@@ -11,7 +11,10 @@ from goal_solver.engine import (
     run_goal_solver,
     run_goal_solver_lightweight,
 )
+from runtime_optimizer.candidates import ActionType, generate_candidates
 from runtime_optimizer.ev_engine.engine import run_ev_engine
+from runtime_optimizer.state_builder import build_ev_state
+from runtime_optimizer.types import RuntimeOptimizerMode
 
 
 @pytest.mark.smoke
@@ -98,3 +101,44 @@ def test_goal_solver_fallback_output_still_builds_ev_smoke(
     assert report.trigger_type == "monthly"
     assert report.goal_solver_baseline == expected_baseline
     assert account_state["success_prob_baseline"] == solver_output.recommended_result.success_probability
+
+
+@pytest.mark.smoke
+def test_goal_solver_output_filters_add_defense_to_event_drawdown_path(
+    goal_solver_input_base,
+    goal_solver_output_base,
+    live_portfolio_base,
+    market_state_base,
+    constraint_state_base,
+    behavior_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+):
+    ev_state = build_ev_state(
+        solver_output=goal_solver_output_base,
+        solver_baseline_inp=goal_solver_input_base,
+        live_portfolio=live_portfolio_base,
+        market_state=market_state_base,
+        behavior_state=behavior_state_base,
+        constraint_state=constraint_state_base,
+        ev_params=ev_params_base,
+    )
+
+    quarterly_candidates = generate_candidates(
+        state=ev_state,
+        params=runtime_optimizer_params_base,
+        mode=RuntimeOptimizerMode.QUARTERLY,
+        drawdown_event=True,
+    )
+    event_candidates = generate_candidates(
+        state=ev_state,
+        params=runtime_optimizer_params_base,
+        mode=RuntimeOptimizerMode.EVENT,
+        drawdown_event=True,
+    )
+
+    quarterly_types = {candidate.type for candidate in quarterly_candidates}
+    event_types = {candidate.type for candidate in event_candidates}
+
+    assert ActionType.ADD_DEFENSE not in quarterly_types
+    assert ActionType.ADD_DEFENSE in event_types

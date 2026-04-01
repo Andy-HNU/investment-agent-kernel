@@ -162,3 +162,46 @@ def test_run_runtime_optimizer_poverty_protocol_keeps_safe_action_when_available
     assert result.ev_report.goal_solver_after_recommended == pytest.approx(0.42)
     assert result.ev_report.confidence_flag == "low"
     assert result.ev_report.confidence_reason == "候选通过过滤数量过少，已降级为安全动作优先"
+
+
+@pytest.mark.contract
+def test_run_runtime_optimizer_quarterly_drawdown_path_filters_add_defense_and_keeps_safe_fallback_explainable(
+    goal_solver_output_base,
+    goal_solver_input_base,
+    live_portfolio_base,
+    market_state_base,
+    behavior_state_base,
+    constraint_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+    monkeypatch,
+):
+    seen_candidate_types: list[ActionType] = []
+
+    def fake_run_ev_engine(**kwargs):
+        nonlocal seen_candidate_types
+        candidate_actions = kwargs["candidate_actions"]
+        seen_candidate_types = [candidate.type for candidate in candidate_actions]
+        safe_action = next(candidate for candidate in candidate_actions if candidate.type == ActionType.OBSERVE)
+        return _report(safe_action, score_total=0.0, confidence_flag="medium")
+
+    monkeypatch.setattr(runtime_optimizer_engine, "run_ev_engine", fake_run_ev_engine)
+
+    result = run_runtime_optimizer(
+        solver_output=goal_solver_output_base,
+        solver_baseline_inp=goal_solver_input_base,
+        live_portfolio=live_portfolio_base,
+        market_state=market_state_base,
+        behavior_state=behavior_state_base,
+        constraint_state=constraint_state_base,
+        ev_params=ev_params_base,
+        optimizer_params=runtime_optimizer_params_base,
+        mode=RuntimeOptimizerMode.QUARTERLY,
+        drawdown_event=True,
+    )
+
+    assert ActionType.ADD_DEFENSE not in seen_candidate_types
+    assert result.candidate_poverty is True
+    assert result.ev_report.recommended_action is not None
+    assert result.ev_report.recommended_action.type == ActionType.OBSERVE
+    assert result.ev_report.confidence_reason == "候选通过过滤数量过少，已降级为安全动作优先"
