@@ -198,6 +198,11 @@ def _snapshot_build_context(
             "goal_raw": goal_raw,
             "constraint_raw": constraint_raw,
             "behavior_raw": None if behavior_raw is None else _as_dict(behavior_raw),
+            "policy_news_signals": list(
+                envelope.get("policy_news_signals")
+                or _as_dict(market_raw).get("policy_news_signals")
+                or []
+            ),
             "remaining_horizon_months": remaining_horizon_months,
             "schema_version": _first_text(envelope.get("snapshot_schema_version"), "v1.0"),
         },
@@ -233,6 +238,7 @@ def _resolve_snapshot_bundle(
             constraint_raw=context["constraint_raw"],
             behavior_raw=context["behavior_raw"],
             remaining_horizon_months=int(context["remaining_horizon_months"]),
+            policy_news_signals=context["policy_news_signals"],
             schema_version=str(context["schema_version"]),
         ),
         "generated",

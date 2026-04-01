@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from frontdesk.service import run_frontdesk_onboarding
+from shared.onboarding import UserOnboardingProfile
+from snapshot_ingestion.historical import (
+    HistoricalDatasetCache,
+    build_historical_dataset_snapshot,
+    summarize_historical_dataset,
+)
+from snapshot_ingestion.provider_matrix import find_provider_coverage, provider_capability_matrix_dicts
+from snapshot_ingestion.providers import fetch_snapshot_from_provider_config, provider_debug_metadata
+
+
+def _profile(*, account_profile_id: str = "provider_registry_user") -> UserOnboardingProfile:
+    return UserOnboardingProfile(
+        account_profile_id=account_profile_id,
+        display_name="Andy",
+        current_total_assets=50_000.0,
+        monthly_contribution=12_000.0,
+        goal_amount=900_000.0,
+        goal_horizon_months=48,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.10,
+        current_holdings="portfolio",
+        restrictions=[],
+        current_weights={"equity_cn": 0.50, "bond_cn": 0.30, "gold": 0.10, "satellite": 0.10},
+    )
+
+
+@pytest.mark.contract
+def test_provider_capability_matrix_covers_account_and_live_portfolio():
+    matrix = provider_capability_matrix_dicts()
+    coverage = {row["asset_class"] for row in matrix}
+
+    assert "account_raw" in coverage
+    assert "live_portfolio" in coverage
+    assert find_provider_coverage("etf") is not None
+    assert provider_debug_metadata()["live_portfolio_coverage"]["asset_class"] == "live_portfolio"
+
+
+@pytest.mark.contract
+def test_fetch_snapshot_from_provider_config_supports_local_json_fixture(tmp_path):
+    fixture_path = Path(__file__).resolve().parents[1] / "fixtures" / "provider_snapshot_local.json"
+    fetched = fetch_snapshot_from_provider_config(
+        {
+            "adapter": "local_json",
+            "snapshot_path": str(fixture_path),
+            "provider_name": "fixture_local_json",
+            "as_of": "2026-03-30T07:30:00Z",
+            "fetched_at": "2026-03-30T08:00:00Z",
+        },
+        workflow_type="monthly",
+        account_profile_id="provider_registry_user",
+        as_of="2026-03-30T07:30:00Z",
+    )
+
+    assert fetched is not None
+    assert fetched.provider_name == "fixture_local_json"
+    assert fetched.raw_overrides["account_raw"]["total_value"] == 63_500.0
+    assert fetched.freshness["domains"]["account_raw"]["status"] == "fresh"
+
+
+@pytest.mark.contract
+def test_historical_dataset_cache_roundtrip_preserves_version_pin(tmp_path):
+    dataset = build_historical_dataset_snapshot(
+        {
+            "source_name": "fixture_history",
+            "source_ref": "fixture://history",
+            "as_of": "2026-03-29",
+            "lookback_months": 24,
+            "version_id": "fixture_history:2026-03-29:v1",
+            "return_series": {
+                "equity_cn": [0.01, 0.02, -0.01, 0.03],
+                "bond_cn": [0.002, 0.004, 0.001, 0.003],
+            },
+        }
+    )
+
+    assert dataset is not None
+    cache = HistoricalDatasetCache(tmp_path / "history-cache")
+    cache.save(dataset)
+    reloaded = cache.load("fixture_history:2026-03-29:v1")
+
+    assert reloaded is not None
+    assert reloaded.version_id == dataset.version_id
+    assert reloaded.return_series == dataset.return_series
+
+    expected_returns, volatility, correlation_matrix = summarize_historical_dataset(reloaded)
+    assert set(expected_returns) == {"equity_cn", "bond_cn"}
+    assert set(volatility) == {"equity_cn", "bond_cn"}
+    assert correlation_matrix["equity_cn"]["equity_cn"] == 1.0
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_accepts_local_json_provider_fixture(tmp_path):
+    fixture_path = Path(__file__).resolve().parents[1] / "fixtures" / "provider_snapshot_local.json"
+    summary = run_frontdesk_onboarding(
+        _profile(account_profile_id="local_json_provider_user"),
+        db_path=tmp_path / "frontdesk.sqlite",
+        external_data_config={
+            "adapter": "local_json",
+            "snapshot_path": str(fixture_path),
+            "provider_name": "fixture_local_json",
+        },
+    )
+
+    assert summary["status"] == "completed"
+    assert summary["external_snapshot_status"] == "fetched"
+    assert summary["refresh_summary"]["provider_name"] == "fixture_local_json"
+    assert summary["user_state"]["profile"]["current_total_assets"] == 63_500.0

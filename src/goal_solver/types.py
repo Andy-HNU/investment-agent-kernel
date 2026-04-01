@@ -40,6 +40,10 @@ class MarketAssumptions:
     expected_returns: dict[str, float]
     volatility: dict[str, float]
     correlation_matrix: dict[str, dict[str, float]]
+    source_name: str | None = None
+    dataset_version: str | None = None
+    lookback_months: int | None = None
+    historical_backtest_used: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

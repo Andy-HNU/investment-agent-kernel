@@ -25,6 +25,15 @@ class MarketState:
     is_degraded: bool = False
     valuation_percentile: dict[str, float] = field(default_factory=dict)
     liquidity_flag: dict[str, bool] = field(default_factory=dict)
+    policy_regime: str | None = None
+    macro_uncertainty: str | None = None
+    sentiment_stress: str | None = None
+    liquidity_stress: str | None = None
+    manual_review_required: bool = False
+    policy_signal_confidence: float = 0.0
+    policy_signal_ids: list[str] = field(default_factory=list)
+    historical_dataset_version: str | None = None
+    historical_dataset_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

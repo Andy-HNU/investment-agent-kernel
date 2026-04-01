@@ -1,0 +1,68 @@
+{
+  "market_raw": {
+    "raw_volatility": {
+      "equity_cn": 0.17,
+      "bond_cn": 0.05,
+      "gold": 0.09,
+      "satellite": 0.2
+    },
+    "liquidity_scores": {
+      "equity_cn": 0.91,
+      "bond_cn": 0.97,
+      "gold": 0.82,
+      "satellite": 0.58
+    },
+    "valuation_z_scores": {
+      "equity_cn": -0.2,
+      "bond_cn": 0.1,
+      "gold": 0.0,
+      "satellite": 0.8
+    },
+    "expected_returns": {
+      "equity_cn": 0.085,
+      "bond_cn": 0.032,
+      "gold": 0.038,
+      "satellite": 0.11
+    }
+  },
+  "account_raw": {
+    "weights": {
+      "equity_cn": 0.5,
+      "bond_cn": 0.3,
+      "gold": 0.1,
+      "satellite": 0.1
+    },
+    "total_value": 63500.0,
+    "available_cash": 2500.0,
+    "remaining_horizon_months": 48
+  },
+  "behavior_raw": {
+    "recent_chase_risk": "low",
+    "recent_panic_risk": "none",
+    "trade_frequency_30d": 1.0,
+    "override_count_90d": 0,
+    "cooldown_active": false,
+    "cooldown_until": null,
+    "behavior_penalty_coeff": 0.1
+  },
+  "provider_name": "local_fixture_provider",
+  "fetched_at": "2026-03-30T08:00:00Z",
+  "as_of": "2026-03-30T07:30:00Z",
+  "domains": {
+    "market_raw": {
+      "status": "fresh",
+      "fetched_at": "2026-03-30T08:00:00Z",
+      "as_of": "2026-03-30T07:30:00Z"
+    },
+    "account_raw": {
+      "status": "fresh",
+      "fetched_at": "2026-03-30T08:00:00Z",
+      "as_of": "2026-03-30T07:30:00Z"
+    },
+    "behavior_raw": {
+      "status": "fresh",
+      "fetched_at": "2026-03-30T08:00:00Z",
+      "as_of": "2026-03-30T07:30:00Z"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "adapter": "inline_snapshot",
+  "provider_name": "manual_account_feed",
+  "as_of": "2026-04-01T00:00:00Z",
+  "payload": {
+    "account_raw": {
+      "weights": {
+        "equity_cn": 0.45,
+        "bond_cn": 0.35,
+        "gold": 0.10,
+        "satellite": 0.10
+      },
+      "total_value": 86000.0,
+      "available_cash": 3000.0,
+      "remaining_horizon_months": 48
+    },
+    "live_portfolio": {
+      "weights": {
+        "equity_cn": 0.45,
+        "bond_cn": 0.35,
+        "gold": 0.10,
+        "satellite": 0.10
+      },
+      "total_value": 86000.0,
+      "available_cash": 3000.0,
+      "current_drawdown": 0.03
+    }
+  }
+}

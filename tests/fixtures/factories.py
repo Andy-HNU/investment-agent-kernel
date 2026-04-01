@@ -45,6 +45,10 @@ def make_market_assumptions() -> dict[str, Any]:
             "equity_cn": {"equity_cn": 1.0, "bond_cn": 0.1},
             "bond_cn": {"equity_cn": 0.1, "bond_cn": 1.0},
         },
+        "source_name": None,
+        "dataset_version": None,
+        "lookback_months": None,
+        "historical_backtest_used": False,
     }
 
 

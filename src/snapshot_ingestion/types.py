@@ -23,6 +23,24 @@ class QualityFlag:
 
 
 @dataclass
+class PolicyNewsSignal:
+    signal_id: str
+    as_of: str
+    source_type: str
+    source_refs: list[str]
+    policy_regime: str | None = None
+    macro_uncertainty: str | None = None
+    sentiment_stress: str | None = None
+    liquidity_stress: str | None = None
+    manual_review_required: bool = False
+    confidence: float = 0.0
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class SnapshotBundle:
     bundle_id: str
     account_profile_id: str
@@ -35,10 +53,13 @@ class SnapshotBundle:
     bundle_quality: CompletenessLevel
     missing_domains: list[str] = field(default_factory=list)
     quality_summary: list[QualityFlag] = field(default_factory=list)
+    policy_news_signals: list[PolicyNewsSignal] = field(default_factory=list)
+    historical_dataset_metadata: dict[str, Any] = field(default_factory=dict)
     schema_version: str = "v1.0"
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["bundle_quality"] = self.bundle_quality.value
         data["quality_summary"] = [flag.to_dict() for flag in self.quality_summary]
+        data["policy_news_signals"] = [signal.to_dict() for signal in self.policy_news_signals]
         return data

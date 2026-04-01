@@ -175,3 +175,25 @@ def test_frontdesk_monthly_accepts_provider_config_from_json_file(tmp_path):
     assert summary["input_provenance"]["counts"]["externally_fetched"] >= 1
     assert user_state is not None
     assert user_state["profile"]["current_total_assets"] == 64_000.0
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_accepts_inline_snapshot_provider_config(tmp_path):
+    profile = _profile(account_profile_id="frontdesk_provider_inline")
+
+    summary = run_frontdesk_onboarding(
+        profile,
+        db_path=tmp_path / "frontdesk.sqlite",
+        external_data_config={
+            "adapter": "inline_snapshot",
+            "provider_name": "fixture_inline_provider",
+            "as_of": "2026-03-30T07:30:00Z",
+            "fetched_at": "2026-03-30T08:00:00Z",
+            "payload": _snapshot(total_value=62_500.0),
+        },
+    )
+
+    assert summary["status"] == "completed"
+    assert summary["external_snapshot_status"] == "fetched"
+    assert summary["refresh_summary"]["provider_name"] == "fixture_inline_provider"
+    assert summary["user_state"]["profile"]["current_total_assets"] == 62_500.0

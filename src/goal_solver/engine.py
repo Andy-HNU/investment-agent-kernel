@@ -598,17 +598,26 @@ def _append_model_honesty_notes(
     inp: GoalSolverInput,
     shrinkage_factor_note_value: str,
 ) -> None:
+    historical_backtest_used = bool(inp.solver_params.market_assumptions.historical_backtest_used)
     notes.append(
         "probability_model "
         "method=parametric_monte_carlo "
         "distribution=normal "
-        "historical_backtest_used=false"
+        f"historical_backtest_used={'true' if historical_backtest_used else 'false'}"
     )
-    notes.append(
-        "monte_carlo_limitations "
-        f"shrinkage_factor={shrinkage_factor_note_value} "
-        "limitation=static_parametric_inputs_non_historical"
-    )
+    if historical_backtest_used:
+        notes.append(
+            "historical_dataset "
+            f"source={inp.solver_params.market_assumptions.source_name or 'unknown'} "
+            f"version={inp.solver_params.market_assumptions.dataset_version or 'unknown'} "
+            f"lookback_months={inp.solver_params.market_assumptions.lookback_months or 0}"
+        )
+    else:
+        notes.append(
+            "monte_carlo_limitations "
+            f"shrinkage_factor={shrinkage_factor_note_value} "
+            "limitation=static_parametric_inputs_non_historical"
+        )
     notes.append(
         "goal_semantics "
         f"basis={inp.goal.goal_amount_basis} "

@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+import numpy as np
+
 from calibration.types import (
     BehaviorState,
     CalibrationResult,
@@ -13,6 +15,7 @@ from calibration.types import (
     RuntimeOptimizerParams,
 )
 from goal_solver.types import GoalSolverParams, MarketAssumptions, RankingMode
+from snapshot_ingestion.historical import build_historical_dataset_snapshot, summarize_historical_dataset
 from snapshot_ingestion.types import CompletenessLevel, SnapshotBundle
 
 
@@ -36,6 +39,14 @@ def _utc(value: Any) -> datetime:
 
 def _stamp(value: Any) -> str:
     return _utc(value).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _first_text(*values: Any) -> str | None:
+    for value in values:
+        rendered = str(value or "").strip()
+        if rendered:
+            return rendered
+    return None
 
 
 def _bundle_dict(bundle: SnapshotBundle | dict[str, Any]) -> dict[str, Any]:
@@ -84,6 +95,27 @@ def _bucket_universe(bundle_data: dict[str, Any]) -> list[str]:
     account = _obj(bundle_data.get("account", {}))
     weights = account.get("weights", {})
     return list(weights.keys())
+
+
+def _policy_signal_summary(bundle_data: dict[str, Any]) -> dict[str, Any]:
+    signals = list(bundle_data.get("policy_news_signals") or [])
+    if not signals:
+        return {}
+    ordered = sorted(
+        (_obj(signal) for signal in signals),
+        key=lambda item: (float(item.get("confidence", 0.0) or 0.0), str(item.get("as_of") or "")),
+        reverse=True,
+    )
+    chosen = ordered[0]
+    return {
+        "policy_regime": chosen.get("policy_regime"),
+        "macro_uncertainty": chosen.get("macro_uncertainty"),
+        "sentiment_stress": chosen.get("sentiment_stress"),
+        "liquidity_stress": chosen.get("liquidity_stress"),
+        "manual_review_required": any(bool(_obj(item).get("manual_review_required")) for item in signals),
+        "confidence": float(chosen.get("confidence", 0.0) or 0.0),
+        "signal_ids": [str(_obj(item).get("signal_id") or "") for item in signals if str(_obj(item).get("signal_id") or "").strip()],
+    }
 
 
 def _default_expected_return(bucket: str) -> float:
@@ -136,6 +168,10 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
     liquidity_status: dict[str, str] = {}
     valuation_positions: dict[str, str] = {}
     quality_flags: list[str] = []
+    policy_summary = _policy_signal_summary(bundle_data) or {}
+    historical_metadata = _obj(
+        bundle_data.get("historical_dataset_metadata") or _obj(market_raw.get("historical_dataset")) or {}
+    )
 
     for bucket in buckets:
         liq = liquidity_scores.get(bucket)
@@ -166,6 +202,20 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
 
     if not raw_volatility:
         quality_flags.append("market_volatility_missing")
+    if bool(policy_summary.get("manual_review_required")):
+        quality_flags.append("policy_signal_manual_review_required")
+    if str(policy_summary.get("macro_uncertainty") or "").lower() == "high":
+        quality_flags.append("policy_signal_macro_uncertainty_high")
+        risk_environment = "high"
+        volatility_regime = "high"
+    if historical_metadata:
+        quality_flags.append("historical_dataset_attached")
+    if str(policy_summary.get("liquidity_stress") or "").lower() == "high":
+        quality_flags.append("policy_signal_liquidity_stress_high")
+        for bucket in buckets:
+            liquidity_status[bucket] = "stressed"
+    if str(policy_summary.get("sentiment_stress") or "").lower() == "high":
+        quality_flags.append("policy_signal_sentiment_stress_high")
 
     return MarketState(
         as_of=created_at.isoformat().replace("+00:00", "Z"),
@@ -175,7 +225,10 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
         volatility_regime=volatility_regime,
         liquidity_status=liquidity_status,
         valuation_positions=valuation_positions,
-        correlation_spike_alert=bool(market_raw.get("correlation_spike_alert", False)),
+        correlation_spike_alert=bool(
+            market_raw.get("correlation_spike_alert", False)
+            or str(policy_summary.get("sentiment_stress") or "").lower() == "high"
+        ),
         quality_flags=quality_flags,
         is_degraded=not raw_volatility,
         valuation_percentile={
@@ -186,6 +239,15 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
             bucket: liquidity_status[bucket] != "normal"
             for bucket in buckets
         },
+        policy_regime=policy_summary.get("policy_regime"),
+        macro_uncertainty=policy_summary.get("macro_uncertainty"),
+        sentiment_stress=policy_summary.get("sentiment_stress"),
+        liquidity_stress=policy_summary.get("liquidity_stress"),
+        manual_review_required=bool(policy_summary.get("manual_review_required")),
+        policy_signal_confidence=float(policy_summary.get("confidence", 0.0) or 0.0),
+        policy_signal_ids=list(policy_summary.get("signal_ids") or []),
+        historical_dataset_version=_first_text(historical_metadata.get("version_id"), historical_metadata.get("dataset_version")),
+        historical_dataset_source=_first_text(historical_metadata.get("source_name"), historical_metadata.get("source_ref")),
     )
 
 
@@ -292,6 +354,9 @@ def interpret_constraint_state(
     bundle_id = str(bundle_data.get("bundle_id", ""))
     max_drawdown = float(constraint_raw.get("max_drawdown_tolerance", 0.2))
     effective_drawdown = max_drawdown * 0.85 if market_state.risk_environment == "high" else max_drawdown
+    soft_preferences = dict(constraint_raw.get("soft_preferences", {}))
+    if market_state.manual_review_required:
+        soft_preferences["policy_manual_review_required"] = True
     return ConstraintState(
         as_of=created_at.isoformat().replace("+00:00", "Z"),
         source_bundle_id=bundle_id,
@@ -305,7 +370,7 @@ def interpret_constraint_state(
         rebalancing_band=float(constraint_raw.get("rebalancing_band", 0.1)),
         forbidden_actions=list(constraint_raw.get("forbidden_actions", [])),
         cooling_period_days=int(constraint_raw.get("cooling_period_days", 0) or 0),
-        soft_preferences=dict(constraint_raw.get("soft_preferences", {})),
+        soft_preferences=soft_preferences,
         effective_drawdown_threshold=effective_drawdown,
         cooldown_currently_active=behavior_state.cooldown_active,
         bucket_category=dict(constraint_raw.get("bucket_category", {})),
@@ -342,6 +407,51 @@ def calibrate_market_assumptions(
     bundle_quality = _quality_text(bundle_data.get("bundle_quality"))
     raw_returns = dict(market_raw.get("expected_returns", {}))
     raw_volatility = dict(market_raw.get("raw_volatility", {}))
+    historical_dataset = build_historical_dataset_snapshot(
+        _obj(bundle_data.get("historical_dataset_metadata") or market_raw.get("historical_dataset"))
+    )
+    if historical_dataset is not None:
+        dataset_returns, dataset_volatility, dataset_corr = summarize_historical_dataset(
+            historical_dataset,
+            buckets=buckets,
+        )
+        if dataset_returns and dataset_volatility:
+            expected_returns = {
+                bucket: float(
+                    max(
+                        min(dataset_returns.get(bucket, _default_expected_return(bucket)) * 0.95, 0.30),
+                        -0.30,
+                    )
+                )
+                for bucket in buckets
+            }
+            volatility = {
+                bucket: float(max(dataset_volatility.get(bucket, _default_volatility(bucket)), 0.03))
+                for bucket in buckets
+            }
+            correlation_matrix: dict[str, dict[str, float]] = {}
+            for bucket in buckets:
+                row: dict[str, float] = {}
+                for peer in buckets:
+                    if bucket == peer:
+                        row[peer] = 1.0
+                    else:
+                        row[peer] = float(
+                            dataset_corr.get(bucket, {}).get(
+                                peer,
+                                prior_market_assumptions.get("correlation_matrix", {}).get(bucket, {}).get(peer, 0.1),
+                            )
+                        )
+                correlation_matrix[bucket] = row
+            return MarketAssumptions(
+                expected_returns=expected_returns,
+                volatility=volatility,
+                correlation_matrix=correlation_matrix,
+                source_name=historical_dataset.source_name,
+                dataset_version=historical_dataset.version_id,
+                lookback_months=historical_dataset.lookback_months or None,
+                historical_backtest_used=True,
+            )
     if (bundle_quality == "degraded" or not raw_volatility) and prior_market_assumptions:
         return MarketAssumptions(**prior_market_assumptions)
 
@@ -378,6 +488,10 @@ def calibrate_market_assumptions(
         expected_returns=expected_returns,
         volatility=volatility,
         correlation_matrix=correlation_matrix,
+        source_name=str(market_raw.get("provider_name") or "snapshot_market"),
+        dataset_version=None,
+        lookback_months=None,
+        historical_backtest_used=False,
     )
 
 
@@ -420,6 +534,16 @@ def update_runtime_optimizer_params(
             params.drawdown_event_threshold,
             constraint_state.effective_drawdown_threshold,
         )
+    if market_state.policy_signal_confidence >= 0.6:
+        if market_state.macro_uncertainty == "high":
+            params.deviation_soft_threshold = max(0.01, params.deviation_soft_threshold * 0.9)
+            params.deviation_hard_threshold = max(
+                params.deviation_soft_threshold + 0.01,
+                params.deviation_hard_threshold * 0.95,
+            )
+        if market_state.liquidity_stress == "high":
+            params.new_cash_use_pct = min(params.new_cash_use_pct, 0.70)
+            params.min_cash_for_action = max(params.min_cash_for_action, 2000.0)
     params.version = _version_id("runtime_params", created_at)
     return params
 
@@ -452,6 +576,13 @@ def update_ev_params(
         weights["behavior_penalty_weight"] = target_behavior
     if market_state.correlation_spike_alert:
         weights["risk_penalty_weight"] = min(0.35, weights["risk_penalty_weight"] + 0.03)
+        normalized = _normalize_weight_vector(weights)
+        weights.update(normalized)
+    if market_state.policy_signal_confidence >= 0.6 and (
+        market_state.sentiment_stress == "high" or market_state.liquidity_stress == "high"
+    ):
+        weights["risk_penalty_weight"] = min(0.40, weights["risk_penalty_weight"] + 0.03)
+        weights["goal_impact_weight"] = max(0.20, weights["goal_impact_weight"] - 0.02)
         normalized = _normalize_weight_vector(weights)
         weights.update(normalized)
 
@@ -664,6 +795,36 @@ def run_calibration(
 
     if market_state.risk_environment == "high":
         notes.append("risk_environment=high tightened drawdown threshold")
+    if market_state.manual_review_required:
+        notes.append("policy_news manual review required")
+        notes.append("policy_signal manual_review_required=true")
+    if market_state.policy_signal_confidence >= 0.6:
+        notes.append(
+            "policy_signal "
+            f"macro_uncertainty={market_state.macro_uncertainty or 'unknown'} "
+            f"manual_review_required={'true' if market_state.manual_review_required else 'false'}"
+        )
+        notes.append(
+            "policy_signal "
+            f"policy_regime={market_state.policy_regime or 'unclear'} "
+            f"macro_uncertainty={market_state.macro_uncertainty or 'unknown'} "
+            f"sentiment_stress={market_state.sentiment_stress or 'unknown'} "
+            f"liquidity_stress={market_state.liquidity_stress or 'unknown'} "
+            f"confidence={market_state.policy_signal_confidence:.2f}"
+        )
+        notes.append(
+            "policy_signal_absorption "
+            f"runtime_soft_threshold={runtime_optimizer_params.deviation_soft_threshold:.4f} "
+            f"new_cash_use_pct={runtime_optimizer_params.new_cash_use_pct:.4f} "
+            f"risk_penalty_weight={ev_params.risk_penalty_weight:.4f}"
+        )
+    if market_assumptions.historical_backtest_used:
+        notes.append(
+            "historical_dataset "
+            f"source={market_assumptions.source_name or 'unknown'} "
+            f"version={market_assumptions.dataset_version or 'unknown'} "
+            f"lookback_months={market_assumptions.lookback_months or 0}"
+        )
 
     reason = _derive_updated_reason(
         calibration_quality,

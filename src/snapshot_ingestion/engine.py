@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from snapshot_ingestion.types import CompletenessLevel, QualityFlag, SnapshotBundle
+from snapshot_ingestion.historical import build_historical_dataset_snapshot
+from snapshot_ingestion.types import CompletenessLevel, PolicyNewsSignal, QualityFlag, SnapshotBundle
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -129,6 +130,30 @@ def validate_behavior_snapshot(snap: dict[str, Any]) -> list[QualityFlag]:
     return flags
 
 
+def validate_policy_news_signals(signals: list[PolicyNewsSignal]) -> list[QualityFlag]:
+    flags: list[QualityFlag] = []
+    for signal in signals:
+        if not signal.source_refs:
+            flags.append(
+                _quality_flag(
+                    "POLICY_SIGNAL_SOURCE_REFS_MISSING",
+                    "warn",
+                    "market",
+                    f"policy/news signal {signal.signal_id} missing source_refs",
+                )
+            )
+        if not 0.0 <= float(signal.confidence) <= 1.0:
+            flags.append(
+                _quality_flag(
+                    "POLICY_SIGNAL_CONFIDENCE_INVALID",
+                    "warn",
+                    "market",
+                    f"policy/news signal {signal.signal_id} confidence out of range",
+                )
+            )
+    return flags
+
+
 def validate_bundle(bundle: SnapshotBundle) -> list[QualityFlag]:
     flags: list[QualityFlag] = []
     constraint_buckets = set((bundle.constraint or {}).get("ips_bucket_boundaries", {}).keys())
@@ -178,6 +203,7 @@ def validate_bundle(bundle: SnapshotBundle) -> list[QualityFlag]:
                 "behavior domain missing while cooling period is configured",
             )
         )
+    flags.extend(validate_policy_news_signals(bundle.policy_news_signals))
     return flags
 
 
@@ -207,6 +233,8 @@ def build_snapshot_bundle(
     constraint_raw: dict,
     behavior_raw: dict | None,
     remaining_horizon_months: int,
+    policy_news_signals: list[dict[str, Any]] | list[PolicyNewsSignal] | None = None,
+    historical_dataset_metadata: dict[str, Any] | None = None,
     schema_version: str = "v1.0",
 ) -> SnapshotBundle:
     created_at = _as_utc(as_of)
@@ -215,6 +243,35 @@ def build_snapshot_bundle(
     goal = dict(goal_raw or {})
     constraint = dict(constraint_raw or {})
     behavior = None if behavior_raw is None else dict(behavior_raw)
+    signal_payloads = policy_news_signals
+    if signal_payloads is None:
+        signal_payloads = list(market.get("policy_news_signals") or [])
+    rendered_signals: list[PolicyNewsSignal] = []
+    for signal in signal_payloads or []:
+        if isinstance(signal, PolicyNewsSignal):
+            rendered_signals.append(signal)
+            continue
+        signal_data = dict(signal or {})
+        rendered_signals.append(
+            PolicyNewsSignal(
+                signal_id=str(signal_data.get("signal_id") or signal_data.get("id") or "policy_signal"),
+                as_of=str(signal_data.get("as_of") or created_at.isoformat().replace("+00:00", "Z")),
+                source_type=str(signal_data.get("source_type") or "analysis"),
+                source_refs=[str(item) for item in list(signal_data.get("source_refs") or []) if str(item).strip()],
+                policy_regime=signal_data.get("policy_regime"),
+                macro_uncertainty=signal_data.get("macro_uncertainty"),
+                sentiment_stress=signal_data.get("sentiment_stress"),
+                liquidity_stress=signal_data.get("liquidity_stress"),
+                manual_review_required=bool(signal_data.get("manual_review_required", False)),
+                confidence=float(signal_data.get("confidence", 0.0) or 0.0),
+                notes=[str(item) for item in list(signal_data.get("notes") or []) if str(item).strip()],
+            )
+        )
+    historical_seed = dict(historical_dataset_metadata or market.get("historical_dataset") or {})
+    historical_dataset = build_historical_dataset_snapshot(historical_seed)
+    historical_dataset_metadata = historical_dataset.to_dict() if historical_dataset is not None else {}
+    if historical_dataset is not None:
+        market["historical_dataset"] = historical_dataset_metadata
 
     account.setdefault("remaining_horizon_months", remaining_horizon_months)
     goal.setdefault("horizon_months", remaining_horizon_months)
@@ -259,6 +316,8 @@ def build_snapshot_bundle(
         bundle_quality=CompletenessLevel.FULL,
         missing_domains=missing_domains,
         quality_summary=[],
+        policy_news_signals=rendered_signals,
+        historical_dataset_metadata=historical_dataset_metadata,
         schema_version=schema_version,
     )
 

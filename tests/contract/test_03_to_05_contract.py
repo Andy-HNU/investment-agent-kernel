@@ -273,7 +273,10 @@ def test_run_calibration_degraded_market_reuses_prior_market_assumptions(
     result = run_calibration(bundle, prior_calibration=calibration_result_base)
 
     assert result.calibration_quality == "degraded"
-    assert result.market_assumptions.to_dict() == calibration_result_base["market_assumptions"]
+    assert result.market_assumptions.expected_returns == calibration_result_base["market_assumptions"]["expected_returns"]
+    assert result.market_assumptions.volatility == calibration_result_base["market_assumptions"]["volatility"]
+    assert result.market_assumptions.correlation_matrix == calibration_result_base["market_assumptions"]["correlation_matrix"]
+    assert result.market_assumptions.historical_backtest_used is False
     assert any("market assumptions reused from prior" in note for note in result.notes)
     assert result.param_version_meta["updated_reason"] == "degraded_replay"
     assert result.param_version_meta["is_temporary"] is True
@@ -385,3 +388,120 @@ def test_run_calibration_replay_promotes_temporary_prior_to_replayable_full(
     assert replay_result.param_version_meta["can_be_replayed"] is True
     assert replay_result.param_version_meta["version_id"] != temporary_result.param_version_meta["version_id"]
     assert replay_result.market_assumptions.volatility["equity_cn"] == 0.12
+
+
+@pytest.mark.contract
+def test_build_snapshot_bundle_preserves_policy_news_signals_and_historical_dataset_metadata(
+    goal_solver_input_base,
+    live_portfolio_base,
+    calibration_result_base,
+):
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw=_market_raw(goal_solver_input_base),
+        account_raw=_account_raw(goal_solver_input_base, live_portfolio_base),
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=calibration_result_base["behavior_state"],
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+        policy_news_signals=[
+            {
+                "signal_id": "signal-1",
+                "as_of": "2026-03-29T10:00:00Z",
+                "source_type": "policy",
+                "source_refs": ["https://example.com/policy"],
+                "macro_uncertainty": "high",
+                "manual_review_required": True,
+                "confidence": 0.88,
+            }
+        ],
+        historical_dataset_metadata={
+            "source_name": "frozen_fixture",
+            "as_of": "2026-03-29",
+            "lookback_months": 24,
+            "return_series": {
+                "equity_cn": [0.01, 0.02, -0.01],
+                "bond_cn": [0.002, 0.003, 0.001],
+            },
+        },
+    )
+
+    assert bundle.policy_news_signals[0].signal_id == "signal-1"
+    assert bundle.policy_news_signals[0].manual_review_required is True
+    assert bundle.historical_dataset_metadata["source_name"] == "frozen_fixture"
+
+
+@pytest.mark.contract
+def test_run_calibration_uses_historical_dataset_metadata_for_market_assumptions(
+    goal_solver_input_base,
+    live_portfolio_base,
+    calibration_result_base,
+):
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw=_market_raw(goal_solver_input_base),
+        account_raw=_account_raw(goal_solver_input_base, live_portfolio_base),
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=calibration_result_base["behavior_state"],
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+        historical_dataset_metadata={
+            "source_name": "fixture_history",
+            "as_of": "2026-03-29",
+            "lookback_months": 36,
+            "version_id": "fixture_history:2026-03-29:v1",
+            "return_series": {
+                "equity_cn": [0.01, 0.02, -0.01, 0.03],
+                "bond_cn": [0.002, 0.004, 0.001, 0.003],
+                "gold": [0.006, -0.002, 0.004, 0.003],
+                "satellite": [0.015, 0.025, -0.02, 0.03],
+            },
+        },
+    )
+
+    result = run_calibration(bundle, prior_calibration=None)
+
+    assert result.market_assumptions.source_name == "fixture_history"
+    assert result.market_assumptions.dataset_version == "fixture_history:2026-03-29:v1"
+    assert result.market_assumptions.lookback_months == 36
+    assert result.market_assumptions.historical_backtest_used is True
+    assert result.goal_solver_params.market_assumptions.dataset_version == "fixture_history:2026-03-29:v1"
+
+
+@pytest.mark.contract
+def test_run_calibration_policy_news_signal_surfaces_manual_review_and_market_notes(
+    goal_solver_input_base,
+    live_portfolio_base,
+    calibration_result_base,
+):
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw=_market_raw(goal_solver_input_base),
+        account_raw=_account_raw(goal_solver_input_base, live_portfolio_base),
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=calibration_result_base["behavior_state"],
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+        policy_news_signals=[
+            {
+                "signal_id": "signal-high-uncertainty",
+                "as_of": "2026-03-29T10:00:00Z",
+                "source_type": "analysis",
+                "source_refs": ["memo://macro"],
+                "macro_uncertainty": "high",
+                "liquidity_stress": "high",
+                "manual_review_required": True,
+                "confidence": 0.91,
+            }
+        ],
+    )
+
+    result = run_calibration(bundle, prior_calibration=None)
+
+    assert "policy_signal_manual_review_required" in result.market_state.quality_flags
+    assert result.constraint_state.soft_preferences["policy_manual_review_required"] is True
+    assert any("policy_signal manual_review_required=true" in note for note in result.notes)
+    assert any("macro_uncertainty=high" in note for note in result.notes)

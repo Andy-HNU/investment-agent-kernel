@@ -5,12 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from frontdesk.adapter import FrontdeskExternalSnapshotAdapter
-from snapshot_ingestion.adapters import (
-    ExternalSnapshotAdapterError,
-    FetchedSnapshotPayload,
-    HttpJsonSnapshotAdapterConfig,
-    fetch_http_json_snapshot,
-)
+from snapshot_ingestion.adapters import ExternalSnapshotAdapterError, FetchedSnapshotPayload
+from snapshot_ingestion.providers import fetch_snapshot_from_provider_config
 
 _EXTERNAL_FALLBACK_LABEL = "外部抓取降级"
 _EXTERNAL_FALLBACK_FIELD = "external_snapshot.fetch"
@@ -25,12 +21,8 @@ def fetch_external_snapshot(
 ) -> FetchedSnapshotPayload | None:
     if not config:
         return None
-    adapter_name = str(config.get("adapter") or "http_json").strip().lower()
-    if adapter_name != "http_json":
-        raise ValueError(f"unsupported external data adapter: {adapter_name}")
-    adapter_config = HttpJsonSnapshotAdapterConfig.from_mapping(config)
-    return fetch_http_json_snapshot(
-        adapter_config,
+    return fetch_snapshot_from_provider_config(
+        config,
         workflow_type=workflow_type,
         account_profile_id=account_profile_id,
         as_of=as_of,
