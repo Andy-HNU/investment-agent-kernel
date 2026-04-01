@@ -114,8 +114,15 @@ def test_goal_solver_output_filters_add_defense_to_event_drawdown_path(
     ev_params_base,
     runtime_optimizer_params_base,
 ):
+    goal_solver_output = deepcopy(goal_solver_output_base)
+    allocation_weights = {"equity_cn": 0.45, "bond_cn": 0.32, "gold": 0.10, "satellite": 0.13}
+    goal_solver_output["recommended_allocation"] = dict(goal_solver_output["recommended_allocation"])
+    goal_solver_output["recommended_result"] = dict(goal_solver_output["recommended_result"])
+    goal_solver_output["recommended_allocation"]["weights"] = dict(allocation_weights)
+    goal_solver_output["recommended_result"]["weights"] = dict(allocation_weights)
+
     ev_state = build_ev_state(
-        solver_output=goal_solver_output_base,
+        solver_output=goal_solver_output,
         solver_baseline_inp=goal_solver_input_base,
         live_portfolio=live_portfolio_base,
         market_state=market_state_base,
@@ -142,3 +149,46 @@ def test_goal_solver_output_filters_add_defense_to_event_drawdown_path(
 
     assert ActionType.ADD_DEFENSE not in quarterly_types
     assert ActionType.ADD_DEFENSE in event_types
+
+
+@pytest.mark.smoke
+def test_goal_solver_output_event_drawdown_add_defense_selects_dynamic_defense_bucket(
+    goal_solver_input_base,
+    goal_solver_output_base,
+    live_portfolio_base,
+    market_state_base,
+    constraint_state_base,
+    behavior_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+):
+    goal_solver_output = deepcopy(goal_solver_output_base)
+    live_portfolio = deepcopy(live_portfolio_base)
+
+    allocation_weights = {"equity_cn": 0.45, "bond_cn": 0.32, "gold": 0.10, "satellite": 0.13}
+    goal_solver_output["recommended_allocation"] = dict(goal_solver_output["recommended_allocation"])
+    goal_solver_output["recommended_result"] = dict(goal_solver_output["recommended_result"])
+    goal_solver_output["recommended_allocation"]["weights"] = dict(allocation_weights)
+    goal_solver_output["recommended_result"]["weights"] = dict(allocation_weights)
+    live_portfolio["available_cash"] = 30_000.0
+
+    ev_state = build_ev_state(
+        solver_output=goal_solver_output,
+        solver_baseline_inp=goal_solver_input_base,
+        live_portfolio=live_portfolio,
+        market_state=market_state_base,
+        behavior_state=behavior_state_base,
+        constraint_state=constraint_state_base,
+        ev_params=ev_params_base,
+    )
+
+    candidates = generate_candidates(
+        state=ev_state,
+        params=runtime_optimizer_params_base,
+        mode=RuntimeOptimizerMode.EVENT,
+        drawdown_event=True,
+    )
+    add_defense = next(candidate for candidate in candidates if candidate.type == ActionType.ADD_DEFENSE)
+
+    assert add_defense.target_bucket == "gold"
+    assert add_defense.to_bucket == "gold"

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
 import runtime_optimizer.engine as runtime_optimizer_engine
-from runtime_optimizer.candidates import Action, ActionType
+from runtime_optimizer.candidates import Action, ActionType, generate_candidates
 from runtime_optimizer.engine import run_runtime_optimizer
 from runtime_optimizer.ev_engine.types import EVComponentScore, EVReport, EVResult
+from runtime_optimizer.state_builder import build_ev_state
 from runtime_optimizer.types import RuntimeOptimizerMode
 
 
@@ -71,6 +74,48 @@ def _report(
         goal_solver_after_recommended=0.51,
         params_version="ev_params_v1",
     )
+
+
+def _event_drawdown_add_defense_candidate(
+    *,
+    goal_solver_output_base,
+    goal_solver_input_base,
+    live_portfolio_base,
+    market_state_base,
+    behavior_state_base,
+    constraint_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+    allocation_weights: dict[str, float],
+    available_cash: float,
+):
+    goal_solver_output = deepcopy(goal_solver_output_base)
+    live_portfolio = deepcopy(live_portfolio_base)
+
+    goal_solver_output["recommended_allocation"] = dict(goal_solver_output["recommended_allocation"])
+    goal_solver_output["recommended_result"] = dict(goal_solver_output["recommended_result"])
+    goal_solver_output["recommended_allocation"]["weights"] = dict(allocation_weights)
+    goal_solver_output["recommended_result"]["weights"] = dict(allocation_weights)
+    live_portfolio["available_cash"] = available_cash
+
+    ev_state = build_ev_state(
+        solver_output=goal_solver_output,
+        solver_baseline_inp=goal_solver_input_base,
+        live_portfolio=live_portfolio,
+        market_state=market_state_base,
+        behavior_state=behavior_state_base,
+        constraint_state=constraint_state_base,
+        ev_params=ev_params_base,
+    )
+
+    candidates = generate_candidates(
+        state=ev_state,
+        params=runtime_optimizer_params_base,
+        mode=RuntimeOptimizerMode.EVENT,
+        drawdown_event=True,
+    )
+
+    return next(candidate for candidate in candidates if candidate.type == ActionType.ADD_DEFENSE)
 
 
 @pytest.mark.contract
@@ -205,3 +250,65 @@ def test_run_runtime_optimizer_quarterly_drawdown_path_filters_add_defense_and_k
     assert result.ev_report.recommended_action is not None
     assert result.ev_report.recommended_action.type == ActionType.OBSERVE
     assert result.ev_report.confidence_reason == "候选通过过滤数量过少，已降级为安全动作优先"
+
+
+@pytest.mark.contract
+def test_drawdown_event_add_defense_clips_amount_pct_to_target_deficit(
+    goal_solver_output_base,
+    goal_solver_input_base,
+    live_portfolio_base,
+    market_state_base,
+    behavior_state_base,
+    constraint_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+):
+    add_defense = _event_drawdown_add_defense_candidate(
+        goal_solver_output_base=goal_solver_output_base,
+        goal_solver_input_base=goal_solver_input_base,
+        live_portfolio_base=live_portfolio_base,
+        market_state_base=market_state_base,
+        behavior_state_base=behavior_state_base,
+        constraint_state_base=constraint_state_base,
+        ev_params_base=ev_params_base,
+        runtime_optimizer_params_base=runtime_optimizer_params_base,
+        allocation_weights={"equity_cn": 0.49, "bond_cn": 0.33, "gold": 0.04, "satellite": 0.14},
+        available_cash=30_000.0,
+    )
+
+    assert add_defense.target_bucket == "bond_cn"
+    assert add_defense.amount_pct == pytest.approx(0.03)
+    assert add_defense.cash_source == "new_cash"
+    assert add_defense.requires_sell is False
+
+
+@pytest.mark.contract
+def test_drawdown_event_add_defense_falls_back_to_sell_rebalance_when_cash_is_insufficient(
+    goal_solver_output_base,
+    goal_solver_input_base,
+    live_portfolio_base,
+    market_state_base,
+    behavior_state_base,
+    constraint_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+):
+    add_defense = _event_drawdown_add_defense_candidate(
+        goal_solver_output_base=goal_solver_output_base,
+        goal_solver_input_base=goal_solver_input_base,
+        live_portfolio_base=live_portfolio_base,
+        market_state_base=market_state_base,
+        behavior_state_base=behavior_state_base,
+        constraint_state_base=constraint_state_base,
+        ev_params_base=ev_params_base,
+        runtime_optimizer_params_base=runtime_optimizer_params_base,
+        allocation_weights={"equity_cn": 0.42, "bond_cn": 0.36, "gold": 0.04, "satellite": 0.18},
+        available_cash=5_000.0,
+    )
+
+    assert add_defense.target_bucket == "bond_cn"
+    assert add_defense.amount_pct == pytest.approx(0.05)
+    assert add_defense.cash_source == "sell_rebalance"
+    assert add_defense.requires_sell is True
+    assert add_defense.from_bucket == "equity_cn"
+    assert constraint_state_base["bucket_category"][add_defense.from_bucket] != "defense"

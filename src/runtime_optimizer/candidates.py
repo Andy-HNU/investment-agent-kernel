@@ -58,6 +58,7 @@ def _as_dict(value: Any) -> dict[str, Any]:
 def _build_action(
     action_type: ActionType,
     target_bucket: str | None = None,
+    amount: float | None = None,
     amount_pct: float = 0.0,
     from_bucket: str | None = None,
     to_bucket: str | None = None,
@@ -72,7 +73,7 @@ def _build_action(
     return Action(
         type=action_type,
         target_bucket=target_bucket,
-        amount=None,
+        amount=amount,
         amount_pct=_clamp(amount_pct, 0.0, 1.0),
         from_bucket=from_bucket,
         to_bucket=to_bucket,
@@ -94,6 +95,48 @@ def _get_bucket_deviation(state: dict[str, Any]) -> dict[str, float]:
     return {bucket: current.get(bucket, 0.0) - target.get(bucket, 0.0) for bucket in buckets}
 
 
+def _select_defense_target_bucket(
+    deviation: dict[str, float],
+    constraints: dict[str, Any],
+    market: dict[str, Any],
+) -> str | None:
+    bucket_category = constraints.get("bucket_category", {}) or {}
+    liquidity_flag = market.get("liquidity_flag", {}) or {}
+    transaction_fee_rate = constraints.get("transaction_fee_rate", {}) or {}
+    defense_buckets = [
+        bucket for bucket, category in bucket_category.items() if category == "defense"
+    ]
+    if not defense_buckets:
+        return None
+    defense_buckets.sort(
+        key=lambda bucket: (
+            deviation.get(bucket, 0.0),
+            1 if liquidity_flag.get(bucket, False) else 0,
+            float(transaction_fee_rate.get(bucket, 0.0) or 0.0),
+            bucket,
+        )
+    )
+    return defense_buckets[0]
+
+
+def _find_most_overweight_bucket(
+    deviation: dict[str, float],
+    constraints: dict[str, Any],
+    *,
+    exclude_category: str | None = None,
+) -> str | None:
+    bucket_category = constraints.get("bucket_category", {}) or {}
+    eligible = [
+        bucket
+        for bucket, value in deviation.items()
+        if value > 0 and (exclude_category is None or bucket_category.get(bucket) != exclude_category)
+    ]
+    if not eligible:
+        return None
+    eligible.sort(key=lambda bucket: (-deviation.get(bucket, 0.0), bucket))
+    return eligible[0]
+
+
 def generate_candidates(
     state: Any,
     params: Any,
@@ -106,6 +149,7 @@ def generate_candidates(
     state_dict = _as_dict(state)
     params_dict = _as_dict(params)
     account = state_dict.get("account", {})
+    market = state_dict.get("market", {})
     constraints = state_dict.get("constraints", {})
     behavior = state_dict.get("behavior", {})
     current_weights = account.get("current_weights", {})
@@ -195,21 +239,52 @@ def generate_candidates(
         )
 
     if drawdown_event and mode == RuntimeOptimizerMode.EVENT:
-        candidates.append(
-            _build_action(
-                ActionType.ADD_DEFENSE,
-                target_bucket="bond_cn",
-                amount_pct=float(params_dict.get("defense_add_pct", 0.05)),
-                from_bucket=None,
-                to_bucket="bond_cn",
-                cash_source="new_cash",
-                requires_sell=False,
-                expected_turnover=0.05,
-                policy_tag="risk_reduce",
-                rationale="增加防御仓位",
-                facts=["defensive_bias"],
+        target_bucket = _select_defense_target_bucket(deviation, constraints, market)
+        if target_bucket is not None:
+            bucket_deficit = max(0.0, -deviation.get(target_bucket, 0.0))
+            amount_pct = _clamp(
+                min(float(params_dict.get("defense_add_pct", 0.05)), bucket_deficit),
+                0.0,
+                1.0,
             )
-        )
+            if amount_pct > 0.0:
+                defense_amount = amount_pct * float(account.get("total_portfolio_value", 0.0) or 0.0)
+                available_cash = float(account.get("available_cash", 0.0) or 0.0)
+                from_bucket = None
+                cash_source = "new_cash"
+                requires_sell = False
+                if available_cash < defense_amount:
+                    from_bucket = _find_most_overweight_bucket(
+                        deviation,
+                        constraints,
+                        exclude_category="defense",
+                    )
+                    if from_bucket is not None:
+                        cash_source = "sell_rebalance"
+                        requires_sell = True
+                    else:
+                        amount_pct = 0.0
+                if amount_pct > 0.0:
+                    candidates.append(
+                        _build_action(
+                            ActionType.ADD_DEFENSE,
+                            target_bucket=target_bucket,
+                            amount=defense_amount,
+                            amount_pct=amount_pct,
+                            from_bucket=from_bucket,
+                            to_bucket=target_bucket,
+                            cash_source=cash_source,
+                            requires_sell=requires_sell,
+                            expected_turnover=amount_pct,
+                            policy_tag="risk_reduce",
+                            rationale=f"回撤触发防御补仓：{target_bucket}",
+                            facts=[
+                                "defensive_bias",
+                                f"target_bucket={target_bucket}",
+                                f"bucket_deficit={bucket_deficit:.4f}",
+                            ],
+                        )
+                    )
 
     if behavior_cooldown:
         for item in candidates:
