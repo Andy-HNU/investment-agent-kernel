@@ -98,7 +98,7 @@ def test_structural_event_soft_deviation_allows_rebalance_full_in_event_mode(
 
 
 @pytest.mark.contract
-def test_monthly_generation_keeps_safe_actions_but_does_not_add_defense(
+def test_monthly_generation_does_not_inject_observe_without_behavior_trigger(
     goal_solver_output_base,
     goal_solver_input_base,
     live_portfolio_base,
@@ -126,9 +126,44 @@ def test_monthly_generation_keeps_safe_actions_but_does_not_add_defense(
     action_types = {candidate.type for candidate in candidates}
 
     assert ActionType.FREEZE in action_types
-    assert ActionType.OBSERVE in action_types
+    assert ActionType.OBSERVE not in action_types
     assert ActionType.ADD_DEFENSE not in action_types
     assert len(action_types) >= 2
+
+
+@pytest.mark.contract
+def test_monthly_generation_backfills_observe_when_freeze_is_only_candidate(
+    goal_solver_output_base,
+    goal_solver_input_base,
+    live_portfolio_base,
+    market_state_base,
+    behavior_state_base,
+    constraint_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+):
+    live_portfolio = deepcopy(live_portfolio_base)
+    live_portfolio["weights"] = dict(goal_solver_output_base["recommended_allocation"]["weights"])
+    live_portfolio["available_cash"] = 0.0
+
+    ev_state = build_ev_state(
+        solver_output=goal_solver_output_base,
+        solver_baseline_inp=goal_solver_input_base,
+        live_portfolio=live_portfolio,
+        market_state=market_state_base,
+        behavior_state=behavior_state_base,
+        constraint_state=constraint_state_base,
+        ev_params=ev_params_base,
+    )
+
+    candidates = generate_candidates(
+        state=ev_state,
+        params=runtime_optimizer_params_base,
+        mode=RuntimeOptimizerMode.MONTHLY,
+    )
+    action_types = [candidate.type for candidate in candidates]
+
+    assert action_types[:2] == [ActionType.FREEZE, ActionType.OBSERVE]
 
 
 @pytest.mark.contract
@@ -326,4 +361,4 @@ def test_drawdown_event_forces_add_defense(
 
     assert ActionType.FREEZE in action_types
     assert ActionType.ADD_DEFENSE in action_types
-    assert ActionType.OBSERVE in action_types
+    assert ActionType.OBSERVE not in action_types

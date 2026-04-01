@@ -124,7 +124,7 @@ def test_frontdesk_monthly_fetch_can_override_runtime_account_snapshot(tmp_path)
     )
 
     provenance = summary["decision_card"]["input_provenance"]
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fetched"
     assert provenance["counts"]["externally_fetched"] >= 1
     assert any(

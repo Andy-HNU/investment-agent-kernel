@@ -165,13 +165,7 @@ def _current_weights(profile: UserOnboardingProfile) -> dict[str, float]:
 def _effective_explicit_current_weights(profile: UserOnboardingProfile) -> dict[str, float] | None:
     if profile.current_weights is None:
         return None
-    notes = [str(item) for item in profile.profile_parse_notes]
-    current_holdings = str(profile.current_holdings or "").strip().lower()
-    if any("显式提供 current_weights" in item for item in notes):
-        return dict(profile.current_weights)
-    if current_holdings.startswith("externally_fetched_"):
-        return dict(profile.current_weights)
-    return None
+    return dict(profile.current_weights)
 
 
 def build_user_onboarding_inputs(

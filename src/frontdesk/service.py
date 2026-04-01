@@ -544,6 +544,16 @@ def _merge_profile_override(
     account_profile_id: str,
 ) -> dict[str, Any]:
     merged = deepcopy(base_profile)
+    holdings_changed = (
+        "current_holdings" in override_profile
+        and override_profile.get("current_holdings") is not None
+        and override_profile.get("current_holdings") != base_profile.get("current_holdings")
+    )
+    weights_explicitly_provided = (
+        "current_weights" in override_profile and override_profile.get("current_weights") is not None
+    )
+    if holdings_changed and not weights_explicitly_provided:
+        merged["current_weights"] = None
     for key, value in override_profile.items():
         if value is not None:
             merged[key] = deepcopy(value)
@@ -575,13 +585,7 @@ def _effective_explicit_current_weights(profile: dict[str, Any]) -> dict[str, fl
     explicit_weights = profile.get("current_weights")
     if not isinstance(explicit_weights, dict):
         return None
-    notes = [str(item) for item in (profile.get("profile_parse_notes") or [])]
-    current_holdings = str(profile.get("current_holdings", "") or "").strip().lower()
-    if any("显式提供 current_weights" in item for item in notes):
-        return dict(explicit_weights)
-    if current_holdings.startswith("externally_fetched_"):
-        return dict(explicit_weights)
-    return None
+    return dict(explicit_weights)
 
 
 def _normalize_profile_payload(profile: dict[str, Any]) -> dict[str, Any]:

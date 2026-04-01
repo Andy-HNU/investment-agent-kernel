@@ -204,8 +204,9 @@ def generate_candidates(
     candidates: list[Action] = []
 
     candidates.append(_build_action(ActionType.FREEZE, policy_tag="observe", rationale="维持现状"))
-    candidates.append(_build_action(ActionType.OBSERVE, policy_tag="observe", rationale="观察并复核"))
     behavior_cooldown = behavior_event or behavior.get("high_emotion_flag") or behavior.get("panic_flag")
+    if behavior_cooldown:
+        candidates.append(_build_action(ActionType.OBSERVE, policy_tag="observe", rationale="观察并复核"))
 
     available_cash = float(account.get("available_cash", 0.0))
     min_cash = float(params_dict.get("min_cash_for_action", 0.0))
@@ -369,4 +370,11 @@ def generate_candidates(
             continue
         seen.add(key)
         unique.append(item)
-    return unique[: max(2, int(params_dict.get("max_candidates", len(unique) or 2)))]
+    min_candidates = max(1, int(params_dict.get("min_candidates", 2) or 2))
+    max_candidates = max(min_candidates, int(params_dict.get("max_candidates", len(unique) or min_candidates)))
+    unique = unique[:max_candidates]
+    if len(unique) < min_candidates and not any(item.type == ActionType.FREEZE for item in unique):
+        unique.insert(0, _build_action(ActionType.FREEZE, policy_tag="observe", rationale="维持现状"))
+    if len(unique) < min_candidates and not any(item.type == ActionType.OBSERVE for item in unique):
+        unique.append(_build_action(ActionType.OBSERVE, policy_tag="observe", rationale="观察并复核"))
+    return unique[:max_candidates]
