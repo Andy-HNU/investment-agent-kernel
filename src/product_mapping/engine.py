@@ -11,6 +11,7 @@ from product_mapping.types import ExecutionPlan, ExecutionPlanItem, ProductCandi
 
 _BUCKET_ALIASES = {
     "cash": "cash_liquidity",
+    "cash / liquidity": "cash_liquidity",
     "cash/liquidity": "cash_liquidity",
     "cash_liquidity": "cash_liquidity",
     "liquidity": "cash_liquidity",

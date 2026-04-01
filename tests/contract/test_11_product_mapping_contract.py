@@ -50,6 +50,20 @@ def test_build_execution_plan_returns_typed_items_and_surfaces_alternates():
 
 
 @pytest.mark.contract
+def test_build_execution_plan_normalizes_documented_cash_liquidity_bucket_alias():
+    plan = build_execution_plan(
+        source_run_id="run_cash_liquidity_alias",
+        source_allocation_id="allocation_alias",
+        bucket_targets={"cash / liquidity": 0.10},
+        restrictions=[],
+    )
+
+    assert [item.asset_bucket for item in plan.items] == ["cash_liquidity"]
+    assert plan.items[0].primary_product.asset_bucket == "cash_liquidity"
+    assert all("当前没有可用产品候选" not in warning for warning in plan.warnings)
+
+
+@pytest.mark.contract
 def test_build_execution_plan_respects_do_not_touch_stocks_restriction():
     plan = build_execution_plan(
         source_run_id="run_no_stock",
