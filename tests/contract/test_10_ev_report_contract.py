@@ -423,6 +423,51 @@ def test_run_ev_engine_feasibility_reports_qdii_and_cash_fail_reasons(
 
 
 @pytest.mark.contract
+def test_run_ev_engine_feasibility_blocks_constraint_forbidden_actions(
+    market_state_base,
+    constraint_state_base,
+    behavior_state_base,
+    ev_params_base,
+    goal_solver_input_base,
+    goal_solver_output_base,
+    live_portfolio_base,
+):
+    constraint_state = deepcopy(constraint_state_base)
+    constraint_state["forbidden_actions"] = ["rebalance_full"]
+
+    state = _ev_state(
+        market_state_base,
+        constraint_state,
+        behavior_state_base,
+        ev_params_base,
+        goal_solver_input_base,
+        goal_solver_output_base,
+        live_portfolio_base,
+    )
+    actions = [
+        _action(
+            ActionType.REBALANCE_FULL,
+            amount=5000.0,
+            amount_pct=0.08,
+            from_bucket="bond_cn",
+            to_bucket="equity_cn",
+            cash_source="sell_rebalance",
+            requires_sell=True,
+            expected_turnover=0.08,
+        ),
+        _action(ActionType.FREEZE, amount=0.0, amount_pct=0.0),
+    ]
+
+    report = run_ev_engine(state=state, candidate_actions=actions, trigger_type="monthly")
+
+    assert len(report.eliminated_actions) == 1
+    assert report.eliminated_actions[0][0].type == ActionType.REBALANCE_FULL
+    assert any("约束层显式禁用" in reason for reason in report.eliminated_actions[0][1].fail_reasons)
+    assert report.recommended_action is not None
+    assert report.recommended_action.type == ActionType.FREEZE
+
+
+@pytest.mark.contract
 def test_score_action_uses_evparams_for_all_penalty_components(
     market_state_base,
     constraint_state_base,

@@ -145,6 +145,15 @@ def _validate_action(action: Action) -> None:
     assert 0.0 <= float(action.amount_pct) <= 1.0, "amount_pct 必须在 [0, 1]"
 
 
+def _normalized_forbidden_actions(constraints: dict[str, Any]) -> set[str]:
+    forbidden: set[str] = set()
+    for item in constraints.get("forbidden_actions", []) or []:
+        rendered = str(getattr(item, "value", item)).strip().lower()
+        if rendered:
+            forbidden.add(rendered)
+    return forbidden
+
+
 def _check_feasibility(action: Action, state: EVState | dict[str, Any]) -> FeasibilityResult:
     state_dict = _obj(state)
     account = _obj(state_dict["account"])
@@ -153,6 +162,9 @@ def _check_feasibility(action: Action, state: EVState | dict[str, Any]) -> Feasi
     reasons: list[str] = []
     if action.type in {ActionType.FREEZE, ActionType.OBSERVE}:
         return FeasibilityResult(True, [])
+    forbidden_actions = _normalized_forbidden_actions(constraints)
+    if action.type.value.lower() in forbidden_actions or action.type.name.lower() in forbidden_actions:
+        reasons.append(f"动作 {action.type.value} 被约束层显式禁用")
     cooldown_active = bool(
         constraints.get("cooldown_currently_active")
         or behavior.get("cooldown_active")

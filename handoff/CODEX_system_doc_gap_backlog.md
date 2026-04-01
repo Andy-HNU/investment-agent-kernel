@@ -250,6 +250,7 @@
 
 本轮收口：
 - calibrated cooldown state participates in feasibility filtering
+- constraint-layer `forbidden_actions` now hard-block EV candidates before scoring
 - low-confidence explanations now call out mixed safe/active candidate sets when spread is narrow
 - recommendation reasons now disclose penalty-led wins when raw goal impact is not the highest
 
