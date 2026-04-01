@@ -443,13 +443,28 @@ def _handle_no_feasible_allocation(
         )
         for result in all_results
     ]
-    best_result, best_allocation, _ = min(scored, key=lambda item: item[2])
+    best_result, best_allocation, best_score = min(scored, key=lambda item: item[2])
+    dominant_reasons = _summarize_infeasibility_reasons(all_results)
     notes = [
         "warning=no_feasible_allocation",
         f"fallback=closest_feasible_candidate allocation={best_allocation.name}",
+        f"fallback_pressure_score allocation={best_allocation.name} score={best_score:.4f}",
+        f"fallback_dominant_constraints reasons={dominant_reasons}",
         "action_required=reassess_goal_amount_or_horizon_or_drawdown_or_candidate_allocations",
     ]
     return best_allocation, best_result, notes
+
+
+def _summarize_infeasibility_reasons(all_results: list[SuccessProbabilityResult]) -> str:
+    reason_counts: dict[str, int] = {}
+    for result in all_results:
+        for reason in result.infeasibility_reasons:
+            reason_key = reason.split()[0]
+            reason_counts[reason_key] = reason_counts.get(reason_key, 0) + 1
+    if not reason_counts:
+        return "unknown"
+    ordered = sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
+    return ",".join(reason for reason, _count in ordered[:3])
 
 
 def _build_structure_budget(
@@ -504,6 +519,33 @@ def _resolve_ranking_mode(inp: GoalSolverInput, notes: list[str]) -> RankingMode
         "source=matrix"
     )
     return mode
+
+
+def _append_solver_context_notes(
+    notes: list[str],
+    inp: GoalSolverInput,
+    recommended_result: SuccessProbabilityResult,
+) -> None:
+    threshold_gap = max(inp.goal.success_prob_threshold - recommended_result.success_probability, 0.0)
+    notes.append(
+        "monte_carlo "
+        f"paths={inp.solver_params.n_paths} "
+        f"seed={inp.solver_params.seed} "
+        f"horizon_months={inp.goal.horizon_months}"
+    )
+    notes.append(
+        "success_threshold "
+        f"threshold={inp.goal.success_prob_threshold:.4f} "
+        f"recommended={recommended_result.success_probability:.4f} "
+        f"gap={threshold_gap:.4f} "
+        f"met={'true' if threshold_gap <= 1e-9 else 'false'}"
+    )
+    notes.append(
+        "recommended_feasibility "
+        f"allocation={recommended_result.allocation_name} "
+        f"is_feasible={'true' if recommended_result.is_feasible else 'false'} "
+        f"shortfall_probability={recommended_result.risk_summary.shortfall_probability:.4f}"
+    )
 
 
 def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
@@ -608,6 +650,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
 
     structure_budget = _build_structure_budget(best_allocation, inp.constraints)
     risk_budget = _build_risk_budget(best_result, inp.constraints)
+    _append_solver_context_notes(notes, inp, best_result)
     return GoalSolverOutput(
         input_snapshot_id=inp.snapshot_id,
         generated_at=_now_iso(),

@@ -150,6 +150,48 @@ def test_run_goal_solver_lightweight_uses_lightweight_path_count(goal_solver_inp
 
 
 @pytest.mark.contract
+def test_run_goal_solver_emits_context_and_threshold_gap_notes(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["goal"]["success_prob_threshold"] = 0.72
+    solver_input["solver_params"]["n_paths"] = 321
+    solver_input["solver_params"]["seed"] = 11
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "steady",
+            "weights": {"equity_cn": 0.55, "bond_cn": 0.30, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.12,
+            "description": "steady candidate",
+        }
+    ]
+
+    def _fake_run_monte_carlo(*_args, **_kwargs):
+        return (
+            0.64,
+            {"expected_terminal_value": 2_150_000.0},
+            RiskSummary(
+                max_drawdown_90pct=0.11,
+                terminal_value_tail_mean_95=1_600_000.0,
+                shortfall_probability=0.36,
+                terminal_shortfall_p5_vs_initial=0.07,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert any(note == "monte_carlo paths=321 seed=11 horizon_months=144" for note in result.solver_notes)
+    assert any(
+        note == "success_threshold threshold=0.7200 recommended=0.6400 gap=0.0800 met=false"
+        for note in result.solver_notes
+    )
+    assert any(
+        note == "warning=success_probability_below_threshold threshold=0.7200 recommended=0.6400"
+        for note in result.solver_notes
+    )
+
+
+@pytest.mark.contract
 def test_run_monte_carlo_respects_seed_and_path_count(goal_solver_input_base):
     normalized = goal_solver_engine._goal_solver_input_from_any(goal_solver_input_base)
     weights = normalized.candidate_allocations[0].weights

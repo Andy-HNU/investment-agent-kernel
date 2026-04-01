@@ -49,6 +49,13 @@
 - 更贴近正式文档的 Monte Carlo / infeasibility 细节
 - 更深的 `solver_notes` / 结果解释口径
 
+本轮收口：
+- Monte Carlo context notes（`paths / seed / horizon_months`）
+- success-threshold gap notes（`threshold / recommended / gap / met`）
+- recommended-feasibility note（推荐项可行性与 shortfall baseline）
+- no-feasible dominant-constraint summary
+- fallback pressure score note
+
 ### 03 snapshot_ingestion
 
 状态：`部分实现`

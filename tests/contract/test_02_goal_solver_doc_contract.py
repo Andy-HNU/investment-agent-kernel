@@ -164,6 +164,49 @@ def test_run_goal_solver_handles_no_feasible_allocation_with_solver_notes(
 
 
 @pytest.mark.contract
+def test_run_goal_solver_summarizes_no_feasible_pressure(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["constraints"]["max_drawdown_tolerance"] = 0.05
+    solver_input["constraints"]["liquidity_reserve_min"] = 0.40
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "too_risky_a",
+            "weights": {"equity_cn": 0.82, "bond_cn": 0.08, "gold": 0.05, "satellite": 0.05},
+            "complexity_score": 0.40,
+            "description": "violates drawdown and liquidity",
+        },
+        {
+            "name": "too_risky_b",
+            "weights": {"equity_cn": 0.70, "bond_cn": 0.15, "gold": 0.05, "satellite": 0.10},
+            "complexity_score": 0.30,
+            "description": "violates drawdown and liquidity less severely",
+        },
+    ]
+
+    def _fake_run_monte_carlo(weights, *_args, **_kwargs):
+        drawdown = 0.18 if weights["equity_cn"] > 0.75 else 0.12
+        probability = 0.61 if weights["equity_cn"] > 0.75 else 0.58
+        return (
+            probability,
+            {"expected_terminal_value": 2_300_000.0},
+            RiskSummary(
+                max_drawdown_90pct=drawdown,
+                terminal_value_tail_mean_95=1_700_000.0,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.10,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert any(note == "warning=no_feasible_allocation" for note in result.solver_notes)
+    assert any(note.startswith("fallback_dominant_constraints ") for note in result.solver_notes)
+    assert any(note.startswith("fallback_pressure_score allocation=too_risky_b") for note in result.solver_notes)
+
+
+@pytest.mark.contract
 def test_run_goal_solver_lightweight_uses_lightweight_paths_and_seed(
     goal_solver_input_base,
     monkeypatch,
