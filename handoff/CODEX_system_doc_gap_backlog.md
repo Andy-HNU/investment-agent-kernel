@@ -253,6 +253,7 @@
 - constraint-layer `forbidden_actions` now hard-block EV candidates before scoring
 - low-confidence explanations now call out mixed safe/active candidate sets when spread is narrow
 - recommendation reasons now disclose penalty-led wins when raw goal impact is not the highest
+- equal-score action ranking now follows the documented tie-break priority (`FREEZE > OBSERVE > ADD_CASH_TO_CORE > ... > ADD_DEFENSE`)
 
 ### 11 product_mapping / execution_planner
 

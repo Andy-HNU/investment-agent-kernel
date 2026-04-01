@@ -209,15 +209,15 @@ def _check_feasibility(action: Action, state: EVState | dict[str, Any]) -> Feasi
 
 def _action_priority(action_type: ActionType) -> int:
     priority = {
-        ActionType.ADD_DEFENSE: 0,
-        ActionType.ADD_CASH_TO_CORE: 1,
-        ActionType.ADD_CASH_TO_DEF: 2,
-        ActionType.REDUCE_SATELLITE: 3,
+        ActionType.FREEZE: 0,
+        ActionType.OBSERVE: 1,
+        ActionType.ADD_CASH_TO_CORE: 2,
+        ActionType.ADD_CASH_TO_DEF: 3,
         ActionType.REBALANCE_LIGHT: 4,
         ActionType.REBALANCE_FULL: 5,
-        ActionType.OBSERVE: 6,
-        ActionType.FREEZE: 7,
-        ActionType.ADD_CASH_TO_SAT: 8,
+        ActionType.REDUCE_SATELLITE: 6,
+        ActionType.ADD_CASH_TO_SAT: 7,
+        ActionType.ADD_DEFENSE: 8,
     }
     return priority.get(action_type, 99)
 

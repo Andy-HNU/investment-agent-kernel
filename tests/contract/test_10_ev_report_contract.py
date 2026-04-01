@@ -468,6 +468,57 @@ def test_run_ev_engine_feasibility_blocks_constraint_forbidden_actions(
 
 
 @pytest.mark.contract
+def test_run_ev_engine_uses_documented_action_priority_for_equal_scores(
+    market_state_base,
+    constraint_state_base,
+    behavior_state_base,
+    ev_params_base,
+    goal_solver_input_base,
+    goal_solver_output_base,
+    live_portfolio_base,
+    monkeypatch,
+):
+    state = _ev_state(
+        market_state_base,
+        constraint_state_base,
+        behavior_state_base,
+        ev_params_base,
+        goal_solver_input_base,
+        goal_solver_output_base,
+        live_portfolio_base,
+    )
+    actions = [
+        _action(ActionType.ADD_DEFENSE, target_bucket="bond_cn", amount=3000.0, amount_pct=0.05),
+        _action(ActionType.ADD_CASH_TO_CORE, target_bucket="equity_cn", amount=3000.0, amount_pct=0.05),
+        _action(ActionType.OBSERVE, amount=0.0, amount_pct=0.0),
+        _action(ActionType.FREEZE, amount=0.0, amount_pct=0.0),
+    ]
+    tied_score = EVComponentScore(0.01, 0.001, 0.0, 0.0, 0.0, 0.009)
+
+    monkeypatch.setattr(
+        ev_engine_module,
+        "_check_feasibility",
+        lambda action, _state: FeasibilityResult(True, []),
+    )
+    monkeypatch.setattr(
+        ev_engine_module,
+        "score_action",
+        lambda action, _state: tied_score,
+    )
+
+    report = run_ev_engine(state=state, candidate_actions=actions, trigger_type="monthly")
+
+    assert [item.action.type for item in report.ranked_actions] == [
+        ActionType.FREEZE,
+        ActionType.OBSERVE,
+        ActionType.ADD_CASH_TO_CORE,
+        ActionType.ADD_DEFENSE,
+    ]
+    assert report.recommended_action is not None
+    assert report.recommended_action.type == ActionType.FREEZE
+
+
+@pytest.mark.contract
 def test_score_action_uses_evparams_for_all_penalty_components(
     market_state_base,
     constraint_state_base,
