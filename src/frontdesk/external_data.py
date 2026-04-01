@@ -5,11 +5,70 @@ from pathlib import Path
 from typing import Any
 
 from frontdesk.adapter import FrontdeskExternalSnapshotAdapter
-from snapshot_ingestion.adapters import ExternalSnapshotAdapterError, FetchedSnapshotPayload
+from snapshot_ingestion.adapters import (
+    ExternalSnapshotAdapterError,
+    FetchedSnapshotPayload,
+    HttpJsonSnapshotAdapterConfig,
+    fetch_http_json_snapshot,
+)
+from snapshot_ingestion.adapters.file_json_adapter import (
+    FileJsonSnapshotAdapterConfig,
+    fetch_file_json_snapshot,
+)
 from snapshot_ingestion.providers import fetch_snapshot_from_provider_config
+from shared.providers.registry import registry
 
 _EXTERNAL_FALLBACK_LABEL = "外部抓取降级"
 _EXTERNAL_FALLBACK_FIELD = "external_snapshot.fetch"
+
+
+def _ensure_default_providers_registered() -> None:
+    # idempotent registration of built-in providers
+    if registry.get_external_snapshot("http_json") is None:
+        def _http_json_fetcher(config: dict[str, Any], *, workflow_type: str, account_profile_id: str, as_of: str):
+            adapter_config = HttpJsonSnapshotAdapterConfig.from_mapping(config)
+            return fetch_http_json_snapshot(
+                adapter_config,
+                workflow_type=workflow_type,
+                account_profile_id=account_profile_id,
+                as_of=as_of,
+            )
+
+        registry.register_external_snapshot("http_json", _http_json_fetcher)
+
+    if registry.get_external_snapshot("file_json") is None:
+        def _file_json_fetcher(config: dict[str, Any], *, workflow_type: str, account_profile_id: str, as_of: str):
+            adapter_config = FileJsonSnapshotAdapterConfig.from_mapping(config)
+            return fetch_file_json_snapshot(
+                adapter_config,
+                workflow_type=workflow_type,
+                account_profile_id=account_profile_id,
+                as_of=as_of,
+            )
+
+        registry.register_external_snapshot("file_json", _file_json_fetcher)
+
+    if registry.get_external_snapshot("inline_snapshot") is None:
+        def _inline_snapshot_fetcher(config: dict[str, Any], *, workflow_type: str, account_profile_id: str, as_of: str):
+            return fetch_snapshot_from_provider_config(
+                config,
+                workflow_type=workflow_type,
+                account_profile_id=account_profile_id,
+                as_of=as_of,
+            )
+
+        registry.register_external_snapshot("inline_snapshot", _inline_snapshot_fetcher)
+
+    if registry.get_external_snapshot("local_json") is None:
+        def _local_json_fetcher(config: dict[str, Any], *, workflow_type: str, account_profile_id: str, as_of: str):
+            return fetch_snapshot_from_provider_config(
+                config,
+                workflow_type=workflow_type,
+                account_profile_id=account_profile_id,
+                as_of=as_of,
+            )
+
+        registry.register_external_snapshot("local_json", _local_json_fetcher)
 
 
 def fetch_external_snapshot(
@@ -21,7 +80,17 @@ def fetch_external_snapshot(
 ) -> FetchedSnapshotPayload | None:
     if not config:
         return None
-    return fetch_snapshot_from_provider_config(
+    _ensure_default_providers_registered()
+    adapter_name = str(config.get("adapter") or "http_json").strip().lower()
+    fetcher = registry.get_external_snapshot(adapter_name)
+    if fetcher is None:
+        return fetch_snapshot_from_provider_config(
+            config,
+            workflow_type=workflow_type,
+            account_profile_id=account_profile_id,
+            as_of=as_of,
+        )
+    return fetcher(
         config,
         workflow_type=workflow_type,
         account_profile_id=account_profile_id,
