@@ -43,6 +43,7 @@ class DecisionCardBuildInput:
     runtime_restriction: Any | None = None
     audit_record: Any | None = None
     input_provenance: dict[str, Any] = field(default_factory=dict)
+    execution_plan_summary: dict[str, Any] = field(default_factory=dict)
     blocking_reasons: list[str] = field(default_factory=list)
     degraded_notes: list[str] = field(default_factory=list)
     escalation_reasons: list[str] = field(default_factory=list)
@@ -70,6 +71,7 @@ class DecisionCardBuildInput:
             runtime_restriction=data.get("runtime_restriction"),
             audit_record=data.get("audit_record"),
             input_provenance=dict(data.get("input_provenance", {})),
+            execution_plan_summary=dict(data.get("execution_plan_summary", {})),
             blocking_reasons=list(data.get("blocking_reasons", [])),
             degraded_notes=list(data.get("degraded_notes", [])),
             escalation_reasons=list(data.get("escalation_reasons", [])),

@@ -123,6 +123,7 @@ def build_execution_plan(
     source_allocation_id: str,
     bucket_targets: dict[str, float],
     restrictions: list[str] | None = None,
+    plan_version: int = 1,
     catalog: list[ProductCandidate] | None = None,
 ) -> ExecutionPlan:
     normalized_targets = _normalize_bucket_targets(bucket_targets)
@@ -151,9 +152,10 @@ def build_execution_plan(
         items.append(_build_item(bucket, target_weight, bucket_candidates))
 
     return ExecutionPlan(
-        plan_id=f"{source_run_id}:{source_allocation_id}:v1",
+        plan_id=f"{source_run_id}:{source_allocation_id}",
         source_run_id=source_run_id,
         source_allocation_id=source_allocation_id,
         items=items,
         warnings=warnings,
+        plan_version=max(int(plan_version), 1),
     )

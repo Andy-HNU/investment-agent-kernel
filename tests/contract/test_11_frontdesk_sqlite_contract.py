@@ -74,17 +74,67 @@ def test_frontdesk_sqlite_initializes_schema_and_persists_onboarding_result(tmp_
     assert user_state["latest_result"]["status"] == "completed"
     assert user_state["decision_card"]["card_type"] == "goal_baseline"
     assert user_state["decision_card"]["input_provenance"]["counts"]["user_provided"] >= 1
-    assert user_state["active_execution_plan"]["source_run_id"] == result.run_id
-    assert user_state["active_execution_plan"]["plan_version"] == 1
-    assert user_state["active_execution_plan"]["status"] == "draft"
-    assert user_state["active_execution_plan"]["item_count"] >= 1
+    assert user_state["active_execution_plan"] is None
+    assert user_state["pending_execution_plan"]["source_run_id"] == result.run_id
+    assert user_state["pending_execution_plan"]["plan_version"] == 1
+    assert user_state["pending_execution_plan"]["status"] == "draft"
+    assert user_state["pending_execution_plan"]["item_count"] >= 1
+    assert (
+        user_state["decision_card"]["execution_plan_summary"]["plan_id"]
+        == user_state["pending_execution_plan"]["plan_id"]
+    )
     assert user_state["execution_feedback"]["source_run_id"] == result.run_id
     assert user_state["execution_feedback"]["recommended_action"] == result.decision_card["recommended_action"]
     assert user_state["execution_feedback"]["feedback_status"] == "pending"
     assert (
         user_state["execution_feedback"]["payload"]["persistence_execution_record"]["plan_id"]
-        == user_state["active_execution_plan"]["plan_id"]
+        == user_state["pending_execution_plan"]["plan_id"]
     )
+
+
+@pytest.mark.contract
+def test_frontdesk_active_execution_plan_prefers_latest_approved_unsuperseded_version(tmp_path):
+    from frontdesk.store import FrontdeskStore
+
+    profile, bundle, result = _build_onboarding_result()
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    store = FrontdeskStore(db_path)
+    store.initialize()
+    store.save_onboarding_result(
+        account_profile=profile.to_dict(),
+        onboarding_result=result.to_dict(),
+        input_provenance=bundle.input_provenance,
+    )
+    pending_plan = store.get_frontdesk_snapshot(profile.account_profile_id)["pending_execution_plan"]
+    assert pending_plan is not None
+
+    approved_payload = {
+        **dict(result.execution_plan.to_dict()),
+        "status": "approved",
+        "plan_version": 2,
+        "approved_at": "2026-03-31T00:00:00Z",
+    }
+    store.save_execution_plan_record(
+        account_profile_id=profile.account_profile_id,
+        plan_id=str(result.execution_plan.plan_id),
+        plan_version=2,
+        source_run_id=str(result.execution_plan.source_run_id),
+        source_allocation_id=str(result.execution_plan.source_allocation_id),
+        status="approved",
+        confirmation_required=result.execution_plan.confirmation_required,
+        payload=approved_payload,
+        created_at="2026-03-31T00:00:00Z",
+        updated_at="2026-03-31T00:00:00Z",
+    )
+
+    user_state = store.load_user_state(profile.account_profile_id)
+
+    assert user_state["active_execution_plan"]["plan_id"] == result.execution_plan.plan_id
+    assert user_state["active_execution_plan"]["plan_version"] == 2
+    assert user_state["active_execution_plan"]["status"] == "approved"
+    assert user_state["active_execution_plan"]["approved_at"] == "2026-03-31T00:00:00Z"
+    assert user_state["pending_execution_plan"] is None
 
 
 @pytest.mark.contract

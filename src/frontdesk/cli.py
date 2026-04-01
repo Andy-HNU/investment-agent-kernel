@@ -86,34 +86,33 @@ def _prompt_profile(args: argparse.Namespace) -> UserOnboardingProfile:
 
 
 def _profile_from_json(source: str | Path) -> UserOnboardingProfile:
-    source_path = Path(source)
-    if source_path.exists():
-        payload = json.loads(source_path.read_text(encoding="utf-8"))
-    else:
-        payload = json.loads(str(source))
+    payload = _json_payload_from_source(source)
     return UserOnboardingProfile(**payload)
 
 
 def _profile_override_from_json(source: str | Path) -> dict[str, Any]:
-    source_path = Path(source)
-    if source_path.exists():
-        payload = json.loads(source_path.read_text(encoding="utf-8"))
-    else:
-        payload = json.loads(str(source))
+    payload = _json_payload_from_source(source)
     if not isinstance(payload, dict):
         raise SystemExit("profile-json must decode to an object")
     return payload
 
 
 def _json_object_from_source(source: str | Path, *, option_name: str) -> dict[str, Any]:
-    source_path = Path(source)
-    if source_path.exists():
-        payload = json.loads(source_path.read_text(encoding="utf-8"))
-    else:
-        payload = json.loads(str(source))
+    payload = _json_payload_from_source(source)
     if not isinstance(payload, dict):
         raise SystemExit(f"{option_name} must decode to an object")
     return payload
+
+
+def _json_payload_from_source(source: str | Path) -> Any:
+    source_text = str(source)
+    try:
+        source_path = Path(source_text)
+        if source_path.exists():
+            return json.loads(source_path.read_text(encoding="utf-8"))
+    except OSError:
+        pass
+    return json.loads(source_text)
 
 
 def _profile_from_non_interactive_args(args: argparse.Namespace) -> UserOnboardingProfile:
@@ -306,6 +305,32 @@ def _render_feedback_block(
     return lines
 
 
+def _render_execution_plan_block(
+    execution_plan: dict[str, Any] | None,
+    *,
+    label: str,
+) -> list[str]:
+    if not execution_plan:
+        return []
+    lines = [
+        f"{label}: "
+        + ", ".join(
+            [
+                f"plan_id={execution_plan.get('plan_id')}",
+                f"version={execution_plan.get('plan_version')}",
+                f"status={execution_plan.get('status')}",
+                f"items={execution_plan.get('item_count')}",
+                f"confirmation_required={execution_plan.get('confirmation_required')}",
+            ]
+        )
+    ]
+    if execution_plan.get("approved_at"):
+        lines.append(f"{label}_approved_at={execution_plan.get('approved_at')}")
+    if execution_plan.get("superseded_by_plan_id"):
+        lines.append(f"{label}_superseded_by={execution_plan.get('superseded_by_plan_id')}")
+    return lines
+
+
 def render_frontdesk_summary(payload: dict[str, Any]) -> str:
     external_lines = []
     if payload.get("external_snapshot_source") is not None:
@@ -324,6 +349,8 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         goal_semantics_payload = profile_payload.get("goal_semantics") or payload.get("goal_semantics")
         profile_dimensions_payload = profile_payload.get("profile_dimensions") or payload.get("profile_dimensions")
         decision_card = user_state.get("decision_card") or {}
+        active_execution_plan = payload.get("active_execution_plan") or user_state.get("active_execution_plan")
+        pending_execution_plan = payload.get("pending_execution_plan") or user_state.get("pending_execution_plan")
         lines = [
             f"account_profile_id={profile.get('account_profile_id')}",
             f"display_name={profile.get('display_name')}",
@@ -347,6 +374,8 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         lines.extend(_render_profile_dimensions_block(profile_dimensions_payload))
         if decision_card.get("model_disclaimer"):
             lines.append(f"model_disclaimer={decision_card.get('model_disclaimer')}")
+        lines.extend(_render_execution_plan_block(active_execution_plan, label="active_execution_plan"))
+        lines.extend(_render_execution_plan_block(pending_execution_plan, label="pending_execution_plan"))
         lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
         lines.extend(
             _render_feedback_block(
@@ -397,6 +426,8 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
     lines.extend(_render_provenance_block(payload.get("input_provenance") or {}))
     lines.extend(_render_input_source_summary(payload.get("input_provenance") or {}))
     lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
+    lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
+    lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
     lines.extend(
         _render_feedback_block(
             payload.get("execution_feedback"),
@@ -433,6 +464,8 @@ def render_frontdesk_snapshot(payload: dict[str, Any]) -> str:
     lines.extend(_render_goal_semantics_block((profile.get("profile") or {}).get("goal_semantics")))
     lines.extend(_render_profile_dimensions_block((profile.get("profile") or {}).get("profile_dimensions")))
     lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
+    lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
+    lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
     lines.extend(
         _render_feedback_block(
             payload.get("execution_feedback"),

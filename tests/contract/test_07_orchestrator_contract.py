@@ -13,6 +13,7 @@ from decision_card.types import DecisionCardType
 from orchestrator.engine import run_orchestrator
 from orchestrator.types import OrchestratorResult, WorkflowStatus, WorkflowType
 from runtime_optimizer.types import RuntimeOptimizerMode, RuntimeOptimizerResult
+from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 
 
 def _minimal_runtime_result(mode: RuntimeOptimizerMode) -> SimpleNamespace:
@@ -205,6 +206,39 @@ def test_run_orchestrator_onboarding_persistence_plan_includes_execution_plan_ar
     assert execution_plan["status"] == "draft"
     assert execution_plan["payload"]["plan_id"] == execution_plan["plan_id"]
     assert execution_plan["payload"]["items"]
+    assert execution_plan["payload"]["plan_id"] == result.execution_plan.plan_id
+    assert result.card_build_input.execution_plan_summary["plan_id"] == result.execution_plan.plan_id
+    assert result.decision_card["execution_plan_summary"]["plan_id"] == result.execution_plan.plan_id
+
+
+@pytest.mark.contract
+def test_run_orchestrator_execution_plan_respects_user_restrictions():
+    profile = UserOnboardingProfile(
+        account_profile_id="orchestrator_plan_restrictions",
+        display_name="Restriction User",
+        current_total_assets=50_000.0,
+        monthly_contribution=12_000.0,
+        goal_amount=1_000_000.0,
+        goal_horizon_months=60,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.10,
+        current_holdings="cash",
+        restrictions=["只接受黄金和现金"],
+    )
+    bundle = build_user_onboarding_inputs(profile, as_of="2026-03-30T00:00:00Z")
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "run_restricted_execution_plan"},
+        raw_inputs=bundle.raw_inputs,
+    )
+
+    assert result.execution_plan is not None
+    plan_buckets = {item.asset_bucket for item in result.execution_plan.items}
+
+    assert plan_buckets
+    assert plan_buckets.issubset({"gold", "cash_liquidity"})
+    assert "equity_cn" not in plan_buckets
+    assert "bond_cn" not in plan_buckets
 
 
 @pytest.mark.contract

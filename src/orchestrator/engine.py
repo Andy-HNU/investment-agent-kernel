@@ -923,6 +923,7 @@ def _build_card_input(
     runtime_result: Any,
     workflow_decision: WorkflowDecision,
     runtime_restriction: RuntimeRestriction,
+    execution_plan_summary: dict[str, Any],
     audit_record: OrchestratorAuditRecord | None,
     input_provenance: Any,
     blocking_reasons: list[str],
@@ -942,6 +943,7 @@ def _build_card_input(
         runtime_result=runtime_result,
         workflow_decision=workflow_decision,
         runtime_restriction=runtime_restriction,
+        execution_plan_summary=execution_plan_summary,
         audit_record=audit_record,
         input_provenance=input_provenance,
         blocking_reasons=list(blocking_reasons),
@@ -1417,7 +1419,31 @@ def _build_execution_plan_summary(execution_plan: Any) -> dict[str, Any]:
         "item_count": len(items),
         "confirmation_required": bool(data.get("confirmation_required", True)),
         "warning_count": len(list(data.get("warnings") or [])),
+        "approved_at": data.get("approved_at"),
+        "superseded_by_plan_id": data.get("superseded_by_plan_id"),
     }
+
+
+def _extract_execution_plan_restrictions(envelope: dict[str, Any]) -> list[str]:
+    direct = envelope.get("execution_plan_restrictions")
+    if isinstance(direct, list):
+        return [str(item).strip() for item in direct if str(item).strip()]
+    provenance = _as_dict(envelope.get("input_provenance"))
+    items = list(provenance.get("items") or [])
+    if not items:
+        for group_name in ("user_provided", "system_inferred", "default_assumed", "externally_fetched"):
+            items.extend(list(provenance.get(group_name) or []))
+    for item in items:
+        if _first_text(_as_dict(item).get("field")) != "account.restrictions":
+            continue
+        value = _as_dict(item).get("value")
+        if isinstance(value, list):
+            return [str(entry).strip() for entry in value if str(entry).strip()]
+        if value is None:
+            return []
+        rendered = str(value).strip()
+        return [rendered] if rendered else []
+    return []
 
 
 def _maybe_build_execution_plan(
@@ -1426,6 +1452,7 @@ def _maybe_build_execution_plan(
     workflow_type: WorkflowType,
     status: WorkflowStatus,
     goal_solver_output: Any,
+    envelope: dict[str, Any],
 ) -> Any | None:
     if status == WorkflowStatus.BLOCKED or workflow_type not in {
         WorkflowType.ONBOARDING,
@@ -1445,7 +1472,7 @@ def _maybe_build_execution_plan(
         source_run_id=run_id,
         source_allocation_id=allocation_name,
         bucket_targets={bucket: float(weight) for bucket, weight in weights.items()},
-        restrictions=None,
+        restrictions=_extract_execution_plan_restrictions(envelope),
     )
 
 
@@ -1511,6 +1538,8 @@ def _build_persistence_plan(
                 "source_run_id": execution_plan_summary.get("source_run_id"),
                 "source_allocation_id": execution_plan_summary.get("source_allocation_id"),
                 "status": execution_plan_summary.get("status"),
+                "approved_at": execution_plan_summary.get("approved_at"),
+                "superseded_by_plan_id": execution_plan_summary.get("superseded_by_plan_id"),
                 "payload": execution_plan_payload,
             },
             "decision_card": None
@@ -1530,6 +1559,7 @@ def _build_persistence_plan(
             "plan_version": execution_plan_summary.get("plan_version"),
             "source_run_id": execution_plan_summary.get("source_run_id"),
             "status": execution_plan_summary.get("status"),
+            "approved_at": execution_plan_summary.get("approved_at"),
         },
     )
 
@@ -1727,6 +1757,14 @@ def run_orchestrator(
         degraded_notes=degraded_notes,
         escalation_reasons=escalation_reasons,
     )
+    execution_plan = _maybe_build_execution_plan(
+        run_id=run_id,
+        workflow_type=effective_trigger.workflow_type,
+        status=status,
+        goal_solver_output=goal_solver_output,
+        envelope=envelope,
+    )
+    execution_plan_summary = _build_execution_plan_summary(execution_plan)
     card_build_input = _build_card_input(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,
@@ -1738,6 +1776,7 @@ def run_orchestrator(
         runtime_result=runtime_result,
         workflow_decision=workflow_decision,
         runtime_restriction=runtime_restriction,
+        execution_plan_summary=execution_plan_summary,
         audit_record=None,
         input_provenance=_build_input_provenance(
             envelope,
@@ -1771,13 +1810,8 @@ def run_orchestrator(
         escalation_reasons=escalation_reasons,
     )
     card_build_input.audit_record = audit_record
+    audit_record.artifact_refs["has_execution_plan"] = execution_plan is not None
     decision_card = build_decision_card(card_build_input)
-    execution_plan = _maybe_build_execution_plan(
-        run_id=run_id,
-        workflow_type=effective_trigger.workflow_type,
-        status=status,
-        goal_solver_output=goal_solver_output,
-    )
     audit_record.artifact_refs["has_decision_card"] = decision_card is not None
     persistence_plan = _build_persistence_plan(
         run_id=run_id,

@@ -87,4 +87,6 @@ class ExecutionPlan:
             "item_count": len(self.items),
             "confirmation_required": self.confirmation_required,
             "warning_count": len(self.warnings),
+            "approved_at": self.approved_at,
+            "superseded_by_plan_id": self.superseded_by_plan_id,
         }

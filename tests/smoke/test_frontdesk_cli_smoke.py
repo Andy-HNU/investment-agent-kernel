@@ -53,7 +53,39 @@ def test_frontdesk_cli_non_interactive_onboarding_smoke(tmp_path, capsys):
     assert payload["status"] == "completed"
     assert payload["user_state"]["profile"]["display_name"] == "Andy"
     assert payload["user_state"]["decision_card"]["card_type"] == "goal_baseline"
+    assert payload["user_state"]["active_execution_plan"] is None
+    assert payload["user_state"]["pending_execution_plan"]["plan_version"] == 1
     assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["user_provided"] >= 1
+
+
+@pytest.mark.smoke
+def test_frontdesk_cli_accepts_inline_profile_json(tmp_path, capsys):
+    from frontdesk.cli import main
+
+    profile = _profile()
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    exit_code = main(
+        [
+            "onboard",
+            "--db",
+            str(db_path),
+            "--profile-json",
+            json.dumps(profile.to_dict(), ensure_ascii=False),
+            "--non-interactive",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["user_state"]["profile"]["account_profile_id"] == profile.account_profile_id
+    assert payload["user_state"]["active_execution_plan"] is None
+    assert payload["user_state"]["pending_execution_plan"]["plan_version"] == 1
+    assert (
+        payload["user_state"]["decision_card"]["execution_plan_summary"]["plan_id"]
+        == payload["user_state"]["pending_execution_plan"]["plan_id"]
+    )
 
 
 @pytest.mark.smoke
@@ -134,4 +166,5 @@ def test_frontdesk_cli_text_summary_surfaces_readable_candidates_and_disclaimer(
     assert "goal_semantics:" in output
     assert "profile_model:" in output
     assert "refresh:" in output
+    assert "pending_execution_plan:" in output
     assert "execution_feedback:" in output

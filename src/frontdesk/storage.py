@@ -12,7 +12,8 @@ _SOURCE_LABELS = {
     "default_assumed": "默认假设",
     "externally_fetched": "外部抓取",
 }
-_ACTIVE_EXECUTION_PLAN_STATUSES = {"draft", "user_review", "approved"}
+_ACTIVE_EXECUTION_PLAN_STATUSES = {"approved"}
+_PENDING_EXECUTION_PLAN_STATUSES = {"draft", "user_review"}
 
 
 def _empty_input_provenance() -> dict[str, Any]:
@@ -166,6 +167,8 @@ class FrontdeskExecutionPlanRecord:
     status: str
     confirmation_required: bool
     payload: dict[str, Any]
+    approved_at: str | None
+    superseded_by_plan_id: str | None
     created_at: str
     updated_at: str
 
@@ -223,6 +226,25 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "item_count": len(items),
         "confirmation_required": bool(payload.get("confirmation_required", True)),
         "warning_count": len(list(payload.get("warnings") or [])),
+        "approved_at": payload.get("approved_at"),
+        "superseded_by_plan_id": payload.get("superseded_by_plan_id"),
+    }
+
+
+def _execution_plan_record_summary(record: FrontdeskExecutionPlanRecord | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    payload_summary = _execution_plan_summary(record.payload) or {}
+    return {
+        **payload_summary,
+        "plan_id": record.plan_id,
+        "plan_version": record.plan_version,
+        "source_run_id": record.source_run_id,
+        "source_allocation_id": record.source_allocation_id,
+        "status": record.status,
+        "confirmation_required": record.confirmation_required,
+        "approved_at": record.approved_at,
+        "superseded_by_plan_id": record.superseded_by_plan_id,
     }
 
 
@@ -295,15 +317,18 @@ class FrontdeskStore:
                 CREATE TABLE IF NOT EXISTS execution_plan_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     account_profile_id TEXT NOT NULL,
-                    plan_id TEXT NOT NULL UNIQUE,
+                    plan_id TEXT NOT NULL,
                     plan_version INTEGER NOT NULL,
                     source_run_id TEXT NOT NULL,
                     source_allocation_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     confirmation_required INTEGER NOT NULL,
                     payload_json TEXT NOT NULL,
+                    approved_at TEXT,
+                    superseded_by_plan_id TEXT,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(plan_id, plan_version)
                 );
 
                 CREATE TABLE IF NOT EXISTS input_provenance_records (
@@ -510,7 +535,16 @@ class FrontdeskStore:
         payload: dict[str, Any],
         created_at: str,
         updated_at: str,
+        approved_at: str | None = None,
+        superseded_by_plan_id: str | None = None,
     ) -> FrontdeskExecutionPlanRecord:
+        payload_data = dict(payload or {})
+        resolved_approved_at = approved_at if approved_at is not None else payload_data.get("approved_at")
+        resolved_superseded_by_plan_id = (
+            superseded_by_plan_id
+            if superseded_by_plan_id is not None
+            else payload_data.get("superseded_by_plan_id")
+        )
         with self.connect() as conn:
             conn.execute(
                 """
@@ -523,17 +557,20 @@ class FrontdeskStore:
                     status,
                     confirmation_required,
                     payload_json,
+                    approved_at,
+                    superseded_by_plan_id,
                     created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(plan_id) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(plan_id, plan_version) DO UPDATE SET
                     account_profile_id=excluded.account_profile_id,
-                    plan_version=excluded.plan_version,
                     source_run_id=excluded.source_run_id,
                     source_allocation_id=excluded.source_allocation_id,
                     status=excluded.status,
                     confirmation_required=excluded.confirmation_required,
                     payload_json=excluded.payload_json,
+                    approved_at=excluded.approved_at,
+                    superseded_by_plan_id=excluded.superseded_by_plan_id,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -544,7 +581,9 @@ class FrontdeskStore:
                     source_allocation_id,
                     status,
                     int(bool(confirmation_required)),
-                    _json_dumps(payload),
+                    _json_dumps(payload_data),
+                    resolved_approved_at,
+                    resolved_superseded_by_plan_id,
                     created_at,
                     updated_at,
                 ),
@@ -557,7 +596,9 @@ class FrontdeskStore:
             source_allocation_id=source_allocation_id,
             status=status,
             confirmation_required=bool(confirmation_required),
-            payload=payload,
+            payload=payload_data,
+            approved_at=resolved_approved_at,
+            superseded_by_plan_id=resolved_superseded_by_plan_id,
             created_at=created_at,
             updated_at=updated_at,
         )
@@ -905,6 +946,9 @@ class FrontdeskStore:
             status=str(execution_plan_record.get("status") or payload.get("status") or "draft"),
             confirmation_required=bool(payload.get("confirmation_required", True)),
             payload=payload,
+            approved_at=execution_plan_record.get("approved_at") or payload.get("approved_at"),
+            superseded_by_plan_id=execution_plan_record.get("superseded_by_plan_id")
+            or payload.get("superseded_by_plan_id"),
             created_at=created_at,
             updated_at=created_at,
         )
@@ -981,6 +1025,7 @@ class FrontdeskStore:
             "decision_card": decision_card,
             "baseline_card": dict(baseline.get("decision_card") or {}),
             "active_execution_plan": snapshot.get("active_execution_plan"),
+            "pending_execution_plan": snapshot.get("pending_execution_plan"),
             "execution_feedback": snapshot.get("execution_feedback"),
             "execution_feedback_summary": snapshot.get("execution_feedback_summary"),
         }
@@ -1067,7 +1112,8 @@ class FrontdeskStore:
                 FROM execution_plan_records
                 WHERE account_profile_id = ?
                   AND status IN ({placeholders})
-                ORDER BY updated_at DESC, id DESC
+                  AND superseded_by_plan_id IS NULL
+                ORDER BY approved_at DESC, updated_at DESC, plan_version DESC, id DESC
                 LIMIT 1
                 """,
                 (account_profile_id, *_ACTIVE_EXECUTION_PLAN_STATUSES),
@@ -1083,6 +1129,55 @@ class FrontdeskStore:
             status=row["status"],
             confirmation_required=bool(row["confirmation_required"]),
             payload=_json_loads(row["payload_json"]) or {},
+            approved_at=row["approved_at"],
+            superseded_by_plan_id=row["superseded_by_plan_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def get_latest_pending_execution_plan(
+        self,
+        account_profile_id: str,
+    ) -> FrontdeskExecutionPlanRecord | None:
+        placeholders = ", ".join("?" for _ in _PENDING_EXECUTION_PLAN_STATUSES)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM execution_plan_records
+                WHERE account_profile_id = ?
+                  AND status IN ({placeholders})
+                  AND superseded_by_plan_id IS NULL
+                  AND plan_id NOT IN (
+                      SELECT plan_id
+                      FROM execution_plan_records
+                      WHERE account_profile_id = ?
+                        AND status IN ({", ".join("?" for _ in _ACTIVE_EXECUTION_PLAN_STATUSES)})
+                        AND superseded_by_plan_id IS NULL
+                  )
+                ORDER BY updated_at DESC, plan_version DESC, id DESC
+                LIMIT 1
+                """,
+                (
+                    account_profile_id,
+                    *_PENDING_EXECUTION_PLAN_STATUSES,
+                    account_profile_id,
+                    *_ACTIVE_EXECUTION_PLAN_STATUSES,
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        return FrontdeskExecutionPlanRecord(
+            account_profile_id=row["account_profile_id"],
+            plan_id=row["plan_id"],
+            plan_version=int(row["plan_version"]),
+            source_run_id=row["source_run_id"],
+            source_allocation_id=row["source_allocation_id"],
+            status=row["status"],
+            confirmation_required=bool(row["confirmation_required"]),
+            payload=_json_loads(row["payload_json"]) or {},
+            approved_at=row["approved_at"],
+            superseded_by_plan_id=row["superseded_by_plan_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -1100,6 +1195,7 @@ class FrontdeskStore:
         baseline = self.get_latest_baseline(account_profile_id)
         latest_run = self.get_latest_run(account_profile_id)
         active_execution_plan = self.get_latest_active_execution_plan(account_profile_id)
+        pending_execution_plan = self.get_latest_pending_execution_plan(account_profile_id)
         execution_feedback_summary = self.get_execution_feedback_summary(account_profile_id)
         return {
             "profile": profile,
@@ -1114,9 +1210,8 @@ class FrontdeskStore:
                 "created_at": baseline.created_at,
             },
             "latest_run": latest_run,
-            "active_execution_plan": None
-            if active_execution_plan is None
-            else _execution_plan_summary(active_execution_plan.payload),
+            "active_execution_plan": _execution_plan_record_summary(active_execution_plan),
+            "pending_execution_plan": _execution_plan_record_summary(pending_execution_plan),
             "execution_feedback": execution_feedback_summary["latest_feedback"],
             "execution_feedback_summary": execution_feedback_summary,
         }

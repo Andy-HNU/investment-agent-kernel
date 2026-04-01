@@ -859,6 +859,10 @@ def _finalize_card(card: DecisionCard) -> dict[str, Any]:
     return card.to_dict()
 
 
+def _execution_plan_summary(inp: DecisionCardBuildInput) -> dict[str, Any]:
+    return dict(inp.execution_plan_summary or {})
+
+
 def _first_title(workflow_type: str, preferred: Any, fallback: str) -> str:
     title = _text(preferred)
     if title is not None:
@@ -953,6 +957,7 @@ def _build_runtime_action_card(inp: DecisionCardBuildInput, runtime_result: dict
         ),
         runner_up_action=runner_up,
         low_confidence=low_confidence,
+        execution_plan_summary=_execution_plan_summary(inp),
     )
     return _finalize_card(card)
 
@@ -1055,6 +1060,7 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         next_steps=next_steps,
         low_confidence=low_confidence,
         goal_semantics=goal_semantics,
+        execution_plan_summary=_execution_plan_summary(inp),
     )
     return _finalize_card(card)
 
@@ -1097,6 +1103,7 @@ def _build_blocked_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
             low_confidence=True,
         ),
         low_confidence=True,
+        execution_plan_summary=_execution_plan_summary(inp),
     )
     return _finalize_card(card)
 
@@ -1185,6 +1192,7 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         ),
         runner_up_action=_runner_up_action(ev_report),
         low_confidence=low_confidence,
+        execution_plan_summary=_execution_plan_summary(inp),
     )
     return _finalize_card(card)
 

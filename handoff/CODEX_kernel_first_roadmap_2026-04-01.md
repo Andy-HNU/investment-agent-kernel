@@ -20,26 +20,54 @@
 
   ### Phase 1. Kernel completion
 
+  为避免执行颗粒度过粗，Phase 1 在实现层拆成三个连续子阶段：
+
+  - `Phase 1A`
+      - `02 goal_solver`
+      - `10 ev_engine + 04 runtime_optimizer`
+      - 目标：先把求解/评估/运行时建议的核心语义与文档对齐
+  - `Phase 1B`
+      - `Product Mapping / Execution Planner`
+      - `07 orchestrator` 中与 execution plan 有关的 persistence / audit 接线
+      - `09 decision_card` 与 `frontdesk` 的 execution-plan 摘要展示
+      - 目标：把“资金桶建议”推进到“正式执行计划 + 持久化基线”
+  - `Phase 1C`
+      - `03 snapshot_ingestion + 05 calibration`
+      - `07 orchestrator` 更深的 replay / override / provenance 变体
+      - `08 allocation_engine + 09 decision_card` 的剩余产品化表达
+      - 目标：补齐 kernel 输入治理、replay/audit 深水区与多方案表达
+
+  当前进度快照：
+
+  - `Phase 1A`
+      - 已完成：`02 goal_solver` notes / infeasibility semantics 第一波、`10 + 04` 的 cooldown / candidate-poverty / reasoning / `ADD_DEFENSE` spec drift 修复
+      - 未完成：`10 + 04` 公式/量纲硬化、FeasibilityFilter 全覆盖、更多 candidate rules
+  - `Phase 1B`
+      - 已完成：`ExecutionPlan` 第一版骨架、`plan_id + plan_version` 持久化、decision-card `execution_plan_summary`、frontdesk `active_execution_plan`
+      - 未完成：用户确认/批准/替换旧计划的状态机、follow-up 针对现行计划的差异化升级规则
+  - `Phase 1C`
+      - 尚未进入代码阶段
+
   目标：把当前系统从“可运行内核”补到“可稳定被 Claw 调用的正式内核”。
 
   优先顺序：
 
-  - 02 goal_solver
+  - Phase 1A / 02 goal_solver
       - 补齐更正式的 Monte Carlo / infeasibility 细节
       - 强化 solver_notes 和用户可解释结果链
       - 明确哪些输出是真概率，哪些只是模型估计，避免再次语义漂移
-  - 10 ev_engine + 04 runtime_optimizer
+  - Phase 1A / 10 ev_engine + 04 runtime_optimizer
       - 补完整的 FeasibilityFilter 覆盖
       - 收紧五项分量公式与量纲校准
       - 补候选动作规则族、amount 预填/裁剪、monthly/event/quarterly 差异规则
       - 强化推荐理由生成规则，避免“能跑但解释虚”
-  - Product Mapping / Execution Planner
+  - Phase 1B / Product Mapping / Execution Planner
       - 在资金桶决策核之外新增“产品映射层”，不把具体产品选择逻辑硬塞进 solver 数学核心
       - 把 bucket allocation 映射到具体 ETF / 基金 / 国债 / 黄金 / 现金管理产品清单
       - 支持宽基 / 红利 / 行业 / 风格 / 纯债 / 政金债 / 黄金 ETF 等产品族
       - 定义产品池、候选筛选规则、替代品规则、执行理由与用户可读执行计划
       - 输出“可执行计划”，而不只是抽象资金桶
-  - 03 snapshot_ingestion + 05 calibration
+  - Phase 1C / 03 snapshot_ingestion + 05 calibration
       - 完成更完整的五域 raw snapshot typing
       - 增加 cashflow_events_raw 等严格校验
       - 补 market calibration 的保守收缩逻辑、vol floor、correlation handling、version uniqueness
@@ -48,11 +76,11 @@
           - 不让新闻文本直接改写 solver 数学
           - 允许 sidecar 产出可审计的结构化 regime / uncertainty / review flags
           - 经 05 保守吸收后，只影响参数约束、review gate 或解释层
-  - 07 orchestrator
+  - Phase 1B / 07 orchestrator
       - 补 replay / override / provenance 深水区
       - 增加真正的 persistence / audit 执行适配层
       - 保证任一 run 都能回放“当时输入、参数、建议、反馈”
-  - 08 allocation_engine + 09 decision_card
+  - Phase 1C / 08 allocation_engine + 09 decision_card
       - 强化候选多样性，避免“换名字不换方案”
       - 拆清 low_confidence / degraded / blocked / escalated
       - 继续产品化 decision card 的解释度，但不进入具体产品推荐层
