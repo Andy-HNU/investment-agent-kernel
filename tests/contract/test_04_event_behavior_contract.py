@@ -66,10 +66,10 @@ def test_structural_event_soft_deviation_allows_rebalance_full_in_event_mode(
     goal_solver_output["recommended_allocation"] = dict(goal_solver_output["recommended_allocation"])
     goal_solver_output["recommended_result"] = dict(goal_solver_output["recommended_result"])
     goal_solver_output["recommended_allocation"]["weights"] = {
-        "equity_cn": 0.46,
+        "equity_cn": 0.43,
         "bond_cn": 0.34,
         "gold": 0.05,
-        "satellite": 0.15,
+        "satellite": 0.18,
     }
     goal_solver_output["recommended_result"]["weights"] = dict(
         goal_solver_output["recommended_allocation"]["weights"]
@@ -146,10 +146,10 @@ def test_monthly_new_cash_candidate_clips_amount_pct_to_cash_budget_and_bucket_d
     goal_solver_output["recommended_allocation"] = dict(goal_solver_output["recommended_allocation"])
     goal_solver_output["recommended_result"] = dict(goal_solver_output["recommended_result"])
     goal_solver_output["recommended_allocation"]["weights"] = {
-        "equity_cn": 0.46,
+        "equity_cn": 0.43,
         "bond_cn": 0.34,
         "gold": 0.05,
-        "satellite": 0.15,
+        "satellite": 0.18,
     }
     goal_solver_output["recommended_result"]["weights"] = dict(
         goal_solver_output["recommended_allocation"]["weights"]
@@ -180,6 +180,112 @@ def test_monthly_new_cash_candidate_clips_amount_pct_to_cash_budget_and_bucket_d
 
     assert add_cash_def.amount_pct == pytest.approx(expected_amount_pct)
     assert add_cash_def.amount_pct <= runtime_optimizer_params_base["amount_pct_max"]
+
+
+@pytest.mark.contract
+def test_monthly_new_cash_split_buckets_surfaces_multiple_underweight_targets(
+    goal_solver_output_base,
+    goal_solver_input_base,
+    live_portfolio_base,
+    market_state_base,
+    behavior_state_base,
+    constraint_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+):
+    goal_solver_output = deepcopy(goal_solver_output_base)
+    goal_solver_output["recommended_allocation"] = dict(goal_solver_output["recommended_allocation"])
+    goal_solver_output["recommended_result"] = dict(goal_solver_output["recommended_result"])
+    goal_solver_output["recommended_allocation"]["weights"] = {
+        "equity_cn": 0.43,
+        "bond_cn": 0.34,
+        "gold": 0.05,
+        "satellite": 0.18,
+    }
+    goal_solver_output["recommended_result"]["weights"] = dict(
+        goal_solver_output["recommended_allocation"]["weights"]
+    )
+
+    ev_state = build_ev_state(
+        solver_output=goal_solver_output,
+        solver_baseline_inp=goal_solver_input_base,
+        live_portfolio=live_portfolio_base,
+        market_state=market_state_base,
+        behavior_state=behavior_state_base,
+        constraint_state=constraint_state_base,
+        ev_params=ev_params_base,
+    )
+
+    candidates = generate_candidates(
+        state=ev_state,
+        params=runtime_optimizer_params_base,
+        mode=RuntimeOptimizerMode.MONTHLY,
+    )
+    add_cash_types = {
+        candidate.type
+        for candidate in candidates
+        if candidate.type in {
+            ActionType.ADD_CASH_TO_CORE,
+            ActionType.ADD_CASH_TO_DEF,
+            ActionType.ADD_CASH_TO_SAT,
+        }
+    }
+
+    assert add_cash_types == {ActionType.ADD_CASH_TO_DEF, ActionType.ADD_CASH_TO_SAT}
+
+
+@pytest.mark.contract
+def test_monthly_new_cash_skips_satellite_when_satellite_is_already_overweight(
+    goal_solver_output_base,
+    goal_solver_input_base,
+    live_portfolio_base,
+    market_state_base,
+    behavior_state_base,
+    constraint_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+):
+    goal_solver_output = deepcopy(goal_solver_output_base)
+    live_portfolio = deepcopy(live_portfolio_base)
+    goal_solver_output["recommended_allocation"] = dict(goal_solver_output["recommended_allocation"])
+    goal_solver_output["recommended_result"] = dict(goal_solver_output["recommended_result"])
+    goal_solver_output["recommended_allocation"]["weights"] = {
+        "equity_cn": 0.35,
+        "bond_cn": 0.15,
+        "gold": 0.05,
+        "satellite": 0.45,
+    }
+    goal_solver_output["recommended_result"]["weights"] = dict(
+        goal_solver_output["recommended_allocation"]["weights"]
+    )
+    live_portfolio["weights"] = {
+        "equity_cn": 0.50,
+        "bond_cn": 0.10,
+        "gold": 0.03,
+        "satellite": 0.37,
+    }
+
+    ev_state = build_ev_state(
+        solver_output=goal_solver_output,
+        solver_baseline_inp=goal_solver_input_base,
+        live_portfolio=live_portfolio,
+        market_state=market_state_base,
+        behavior_state=behavior_state_base,
+        constraint_state=constraint_state_base,
+        ev_params=ev_params_base,
+    )
+
+    candidates = generate_candidates(
+        state=ev_state,
+        params=runtime_optimizer_params_base,
+        mode=RuntimeOptimizerMode.MONTHLY,
+    )
+
+    add_cash_candidates = [candidate for candidate in candidates if candidate.type.name.startswith("ADD_CASH")]
+    assert add_cash_candidates
+    assert all(candidate.target_bucket != "satellite" for candidate in add_cash_candidates)
+    assert add_cash_candidates[0].type == ActionType.ADD_CASH_TO_DEF
+    assert add_cash_candidates[0].target_bucket == "bond_cn"
 
 
 @pytest.mark.contract

@@ -119,6 +119,38 @@ def _select_defense_target_bucket(
     return defense_buckets[0]
 
 
+def _find_underweight_buckets(
+    current_weights: dict[str, float],
+    target_weights: dict[str, float],
+    deviation: dict[str, float],
+    constraints: dict[str, Any],
+    params: dict[str, Any],
+) -> list[str]:
+    category_priority = {"core": 0, "defense": 1, "satellite": 2}
+    bucket_category = constraints.get("bucket_category", {}) or {}
+    satellite_cap = float(constraints.get("satellite_cap", 1.0) or 1.0)
+    satellite_weight = float(current_weights.get("satellite", 0.0) or 0.0)
+    satellite_overweight = satellite_weight > satellite_cap + float(
+        params.get("satellite_overweight_threshold", 0.0) or 0.0
+    )
+
+    underweight = [
+        bucket
+        for bucket in target_weights
+        if float(deviation.get(bucket, 0.0) or 0.0) < 0.0
+        and not (satellite_overweight and bucket_category.get(bucket) == "satellite")
+    ]
+    underweight.sort(
+        key=lambda bucket: (
+            float(deviation.get(bucket, 0.0) or 0.0),
+            category_priority.get(bucket_category.get(bucket, "satellite"), 2),
+            -float(target_weights.get(bucket, 0.0) or 0.0),
+            bucket,
+        )
+    )
+    return underweight
+
+
 def _find_most_overweight_bucket(
     deviation: dict[str, float],
     constraints: dict[str, Any],
@@ -146,7 +178,7 @@ def _clip_amount_pct(
     capped_upper = min(float(params.get("amount_pct_max", 1.0) or 1.0), upper_bound)
     clipped = _clamp(raw_pct, 0.0, max(0.0, capped_upper))
     minimum = float(params.get("amount_pct_min", 0.0) or 0.0)
-    if clipped < minimum:
+    if clipped + 1e-12 < minimum:
         return 0.0
     return clipped
 
@@ -178,12 +210,15 @@ def generate_candidates(
     available_cash = float(account.get("available_cash", 0.0))
     min_cash = float(params_dict.get("min_cash_for_action", 0.0))
     if available_cash >= min_cash:
-        underweight = sorted(
-            target_weights,
-            key=lambda bucket: deviation.get(bucket, 0.0),
+        underweight = _find_underweight_buckets(
+            current_weights=current_weights,
+            target_weights=target_weights,
+            deviation=deviation,
+            constraints=constraints,
+            params=params_dict,
         )
-        if underweight:
-            bucket = underweight[0]
+        split_count = max(1, int(params_dict.get("new_cash_split_buckets", 1) or 1))
+        for bucket in underweight[:split_count]:
             total_value = float(account.get("total_portfolio_value", 0.0) or 0.0)
             bucket_deficit_pct = max(0.0, -float(deviation.get(bucket, 0.0) or 0.0))
             cash_budget_value = available_cash * float(params_dict.get("new_cash_use_pct", 1.0) or 1.0)

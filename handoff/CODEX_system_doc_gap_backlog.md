@@ -140,6 +140,7 @@
 - quarterly drawdown path now filters `ADD_DEFENSE`, preserving event-only defensive injection semantics
 - `ADD_DEFENSE` now selects defense target buckets dynamically, clips to actual deficit, and falls back to `sell_rebalance` when cash is insufficient
 - add-cash candidates now size `amount_pct` from real cash budget and bucket deficit instead of using a fixed split ratio
+- add-cash candidates now honor `new_cash_split_buckets` across multiple underweight targets, with min-threshold clipping tolerant to float-edge exact hits
 - structural EVENT candidates now allow `REBALANCE_FULL` at soft deviation, matching the documented EVENT-A rule instead of requiring hard deviation
 - `recommendation_reason` now explains when the winner beats the runner-up via lower penalties rather than the highest raw goal impact
 - `confidence_reason` now distinguishes mixed safe-vs-active low-spread candidate sets instead of emitting only generic spread text
