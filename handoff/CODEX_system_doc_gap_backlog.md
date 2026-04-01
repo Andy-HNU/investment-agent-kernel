@@ -133,6 +133,7 @@
 
 本轮收口：
 - `ADD_DEFENSE` reserved for drawdown-event path
+- runtime candidate-poverty protocol now patches EVReport to safe-action semantics
 
 ### 07 orchestrator
 
