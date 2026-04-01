@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
 from runtime_optimizer.candidates import ActionType, generate_candidates
@@ -93,8 +95,15 @@ def test_drawdown_event_forces_add_defense(
     ev_params_base,
     runtime_optimizer_params_base,
 ):
+    goal_solver_output = deepcopy(goal_solver_output_base)
+    allocation_weights = {"equity_cn": 0.45, "bond_cn": 0.32, "gold": 0.10, "satellite": 0.13}
+    goal_solver_output["recommended_allocation"] = dict(goal_solver_output["recommended_allocation"])
+    goal_solver_output["recommended_result"] = dict(goal_solver_output["recommended_result"])
+    goal_solver_output["recommended_allocation"]["weights"] = dict(allocation_weights)
+    goal_solver_output["recommended_result"]["weights"] = dict(allocation_weights)
+
     ev_state = build_ev_state(
-        solver_output=goal_solver_output_base,
+        solver_output=goal_solver_output,
         solver_baseline_inp=goal_solver_input_base,
         live_portfolio=live_portfolio_base,
         market_state=market_state_base,

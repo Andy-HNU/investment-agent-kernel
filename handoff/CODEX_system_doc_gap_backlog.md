@@ -136,6 +136,7 @@
 - runtime candidate-poverty protocol now patches EVReport to safe-action semantics
 - EV feasibility now consumes calibrated cooldown state in addition to emotion flags
 - quarterly drawdown path now filters `ADD_DEFENSE`, preserving event-only defensive injection semantics
+- `ADD_DEFENSE` now selects defense target buckets dynamically, clips to actual deficit, and falls back to `sell_rebalance` when cash is insufficient
 - `recommendation_reason` now explains when the winner beats the runner-up via lower penalties rather than the highest raw goal impact
 - `confidence_reason` now distinguishes mixed safe-vs-active low-spread candidate sets instead of emitting only generic spread text
 
@@ -265,6 +266,7 @@
   - `不碰股票`
   - `只接受黄金和现金`
 - alternate-product surfacing at plan-item level
+- documented `cash / liquidity` alias now normalizes to `cash_liquidity`
 
 仍缺：
 - 与 `07 orchestrator` / `09 decision_card` / `frontdesk` 的正式接线
