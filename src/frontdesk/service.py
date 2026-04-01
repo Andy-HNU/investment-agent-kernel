@@ -952,7 +952,12 @@ def _frontdesk_summary(
     external_payload: dict[str, Any] | None = None,
     user_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    decision_card = result_payload.get("decision_card") or {}
+    user_state = user_state or {}
+    decision_card = _apply_execution_plan_guidance(
+        dict(result_payload.get("decision_card") or {}),
+        workflow_type=str(result_payload.get("workflow_type") or ""),
+        comparison=_as_dict(user_state.get("execution_plan_comparison")),
+    )
     refresh_summary = dict(
         result_payload.get("refresh_summary")
         or _build_refresh_summary(
@@ -970,7 +975,6 @@ def _frontdesk_summary(
         result_payload.get("input_source_summary")
         or _build_input_source_summary(decision_card.get("input_provenance", {}) or {})
     )
-    user_state = user_state or {}
     profile_payload = _as_dict(user_state.get("profile"))
     if isinstance(profile_payload.get("profile"), dict):
         profile_payload = _as_dict(profile_payload.get("profile"))
@@ -1005,6 +1009,81 @@ def _frontdesk_summary(
     if external_snapshot_error is not None:
         summary["external_snapshot_error"] = external_snapshot_error
     return summary
+
+
+def _apply_execution_plan_guidance(
+    decision_card: dict[str, Any],
+    *,
+    workflow_type: str,
+    comparison: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not comparison:
+        return decision_card
+    recommendation = str(comparison.get("recommendation") or "").strip()
+    if recommendation not in {"keep_active", "review_replace", "replace_active"}:
+        return decision_card
+
+    card = dict(decision_card)
+    changed_bucket_count = int(comparison.get("changed_bucket_count") or 0)
+    product_switch_count = int(comparison.get("product_switch_count") or 0)
+    max_weight_delta = float(comparison.get("max_weight_delta") or 0.0)
+
+    if recommendation == "replace_active":
+        headline = "新执行计划与当前已确认计划差异较大，建议替换当前 active plan。"
+        next_step = "approve_pending_plan"
+        review_condition = "after_reviewing_plan_replacement"
+    elif recommendation == "review_replace":
+        headline = "新执行计划与当前 active plan 有局部变化，建议人工复核后决定是否替换。"
+        next_step = "review_plan_delta"
+        review_condition = "after_reviewing_plan_delta"
+    else:
+        headline = "新执行计划与当前 active plan 基本一致，可继续沿用当前计划。"
+        next_step = "keep_active_plan"
+        review_condition = "after_next_scheduled_review"
+
+    guidance = {
+        "recommendation": recommendation,
+        "change_level": comparison.get("change_level"),
+        "headline": headline,
+        "changed_bucket_count": changed_bucket_count,
+        "product_switch_count": product_switch_count,
+        "max_weight_delta": round(max_weight_delta, 4),
+        "summary": list(comparison.get("summary") or []),
+    }
+
+    if workflow_type in {"monthly", "quarterly"}:
+        summary = str(card.get("summary") or "").strip()
+        if summary and headline not in summary:
+            card["summary"] = f"{summary} {headline}"
+
+    recommendation_reason = list(card.get("recommendation_reason") or [])
+    if headline not in recommendation_reason:
+        recommendation_reason.append(headline)
+    evidence_highlights = list(card.get("evidence_highlights") or [])
+    evidence_line = (
+        "execution_plan_delta "
+        f"recommendation={recommendation} "
+        f"changed_buckets={changed_bucket_count} "
+        f"product_switches={product_switch_count} "
+        f"max_weight_delta={max_weight_delta:.4f}"
+    )
+    if evidence_line not in evidence_highlights:
+        evidence_highlights.append(evidence_line)
+    next_steps = list(card.get("next_steps") or [])
+    if next_step not in next_steps:
+        next_steps.insert(0, next_step)
+    review_conditions = list(card.get("review_conditions") or [])
+    if review_condition not in review_conditions:
+        review_conditions.append(review_condition)
+
+    card["recommendation_reason"] = recommendation_reason
+    card["evidence_highlights"] = evidence_highlights
+    card["next_steps"] = next_steps
+    card["review_conditions"] = review_conditions
+    card["execution_plan_guidance"] = guidance
+    if recommendation == "replace_active" and str(card.get("status_badge") or "") not in {"blocked", "degraded"}:
+        card["status_badge"] = "caution"
+    return card
 
 
 def run_frontdesk_onboarding(
