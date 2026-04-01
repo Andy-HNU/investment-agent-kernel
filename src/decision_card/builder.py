@@ -786,6 +786,17 @@ def _build_next_steps(
         next_steps.append("hold_and_recheck")
     elif recommended_action not in {"blocked", "review"}:
         next_steps.append("execute_within_guardrails")
+    # Plan replacement guidance
+    for directive in inp.control_directives:
+        text = _text(directive) or ""
+        if text.startswith("plan_change="):
+            value = text.split("=", 1)[-1].strip()
+            if value == "replace_active":
+                next_steps.append("adopt_pending_plan")
+            elif value == "review_replace":
+                next_steps.append("review_pending_plan")
+            elif value == "keep_active":
+                next_steps.append("keep_active_plan")
     if low_confidence:
         next_steps.append("treat_as_weak_signal")
     return _unique(next_steps)

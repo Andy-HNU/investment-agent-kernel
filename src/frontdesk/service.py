@@ -1268,6 +1268,19 @@ def run_frontdesk_followup(
             profile_confirmed=profile is not None,
         )
     )
+
+    # Provide execution plan lifecycle context for orchestrator guidance
+    try:
+        active_record = store.get_latest_active_execution_plan(account_profile_id)
+        pending_record = store.get_latest_pending_execution_plan(account_profile_id)
+        raw_inputs["frontdesk_execution_plan_context"] = {
+            "active": None if active_record is None else dict(active_record.payload or {}),
+            "pending": None if pending_record is None else dict(pending_record.payload or {}),
+            "comparison": (snapshot or {}).get("execution_plan_comparison"),
+        }
+    except Exception:
+        # Defensive: do not block workflow if store lookup fails
+        pass
     external_payload = None
     external_error = None
     external_source_ref = str(external_snapshot_source) if external_snapshot_source is not None else None

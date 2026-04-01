@@ -1430,6 +1430,104 @@ def _build_execution_plan_summary(execution_plan: Any) -> dict[str, Any]:
     }
 
 
+def _execution_plan_item_index_from_payload(payload: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    data = _as_dict(payload)
+    items = list(data.get("items") or [])
+    index: dict[str, dict[str, Any]] = {}
+    for item in items:
+        entry = _as_dict(item)
+        bucket = _first_text(entry.get("asset_bucket")) or ""
+        if bucket:
+            index[bucket] = entry
+    return index
+
+
+def _primary_product_id_from_payload(item: dict[str, Any]) -> str | None:
+    direct = _first_text(_as_dict(item).get("primary_product_id"))
+    if direct:
+        return direct
+    product = _as_dict(_as_dict(item).get("primary_product"))
+    nested = _first_text(product.get("product_id"))
+    return nested
+
+
+def _compare_execution_plan_payloads(
+    active_payload: dict[str, Any] | None,
+    pending_payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not active_payload or not pending_payload:
+        return None
+    active_items = _execution_plan_item_index_from_payload(active_payload)
+    pending_items = _execution_plan_item_index_from_payload(pending_payload)
+    bucket_changes: list[dict[str, Any]] = []
+    product_switches: list[dict[str, Any]] = []
+    max_weight_delta = 0.0
+    for bucket in sorted(set(active_items) | set(pending_items)):
+        a = active_items.get(bucket, {})
+        p = pending_items.get(bucket, {})
+        aw = round(float(_as_dict(a).get("target_weight", 0.0) or 0.0), 4)
+        pw = round(float(_as_dict(p).get("target_weight", 0.0) or 0.0), 4)
+        delta = round(pw - aw, 4)
+        a_pid = _primary_product_id_from_payload(a)
+        p_pid = _primary_product_id_from_payload(p)
+        product_changed = a_pid != p_pid and bool(a_pid or p_pid)
+        if abs(delta) <= 1e-6 and not product_changed:
+            continue
+        max_weight_delta = max(max_weight_delta, abs(delta))
+        change = {
+            "asset_bucket": bucket,
+            "active_target_weight": aw,
+            "pending_target_weight": pw,
+            "weight_delta": delta,
+            "active_primary_product_id": a_pid,
+            "pending_primary_product_id": p_pid,
+            "product_changed": product_changed,
+        }
+        bucket_changes.append(change)
+        if product_changed:
+            product_switches.append(
+                {
+                    "asset_bucket": bucket,
+                    "active_primary_product_id": a_pid,
+                    "pending_primary_product_id": p_pid,
+                }
+            )
+
+    bucket_set_changed = any(
+        (item["active_target_weight"] <= 1e-6) != (item["pending_target_weight"] <= 1e-6)
+        for item in bucket_changes
+    )
+    changed_bucket_count = len(bucket_changes)
+    product_switch_count = len(product_switches)
+    if changed_bucket_count == 0 and product_switch_count == 0:
+        change_level = "none"
+        recommendation = "keep_active"
+        summary = ["pending plan matches current active plan"]
+    else:
+        if bucket_set_changed or max_weight_delta >= 0.10 or changed_bucket_count >= 3:
+            change_level = "major"
+            recommendation = "replace_active"
+        else:
+            change_level = "minor"
+            recommendation = "review_replace"
+        summary = [f"{changed_bucket_count} bucket changes detected"]
+        if product_switch_count:
+            summary.append(f"{product_switch_count} primary product switches detected")
+        if max_weight_delta > 0.0:
+            summary.append(f"largest weight delta={max_weight_delta:.2%}")
+
+    return {
+        "change_level": change_level,
+        "recommendation": recommendation,
+        "changed_bucket_count": changed_bucket_count,
+        "product_switch_count": product_switch_count,
+        "max_weight_delta": round(max_weight_delta, 4),
+        "bucket_changes": bucket_changes,
+        "product_switches": product_switches,
+        "summary": summary,
+    }
+
+
 def _extract_execution_plan_restrictions(envelope: dict[str, Any]) -> list[str]:
     direct = envelope.get("execution_plan_restrictions")
     if isinstance(direct, list):
@@ -1770,7 +1868,34 @@ def run_orchestrator(
         goal_solver_output=goal_solver_output,
         envelope=envelope,
     )
+    # Plan guidance from frontdesk context
+    plan_context = _as_dict(envelope.get("frontdesk_execution_plan_context"))
+    if effective_trigger.workflow_type == WorkflowType.QUARTERLY and execution_plan is not None:
+        compare = _compare_execution_plan_payloads(
+            _as_dict(plan_context.get("active")),
+            _as_dict(_payload(execution_plan)),
+        )
+        if compare:
+            control_directives.append(f"plan_change={compare.get('recommendation')}")
+            control_directives.append(f"plan_change_level={compare.get('change_level')}")
+    elif effective_trigger.workflow_type == WorkflowType.MONTHLY:
+        comparison = _as_dict(plan_context.get("comparison"))
+        recommendation = _first_text(comparison.get("recommendation"))
+        if recommendation:
+            control_directives.append(f"plan_change={recommendation}")
+            change_level = _first_text(comparison.get("change_level"))
+            if change_level:
+                control_directives.append(f"plan_change_level={change_level}")
+    control_directives = _unique_items(control_directives)
+
+    # Prefer pending plan summary (if present) when monthly has no new plan
     execution_plan_summary = _build_execution_plan_summary(execution_plan)
+    if (
+        not execution_plan_summary
+        and effective_trigger.workflow_type == WorkflowType.MONTHLY
+        and plan_context.get("pending")
+    ):
+        execution_plan_summary = _build_execution_plan_summary(plan_context.get("pending"))
     card_build_input = _build_card_input(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,
