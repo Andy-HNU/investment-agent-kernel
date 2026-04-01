@@ -119,6 +119,7 @@ class GoalSolverParams:
     n_paths_lightweight: int
     seed: int
     market_assumptions: MarketAssumptions
+    shrinkage_factor: float = 0.85
     ranking_mode_default: RankingMode = RankingMode.SUFFICIENCY_FIRST
 
     def to_dict(self) -> dict[str, Any]:

@@ -71,6 +71,7 @@ def _goal_solver_input_from_any(value: GoalSolverInput | dict[str, Any]) -> Goal
         n_paths_lightweight=int(data["solver_params"]["n_paths_lightweight"]),
         seed=int(data["solver_params"]["seed"]),
         market_assumptions=market_assumptions,
+        shrinkage_factor=float(data["solver_params"].get("shrinkage_factor", 0.85)),
         ranking_mode_default=RankingMode(str(getattr(ranking_mode_raw, "value", ranking_mode_raw))),
     )
     candidate_allocations = [

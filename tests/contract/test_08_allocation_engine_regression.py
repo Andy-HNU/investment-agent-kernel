@@ -125,6 +125,7 @@ def test_allocation_engine_output_can_feed_goal_solver(goal_solver_input_base):
             n_paths_lightweight=base["solver_params"]["n_paths_lightweight"],
             seed=base["solver_params"]["seed"],
             market_assumptions=MarketAssumptions(**base["solver_params"]["market_assumptions"]),
+            shrinkage_factor=base["solver_params"]["shrinkage_factor"],
         ),
         ranking_mode_override=None,
     )

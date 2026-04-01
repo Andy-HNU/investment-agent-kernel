@@ -537,6 +537,7 @@ def _coerce_goal_solver_params(
         n_paths_lightweight=int(data.get("n_paths_lightweight", 1000) or 1000),
         seed=int(data.get("seed", 42) or 42),
         market_assumptions=market_assumptions,
+        shrinkage_factor=float(data.get("shrinkage_factor", 0.85) or 0.85),
         ranking_mode_default=RankingMode(data.get("ranking_mode_default", "sufficiency_first")),
     )
 
