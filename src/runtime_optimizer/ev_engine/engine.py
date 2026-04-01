@@ -153,7 +153,13 @@ def _check_feasibility(action: Action, state: EVState | dict[str, Any]) -> Feasi
     reasons: list[str] = []
     if action.type in {ActionType.FREEZE, ActionType.OBSERVE}:
         return FeasibilityResult(True, [])
-    if action.cooldown_applicable and (behavior.get("high_emotion_flag") or behavior.get("panic_flag")) and action.type not in {ActionType.FREEZE, ActionType.OBSERVE}:
+    cooldown_active = bool(
+        constraints.get("cooldown_currently_active")
+        or behavior.get("cooldown_active")
+        or behavior.get("high_emotion_flag")
+        or behavior.get("panic_flag")
+    )
+    if action.cooldown_applicable and cooldown_active and action.type not in {ActionType.FREEZE, ActionType.OBSERVE}:
         reasons.append("当前处于高情绪冷静期，非观察/冻结动作不可执行")
     if action.amount_pct is None:
         reasons.append("amount_pct 不能为空")

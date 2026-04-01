@@ -217,6 +217,54 @@ def test_run_ev_engine_low_confidence_under_emotion_and_cooldown_filters(
 
 
 @pytest.mark.contract
+def test_run_ev_engine_respects_calibrated_cooldown_state_without_emotion_flags(
+    market_state_base,
+    constraint_state_base,
+    behavior_state_base,
+    ev_params_base,
+    goal_solver_input_base,
+    goal_solver_output_base,
+    live_portfolio_base,
+):
+    behavior_state = deepcopy(behavior_state_base)
+    behavior_state["high_emotion_flag"] = False
+    behavior_state["panic_flag"] = False
+    behavior_state["cooldown_active"] = True
+
+    constraint_state = deepcopy(constraint_state_base)
+    constraint_state["cooldown_currently_active"] = True
+
+    state = _ev_state(
+        market_state_base,
+        constraint_state,
+        behavior_state,
+        ev_params_base,
+        goal_solver_input_base,
+        goal_solver_output_base,
+        live_portfolio_base,
+    )
+    actions = [
+        _action(ActionType.FREEZE, amount=0.0, amount_pct=0.0),
+        _action(
+            ActionType.ADD_CASH_TO_CORE,
+            target_bucket="equity_cn",
+            amount=3000.0,
+            amount_pct=0.08,
+            cooldown_applicable=True,
+        ),
+    ]
+
+    report = run_ev_engine(state=state, candidate_actions=actions, trigger_type="monthly")
+
+    assert len(report.ranked_actions) == 1
+    assert report.ranked_actions[0].action.type == ActionType.FREEZE
+    assert any(
+        "当前处于高情绪冷静期，非观察/冻结动作不可执行" in eliminated.fail_reasons
+        for _, eliminated in report.eliminated_actions
+    )
+
+
+@pytest.mark.contract
 def test_run_ev_engine_feasibility_reports_qdii_and_cash_fail_reasons(
     market_state_base,
     constraint_state_base,

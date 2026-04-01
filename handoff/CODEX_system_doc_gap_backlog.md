@@ -134,6 +134,7 @@
 本轮收口：
 - `ADD_DEFENSE` reserved for drawdown-event path
 - runtime candidate-poverty protocol now patches EVReport to safe-action semantics
+- EV feasibility now consumes calibrated cooldown state in addition to emotion flags
 
 ### 07 orchestrator
 
