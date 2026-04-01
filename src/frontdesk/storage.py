@@ -292,6 +292,21 @@ def _compare_execution_plans(
     active: FrontdeskExecutionPlanRecord | None,
     pending: FrontdeskExecutionPlanRecord | None,
 ) -> dict[str, Any] | None:
+    if active is not None and pending is None:
+        return {
+            "active_plan_id": active.plan_id,
+            "active_plan_version": active.plan_version,
+            "pending_plan_id": None,
+            "pending_plan_version": None,
+            "change_level": "none",
+            "recommendation": "keep_active",
+            "changed_bucket_count": 0,
+            "product_switch_count": 0,
+            "max_weight_delta": 0.0,
+            "bucket_changes": [],
+            "product_switches": [],
+            "summary": ["no new pending execution plan generated; keep current active plan"],
+        }
     if active is None or pending is None:
         return None
 
@@ -370,6 +385,105 @@ def _compare_execution_plans(
         "product_switches": product_switches,
         "summary": summary,
     }
+
+
+def _plan_comparison_guidance(comparison: dict[str, Any] | None) -> dict[str, list[str] | str | bool]:
+    if not comparison:
+        return {
+            "review_conditions": [],
+            "next_steps": [],
+            "execution_notes": [],
+            "reason_lines": [],
+            "summary_prefix": "",
+            "low_confidence": False,
+        }
+
+    recommendation = str(comparison.get("recommendation") or "")
+    change_level = str(comparison.get("change_level") or "")
+    changed_bucket_count = int(comparison.get("changed_bucket_count") or 0)
+    product_switch_count = int(comparison.get("product_switch_count") or 0)
+    max_weight_delta = float(comparison.get("max_weight_delta") or 0.0)
+
+    summary_bits = [
+        f"{changed_bucket_count} 个资金桶变化",
+        f"{product_switch_count} 个主产品切换" if product_switch_count else None,
+        f"最大权重变化 {max_weight_delta:.2%}" if max_weight_delta > 0.0 else None,
+    ]
+    summary_line = "；".join(bit for bit in summary_bits if bit)
+    if recommendation == "replace_active":
+        return {
+            "review_conditions": ["pending_plan_major_change"],
+            "next_steps": ["approve_pending_plan_replacement", "review_plan_differences"],
+            "execution_notes": [f"新计划相对当前已确认计划属于重大变化：{summary_line}。"],
+            "reason_lines": [f"相对当前已执行方案，本次建议涉及重大变更：{summary_line}。"],
+            "summary_prefix": "待确认的新计划相对当前已执行方案变化较大，建议优先复核并决定是否替换。",
+            "low_confidence": False,
+        }
+    if recommendation == "review_replace":
+        return {
+            "review_conditions": ["pending_plan_minor_change_review"],
+            "next_steps": ["review_plan_differences", "confirm_keep_or_replace_active_plan"],
+            "execution_notes": [f"新计划相对当前已确认计划存在中小幅变化：{summary_line}。"],
+            "reason_lines": [f"相对当前已执行方案，本次建议存在中小幅调整：{summary_line}。"],
+            "summary_prefix": "待确认的新计划和当前已执行方案有差异，建议先核对变化后再决定是否替换。",
+            "low_confidence": change_level != "major",
+        }
+    if comparison.get("pending_plan_id") is None:
+        return {
+            "review_conditions": ["no_new_plan_generated"],
+            "next_steps": ["keep_active_plan", "recheck_after_next_cycle"],
+            "execution_notes": ["本轮没有生成新的待确认执行计划，可继续沿用当前 active plan。"],
+            "reason_lines": ["本轮没有生成新的待确认执行计划，继续沿用当前已执行方案。"],
+            "summary_prefix": "本轮没有生成新的待确认计划，建议继续沿用当前 active plan。",
+            "low_confidence": False,
+        }
+    return {
+        "review_conditions": ["pending_plan_matches_active"],
+        "next_steps": ["keep_active_plan", "approve_pending_plan_only_if_manual_override_needed"],
+        "execution_notes": ["待确认的新计划与当前已执行方案基本一致，可继续沿用当前 active plan。"],
+        "reason_lines": ["待确认的新计划与当前已执行方案基本一致。"],
+        "summary_prefix": "当前 active plan 仍可继续沿用，新 pending plan 仅作记录。",
+        "low_confidence": False,
+    }
+
+
+def _decorate_decision_card_with_plan_comparison(
+    decision_card: dict[str, Any],
+    comparison: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not decision_card or not comparison:
+        return decision_card
+    payload = dict(decision_card)
+    guidance = _plan_comparison_guidance(comparison)
+    payload["execution_plan_comparison"] = comparison
+    payload["review_conditions"] = list(
+        dict.fromkeys(list(payload.get("review_conditions") or []) + list(guidance["review_conditions"]))
+    )
+    payload["next_steps"] = list(
+        dict.fromkeys(list(guidance["next_steps"]) + list(payload.get("next_steps") or []))
+    )
+    payload["execution_notes"] = list(
+        dict.fromkeys(list(payload.get("execution_notes") or []) + list(guidance["execution_notes"]))
+    )
+    payload["recommendation_reason"] = list(
+        dict.fromkeys(list(payload.get("recommendation_reason") or []) + list(guidance["reason_lines"]))
+    )
+    payload["reasons"] = list(
+        dict.fromkeys(list(payload.get("reasons") or []) + list(guidance["reason_lines"]))
+    )
+    summary_prefix = str(guidance["summary_prefix"] or "").strip()
+    if summary_prefix:
+        current_summary = str(payload.get("summary") or "").strip()
+        if current_summary:
+            payload["summary"] = f"{summary_prefix} {current_summary}"
+        else:
+            payload["summary"] = summary_prefix
+    payload["low_confidence"] = bool(payload.get("low_confidence")) or bool(guidance["low_confidence"])
+    execution_plan_summary = dict(payload.get("execution_plan_summary") or {})
+    execution_plan_summary["comparison_recommendation"] = comparison.get("recommendation")
+    execution_plan_summary["comparison_change_level"] = comparison.get("change_level")
+    payload["execution_plan_summary"] = execution_plan_summary
+    return payload
 
 
 class FrontdeskStore:
@@ -866,6 +980,29 @@ class FrontdeskStore:
         card_build_input = dict(result_payload_with_provenance.get("card_build_input") or {})
         card_build_input["input_provenance"] = normalized
         result_payload_with_provenance["card_build_input"] = card_build_input
+        self._seed_execution_plan_record(
+            account_profile_id=account_profile_id,
+            result_payload=result_payload_with_provenance,
+            created_at=created_at,
+        )
+        comparison = _compare_execution_plans(
+            self.get_latest_active_execution_plan(account_profile_id),
+            self.get_latest_pending_execution_plan(account_profile_id),
+        )
+        if comparison is not None:
+            decision_card_payload = _decorate_decision_card_with_plan_comparison(decision_card_payload, comparison)
+            result_payload_with_provenance["decision_card"] = decision_card_payload
+            result_payload_with_provenance["execution_plan_comparison"] = comparison
+            card_build_input = dict(result_payload_with_provenance.get("card_build_input") or {})
+            execution_plan_summary = dict(card_build_input.get("execution_plan_summary") or {})
+            execution_plan_summary["comparison_recommendation"] = comparison.get("recommendation")
+            execution_plan_summary["comparison_change_level"] = comparison.get("change_level")
+            card_build_input["execution_plan_summary"] = execution_plan_summary
+            result_payload_with_provenance["card_build_input"] = card_build_input
+        decision_card.clear()
+        decision_card.update(decision_card_payload)
+        result_payload.clear()
+        result_payload.update(result_payload_with_provenance)
         self.save_workflow_run(
             account_profile_id=account_profile_id,
             run_id=run_id,
@@ -879,11 +1016,6 @@ class FrontdeskStore:
             account_profile_id=account_profile_id,
             run_id=run_id,
             decision_card=decision_card_payload,
-            created_at=created_at,
-        )
-        self._seed_execution_plan_record(
-            account_profile_id=account_profile_id,
-            result_payload=result_payload_with_provenance,
             created_at=created_at,
         )
         self._seed_execution_feedback_record(

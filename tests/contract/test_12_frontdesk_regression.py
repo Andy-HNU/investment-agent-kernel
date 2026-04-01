@@ -298,6 +298,66 @@ def test_frontdesk_snapshot_surfaces_execution_plan_comparison_for_pending_vs_ac
     )
 
 
+@pytest.mark.parametrize("workflow_type", ["monthly", "quarterly"])
+@pytest.mark.contract
+def test_followup_decision_card_promotes_plan_comparison_guidance_into_next_steps(tmp_path, workflow_type):
+    profile = _profile(account_profile_id=f"{workflow_type}_plan_guidance")
+    db_path = tmp_path / f"{workflow_type}.sqlite"
+
+    onboarding_summary = run_frontdesk_onboarding(profile, db_path=db_path)
+    first_pending = onboarding_summary["user_state"]["pending_execution_plan"]
+    assert first_pending is not None
+
+    approve_frontdesk_execution_plan(
+        account_profile_id=profile.account_profile_id,
+        plan_id=first_pending["plan_id"],
+        plan_version=int(first_pending["plan_version"]),
+        approved_at="2026-03-31T00:00:00Z",
+        db_path=db_path,
+    )
+
+    updated_profile = profile.to_dict()
+    updated_profile["current_weights"] = {
+        "equity_cn": 0.15,
+        "bond_cn": 0.55,
+        "gold": 0.20,
+        "satellite": 0.10,
+    }
+
+    followup_summary = run_frontdesk_followup(
+        account_profile_id=profile.account_profile_id,
+        workflow_type=workflow_type,
+        profile=updated_profile,
+        db_path=db_path,
+    )
+
+    comparison = followup_summary["execution_plan_comparison"]
+    decision_card = followup_summary["decision_card"]
+
+    assert comparison is not None
+    assert comparison["recommendation"] in {"keep_active", "replace_active", "review_replace"}
+    assert decision_card["execution_plan_comparison"]["pending_plan_id"] == comparison["pending_plan_id"]
+    assert decision_card["execution_plan_summary"]["comparison_recommendation"] == comparison["recommendation"]
+    assert any(
+        step in decision_card["next_steps"]
+        for step in ("review_plan_differences", "keep_active_plan")
+    )
+    assert any(
+        step in decision_card["next_steps"]
+        for step in (
+            "approve_pending_plan_replacement",
+            "confirm_keep_or_replace_active_plan",
+            "recheck_after_next_cycle",
+        )
+    )
+    assert any("当前已执行方案" in reason for reason in decision_card["recommendation_reason"])
+    assert any(
+        token in note
+        for note in decision_card["execution_notes"]
+        for token in ("新计划相对当前已确认计划", "本轮没有生成新的待确认执行计划")
+    )
+
+
 @pytest.mark.contract
 def test_frontdesk_monthly_rejects_goal_profile_updates(tmp_path):
     profile = _profile(account_profile_id="goal_change_user")
