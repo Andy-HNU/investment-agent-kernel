@@ -115,6 +115,7 @@ def generate_candidates(
 
     candidates.append(_build_action(ActionType.FREEZE, policy_tag="observe", rationale="维持现状"))
     candidates.append(_build_action(ActionType.OBSERVE, policy_tag="observe", rationale="观察并复核"))
+    behavior_cooldown = behavior_event or behavior.get("high_emotion_flag") or behavior.get("panic_flag")
 
     available_cash = float(account.get("available_cash", 0.0))
     min_cash = float(params_dict.get("min_cash_for_action", 0.0))
@@ -193,13 +194,12 @@ def generate_candidates(
             )
         )
 
-    defense_need = float(constraints.get("ips_bucket_boundaries", {}).get("bond_cn", (0.0, 0.0))[0]) - float(current_weights.get("bond_cn", 0.0))
-    if defense_need > 0 or structural_event or drawdown_event:
+    if drawdown_event:
         candidates.append(
             _build_action(
                 ActionType.ADD_DEFENSE,
                 target_bucket="bond_cn",
-                amount_pct=min(float(params_dict.get("defense_add_pct", 0.05)), max(defense_need, 0.0) + 0.01),
+                amount_pct=float(params_dict.get("defense_add_pct", 0.05)),
                 from_bucket=None,
                 to_bucket="bond_cn",
                 cash_source="new_cash",
@@ -211,7 +211,7 @@ def generate_candidates(
             )
         )
 
-    if behavior_event or behavior.get("high_emotion_flag") or behavior.get("panic_flag"):
+    if behavior_cooldown:
         for item in candidates:
             if item.type not in {ActionType.FREEZE, ActionType.OBSERVE}:
                 item.cooldown_applicable = True

@@ -131,6 +131,9 @@
 - 更贴近文档的 amount 预填与裁剪细节
 - 更系统的 cooldown / event / quarterly 差异规则
 
+本轮收口：
+- `ADD_DEFENSE` reserved for drawdown-event path
+
 ### 07 orchestrator
 
 状态：`大体实现，本轮已继续收口正式主入口`
