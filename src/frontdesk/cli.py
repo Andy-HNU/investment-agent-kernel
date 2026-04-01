@@ -7,6 +7,7 @@ from typing import Any, Sequence
 
 from frontdesk.service import (
     DEFAULT_DB_PATH,
+    approve_frontdesk_execution_plan,
     load_frontdesk_snapshot,
     load_user_state,
     record_frontdesk_execution_feedback,
@@ -401,6 +402,23 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
         return "\n".join(lines)
 
+    if payload.get("workflow") == "approve_plan":
+        lines = [
+            f"account_profile_id={payload['account_profile_id']}",
+            f"status={payload['status']}",
+            f"approved_at={payload.get('approved_at')}",
+        ]
+        lines.extend(
+            _render_execution_plan_block(
+                payload.get("approved_execution_plan"),
+                label="approved_execution_plan",
+            )
+        )
+        lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
+        lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
+        lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
+        return "\n".join(lines)
+
     lines = [
         f"account_profile_id={payload['account_profile_id']}",
         f"display_name={payload['display_name']}",
@@ -561,6 +579,13 @@ def build_parser() -> argparse.ArgumentParser:
     feedback.add_argument("--note", help="Optional note explaining what the user did.")
     feedback.add_argument("--feedback-source", default="user", help="Metadata source label for this feedback record.")
 
+    approve_plan = subparsers.add_parser("approve-plan", help="Approve a pending execution plan and promote it to active.")
+    _add_common_flags(approve_plan)
+    approve_plan.add_argument("--account-profile-id", required=True)
+    approve_plan.add_argument("--plan-id", required=True)
+    approve_plan.add_argument("--plan-version", type=int, required=True)
+    approve_plan.add_argument("--approved-at", help="Optional approval timestamp (ISO-8601).")
+
     return parser
 
 
@@ -620,6 +645,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             executed_at=args.executed_at,
             note=args.note,
             feedback_source=args.feedback_source,
+            db_path=db_path,
+        )
+    elif args.command == "approve-plan":
+        payload = approve_frontdesk_execution_plan(
+            account_profile_id=args.account_profile_id,
+            plan_id=args.plan_id,
+            plan_version=args.plan_version,
+            approved_at=args.approved_at,
             db_path=db_path,
         )
     else:

@@ -248,6 +248,25 @@ def _execution_plan_record_summary(record: FrontdeskExecutionPlanRecord | None) 
     }
 
 
+def _execution_plan_record_from_row(row: sqlite3.Row | None) -> FrontdeskExecutionPlanRecord | None:
+    if row is None:
+        return None
+    return FrontdeskExecutionPlanRecord(
+        account_profile_id=row["account_profile_id"],
+        plan_id=row["plan_id"],
+        plan_version=int(row["plan_version"]),
+        source_run_id=row["source_run_id"],
+        source_allocation_id=row["source_allocation_id"],
+        status=row["status"],
+        confirmation_required=bool(row["confirmation_required"]),
+        payload=_json_loads(row["payload_json"]) or {},
+        approved_at=row["approved_at"],
+        superseded_by_plan_id=row["superseded_by_plan_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 class FrontdeskStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
@@ -1118,22 +1137,7 @@ class FrontdeskStore:
                 """,
                 (account_profile_id, *_ACTIVE_EXECUTION_PLAN_STATUSES),
             ).fetchone()
-        if row is None:
-            return None
-        return FrontdeskExecutionPlanRecord(
-            account_profile_id=row["account_profile_id"],
-            plan_id=row["plan_id"],
-            plan_version=int(row["plan_version"]),
-            source_run_id=row["source_run_id"],
-            source_allocation_id=row["source_allocation_id"],
-            status=row["status"],
-            confirmation_required=bool(row["confirmation_required"]),
-            payload=_json_loads(row["payload_json"]) or {},
-            approved_at=row["approved_at"],
-            superseded_by_plan_id=row["superseded_by_plan_id"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        return _execution_plan_record_from_row(row)
 
     def get_latest_pending_execution_plan(
         self,
@@ -1165,21 +1169,87 @@ class FrontdeskStore:
                     *_ACTIVE_EXECUTION_PLAN_STATUSES,
                 ),
             ).fetchone()
-        if row is None:
-            return None
-        return FrontdeskExecutionPlanRecord(
-            account_profile_id=row["account_profile_id"],
-            plan_id=row["plan_id"],
-            plan_version=int(row["plan_version"]),
-            source_run_id=row["source_run_id"],
-            source_allocation_id=row["source_allocation_id"],
-            status=row["status"],
-            confirmation_required=bool(row["confirmation_required"]),
-            payload=_json_loads(row["payload_json"]) or {},
-            approved_at=row["approved_at"],
-            superseded_by_plan_id=row["superseded_by_plan_id"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
+        return _execution_plan_record_from_row(row)
+
+    def get_execution_plan_record(
+        self,
+        account_profile_id: str,
+        *,
+        plan_id: str,
+        plan_version: int,
+    ) -> FrontdeskExecutionPlanRecord | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM execution_plan_records
+                WHERE account_profile_id = ?
+                  AND plan_id = ?
+                  AND plan_version = ?
+                LIMIT 1
+                """,
+                (account_profile_id, plan_id, int(plan_version)),
+            ).fetchone()
+        return _execution_plan_record_from_row(row)
+
+    def approve_execution_plan(
+        self,
+        account_profile_id: str,
+        *,
+        plan_id: str,
+        plan_version: int,
+        approved_at: str,
+    ) -> FrontdeskExecutionPlanRecord:
+        target = self.get_execution_plan_record(
+            account_profile_id,
+            plan_id=plan_id,
+            plan_version=plan_version,
+        )
+        if target is None:
+            raise ValueError(f"no execution plan for {account_profile_id}: {plan_id}@v{plan_version}")
+        if target.superseded_by_plan_id:
+            raise ValueError(f"execution plan already superseded: {plan_id}@v{plan_version}")
+
+        active = self.get_latest_active_execution_plan(account_profile_id)
+        if (
+            active is not None
+            and (active.plan_id != target.plan_id or active.plan_version != target.plan_version)
+        ):
+            superseded_payload = dict(active.payload)
+            superseded_payload["status"] = "superseded"
+            superseded_payload["superseded_by_plan_id"] = target.plan_id
+            self.save_execution_plan_record(
+                account_profile_id=account_profile_id,
+                plan_id=active.plan_id,
+                plan_version=active.plan_version,
+                source_run_id=active.source_run_id,
+                source_allocation_id=active.source_allocation_id,
+                status="superseded",
+                confirmation_required=active.confirmation_required,
+                payload=superseded_payload,
+                created_at=active.created_at,
+                updated_at=approved_at,
+                approved_at=active.approved_at,
+                superseded_by_plan_id=target.plan_id,
+            )
+
+        approved_payload = dict(target.payload)
+        approved_payload["status"] = "approved"
+        approved_payload["approved_at"] = approved_at
+        approved_payload["superseded_by_plan_id"] = None
+        return self.save_execution_plan_record(
+            account_profile_id=account_profile_id,
+            plan_id=target.plan_id,
+            plan_version=target.plan_version,
+            source_run_id=target.source_run_id,
+            source_allocation_id=target.source_allocation_id,
+            status="approved",
+            confirmation_required=target.confirmation_required,
+            payload=approved_payload,
+            created_at=target.created_at,
+            updated_at=approved_at,
+            approved_at=approved_at,
+            superseded_by_plan_id=None,
         )
 
     def get_latest_execution_feedback(self, account_profile_id: str) -> dict[str, Any] | None:

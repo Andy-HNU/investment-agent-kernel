@@ -8,7 +8,11 @@ import tempfile
 
 import pytest
 
-from frontdesk.service import run_frontdesk_followup, run_frontdesk_onboarding
+from frontdesk.service import (
+    approve_frontdesk_execution_plan,
+    run_frontdesk_followup,
+    run_frontdesk_onboarding,
+)
 from frontdesk.storage import FrontdeskStore
 from orchestrator.engine import run_orchestrator
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
@@ -200,6 +204,62 @@ def test_frontdesk_execution_feedback_requires_seeded_run(tmp_path):
             note="未执行",
             recorded_at="2026-03-31T09:00:00Z",
         )
+
+
+@pytest.mark.contract
+def test_frontdesk_approve_execution_plan_promotes_pending_and_supersedes_previous_active(tmp_path):
+    profile = _profile(account_profile_id="approve_plan_user")
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    onboarding_summary = run_frontdesk_onboarding(profile, db_path=db_path)
+    assert onboarding_summary["status"] == "completed"
+
+    store = FrontdeskStore(db_path)
+    first_pending = store.get_frontdesk_snapshot(profile.account_profile_id)["pending_execution_plan"]
+    assert first_pending is not None
+
+    approval_summary = approve_frontdesk_execution_plan(
+        account_profile_id=profile.account_profile_id,
+        plan_id=first_pending["plan_id"],
+        plan_version=int(first_pending["plan_version"]),
+        approved_at="2026-03-31T00:00:00Z",
+        db_path=db_path,
+    )
+
+    assert approval_summary["status"] == "approved"
+    assert approval_summary["approved_execution_plan"]["plan_id"] == first_pending["plan_id"]
+    assert approval_summary["approved_execution_plan"]["status"] == "approved"
+    assert approval_summary["user_state"]["active_execution_plan"]["plan_id"] == first_pending["plan_id"]
+    assert approval_summary["user_state"]["pending_execution_plan"] is None
+
+    second_onboarding = run_frontdesk_onboarding(profile, db_path=db_path)
+    assert second_onboarding["status"] == "completed"
+    next_pending = second_onboarding["user_state"]["pending_execution_plan"]
+    assert next_pending is not None
+    assert next_pending["plan_id"] != first_pending["plan_id"]
+
+    second_approval = approve_frontdesk_execution_plan(
+        account_profile_id=profile.account_profile_id,
+        plan_id=next_pending["plan_id"],
+        plan_version=int(next_pending["plan_version"]),
+        approved_at="2026-04-01T00:00:00Z",
+        db_path=db_path,
+    )
+
+    first_record = store.get_execution_plan_record(
+        profile.account_profile_id,
+        plan_id=first_pending["plan_id"],
+        plan_version=int(first_pending["plan_version"]),
+    )
+    snapshot = store.get_frontdesk_snapshot(profile.account_profile_id)
+
+    assert second_approval["approved_execution_plan"]["plan_id"] == next_pending["plan_id"]
+    assert second_approval["approved_execution_plan"]["status"] == "approved"
+    assert first_record is not None
+    assert first_record.status == "superseded"
+    assert first_record.superseded_by_plan_id == next_pending["plan_id"]
+    assert snapshot["active_execution_plan"]["plan_id"] == next_pending["plan_id"]
+    assert snapshot["pending_execution_plan"] is None
 
 
 @pytest.mark.contract

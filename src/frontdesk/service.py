@@ -1392,3 +1392,37 @@ def record_frontdesk_execution_feedback(
         "refresh_summary": (snapshot or {}).get("refresh_summary"),
         "user_state": user_state,
     }
+
+
+def approve_frontdesk_execution_plan(
+    *,
+    account_profile_id: str,
+    plan_id: str,
+    plan_version: int,
+    approved_at: str | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    db_path = Path(db_path)
+    store = FrontdeskStore(db_path)
+    store.init_schema()
+    approved_timestamp = approved_at or _now_iso()
+    record = store.approve_execution_plan(
+        account_profile_id=account_profile_id,
+        plan_id=plan_id,
+        plan_version=int(plan_version),
+        approved_at=approved_timestamp,
+    )
+    user_state = store.load_user_state(account_profile_id)
+    snapshot = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
+    return {
+        "workflow": "approve_plan",
+        "status": "approved",
+        "account_profile_id": account_profile_id,
+        "db_path": str(db_path),
+        "approved_at": approved_timestamp,
+        "approved_execution_plan": _as_dict(record),
+        "active_execution_plan": (snapshot or {}).get("active_execution_plan"),
+        "pending_execution_plan": (snapshot or {}).get("pending_execution_plan"),
+        "refresh_summary": (snapshot or {}).get("refresh_summary"),
+        "user_state": user_state,
+    }
