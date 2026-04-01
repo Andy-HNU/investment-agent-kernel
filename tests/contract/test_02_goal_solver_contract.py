@@ -221,6 +221,11 @@ def test_run_goal_solver_emits_model_honesty_notes(goal_solver_input_base, monke
         for note in result.solver_notes
     )
     assert any(
+        note
+        == "monte_carlo_limitations shrinkage_factor=unavailable limitation=static_parametric_inputs_non_historical"
+        for note in result.solver_notes
+    )
+    assert any(
         note == "goal_semantics basis=real scope=incremental_gain tax=after_tax fee=management_fee_plus_transaction_cost"
         for note in result.solver_notes
     )

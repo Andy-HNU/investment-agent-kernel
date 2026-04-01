@@ -94,6 +94,22 @@ def _goal_solver_input_from_any(value: GoalSolverInput | dict[str, Any]) -> Goal
     )
 
 
+def _solver_param_note_value(
+    value: GoalSolverInput | dict[str, Any],
+    key: str,
+) -> str:
+    if isinstance(value, GoalSolverInput):
+        params = value.solver_params
+        raw = getattr(params, key, None)
+    else:
+        raw = _obj(value).get("solver_params", {}).get(key)
+    if raw is None:
+        return "unavailable"
+    if isinstance(raw, (int, float)):
+        return f"{float(raw):.4f}"
+    return str(raw)
+
+
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
@@ -450,6 +466,7 @@ def _handle_no_feasible_allocation(
         f"fallback=closest_feasible_candidate allocation={best_allocation.name}",
         f"fallback_pressure_score allocation={best_allocation.name} score={best_score:.4f}",
         f"fallback_dominant_constraints reasons={dominant_reasons}",
+        _selected_fallback_context_note(best_result),
         "action_required=reassess_goal_amount_or_horizon_or_drawdown_or_candidate_allocations",
     ]
     return best_allocation, best_result, notes
@@ -465,6 +482,33 @@ def _summarize_infeasibility_reasons(all_results: list[SuccessProbabilityResult]
         return "unknown"
     ordered = sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
     return ",".join(reason for reason, _count in ordered[:3])
+
+
+def _selected_fallback_context_note(result: SuccessProbabilityResult) -> str:
+    reason_to_input = {
+        "drawdown_violation": "drawdown_tolerance",
+        "ips_boundary_violation": "ips_bucket_boundaries",
+        "satellite_cap_violation": "satellite_cap",
+        "theme_cap_violation": "theme_caps",
+        "liquidity_violation": "liquidity_reserve_min",
+    }
+    reason_keys: list[str] = []
+    score_inputs: list[str] = []
+    for reason in result.infeasibility_reasons:
+        reason_key = reason.split()[0]
+        if reason_key not in reason_keys:
+            reason_keys.append(reason_key)
+        score_input = reason_to_input.get(reason_key, "other_constraints")
+        if score_input not in score_inputs:
+            score_inputs.append(score_input)
+    reasons_summary = ",".join(reason_keys[:3]) if reason_keys else "unknown"
+    score_inputs_summary = ",".join(score_inputs[:3]) if score_inputs else "other_constraints"
+    return (
+        "fallback_selected_context "
+        f"allocation={result.allocation_name} "
+        f"reasons={reasons_summary} "
+        f"score_inputs={score_inputs_summary}"
+    )
 
 
 def _build_structure_budget(
@@ -548,12 +592,21 @@ def _append_solver_context_notes(
     )
 
 
-def _append_model_honesty_notes(notes: list[str], inp: GoalSolverInput) -> None:
+def _append_model_honesty_notes(
+    notes: list[str],
+    inp: GoalSolverInput,
+    shrinkage_factor_note_value: str,
+) -> None:
     notes.append(
         "probability_model "
         "method=parametric_monte_carlo "
         "distribution=normal "
         "historical_backtest_used=false"
+    )
+    notes.append(
+        "monte_carlo_limitations "
+        f"shrinkage_factor={shrinkage_factor_note_value} "
+        "limitation=static_parametric_inputs_non_historical"
     )
     notes.append(
         "goal_semantics "
@@ -570,6 +623,7 @@ def _append_model_honesty_notes(notes: list[str], inp: GoalSolverInput) -> None:
 
 
 def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
+    shrinkage_factor_note_value = _solver_param_note_value(inp, "shrinkage_factor")
     inp = _goal_solver_input_from_any(inp)
     params = inp.solver_params
     cashflow_schedule = _build_cashflow_schedule(inp.cashflow_plan, inp.goal.horizon_months)
@@ -672,7 +726,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
     structure_budget = _build_structure_budget(best_allocation, inp.constraints)
     risk_budget = _build_risk_budget(best_result, inp.constraints)
     _append_solver_context_notes(notes, inp, best_result)
-    _append_model_honesty_notes(notes, inp)
+    _append_model_honesty_notes(notes, inp, shrinkage_factor_note_value)
     return GoalSolverOutput(
         input_snapshot_id=inp.snapshot_id,
         generated_at=_now_iso(),

@@ -1,6 +1,6 @@
 # CODEX System Doc Gap Backlog
 
-更新日期: 2026-03-29
+更新日期: 2026-04-01
 
 ## 协作约定
 
@@ -25,7 +25,7 @@
 
 ### 02 goal_solver
 
-状态：`部分实现（本轮已收掉一批 P0）`
+状态：`部分实现（Phase 1A goal-solver notes 已收口）`
 
 文档锚点：
 - [`system/02_goal_solver.md#L804`](/root/AndyFtp/investment_system_codex_ready_repo/system/02_goal_solver.md#L804)
@@ -46,15 +46,17 @@
 - `solver_notes`
 
 仍缺：
-- 更贴近正式文档的 Monte Carlo / infeasibility 细节
-- 更深的 `solver_notes` / 结果解释口径
+- typed `GoalSolverParams.shrinkage_factor` 仍未恢复到正式文档口径；当前仅在 `solver_notes` 中诚实披露是否可得
+- 更深的 `solver_notes` / 结果解释口径仍可继续增强，但本轮 Phase 1A 合同要求已覆盖
 
 本轮收口：
 - Monte Carlo context notes（`paths / seed / horizon_months`）
+- Monte Carlo limitation note（补充 `shrinkage_factor` 可得性与 parametric/non-historical 限制）
 - success-threshold gap notes（`threshold / recommended / gap / met`）
 - recommended-feasibility note（推荐项可行性与 shortfall baseline）
 - no-feasible dominant-constraint summary
 - fallback pressure score note
+- selected fallback context note（推荐兜底候选的主导违规原因与 score inputs）
 - probability-model honesty notes
 - goal semantics notes
 - contribution-confidence not-yet-absorbed note
