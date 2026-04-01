@@ -48,6 +48,15 @@
 - 政策：官方站点原文优先
 - 新闻：公开新闻源优先
 
+### 1.5 账户 / 持仓 / 组合快照
+
+- 手工快照导入：本地 JSON / CSV / 表单归一化导入
+- broker/account provider：后续接入券商导出或账户 API 适配器
+- 第一版要求至少具备：
+  - `account_raw` 导入路径
+  - `live_portfolio` 导入路径
+  - 来源标记、时间锚点、freshness 与 fallback 标记
+
 ---
 
 ## 2. 资产覆盖矩阵
@@ -156,6 +165,7 @@ class ProviderCoverageRecord:
 
 - 定义 `market_raw / account_raw / behavior_raw / live_portfolio` 的来源覆盖
 - 定义 freshness / provenance / fallback 规则
+- 其中 `account_raw / live_portfolio` 不得留在“口头支持”状态，必须进入 capability matrix
 
 ### 6.2 对 02 / 04
 

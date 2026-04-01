@@ -203,6 +203,32 @@ class ExecutionPlan:
 - 用户确认后，才能作为后续 `feedback / status / monthly` 的基线之一
 - 仍然不等同于自动下单
 
+### 5.3 持久化与关联契约
+
+执行计划必须显式关联到当前 workflow run，而不能只存在于展示层。
+
+最低要求：
+
+- `plan_id`
+- `source_run_id`
+- `source_allocation_id`
+- `plan_version`
+- `status`
+- `approved_at`
+- `superseded_by_plan_id`
+
+约束：
+
+- 一个 `source_run_id` 可以派生多个 `plan_version`
+- 用户确认的对象必须是某个具体 `plan_id + plan_version`
+- `feedback` 不能只记录“执行了哪个 run 的建议”，还必须能回指“执行了哪个 execution plan version”
+- `monthly / quarterly / status` 读取基线时，应优先读取最新已确认且未被 supersede 的执行计划
+
+过渡说明：
+
+- 在 v2 落代码前，当前仓库仍只有基于 `source_run_id` 的 execution feedback 记录
+- 正式实现时，需要新增 execution-plan 持久化对象，而不是把 `plan_id` 临时塞进 note 字段
+
 ---
 
 ## 6. 前台体验要求

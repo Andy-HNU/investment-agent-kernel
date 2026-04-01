@@ -113,6 +113,7 @@
           - `policy_regime`
           - `macro_uncertainty`
           - `sentiment_stress`
+          - `liquidity_stress`
           - `manual_review_required`
       - 保留 fail-open / fallback / freshness / provenance 体系
       - 同时建立免费源工程红线：
