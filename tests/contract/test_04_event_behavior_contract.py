@@ -52,6 +52,52 @@ def test_behavior_event_forces_observe_and_blocks_rebalance_full(
 
 
 @pytest.mark.contract
+def test_structural_event_soft_deviation_allows_rebalance_full_in_event_mode(
+    goal_solver_output_base,
+    goal_solver_input_base,
+    live_portfolio_base,
+    market_state_base,
+    behavior_state_base,
+    constraint_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+):
+    goal_solver_output = deepcopy(goal_solver_output_base)
+    goal_solver_output["recommended_allocation"] = dict(goal_solver_output["recommended_allocation"])
+    goal_solver_output["recommended_result"] = dict(goal_solver_output["recommended_result"])
+    goal_solver_output["recommended_allocation"]["weights"] = {
+        "equity_cn": 0.46,
+        "bond_cn": 0.34,
+        "gold": 0.05,
+        "satellite": 0.15,
+    }
+    goal_solver_output["recommended_result"]["weights"] = dict(
+        goal_solver_output["recommended_allocation"]["weights"]
+    )
+
+    ev_state = build_ev_state(
+        solver_output=goal_solver_output,
+        solver_baseline_inp=goal_solver_input_base,
+        live_portfolio=live_portfolio_base,
+        market_state=market_state_base,
+        behavior_state=behavior_state_base,
+        constraint_state=constraint_state_base,
+        ev_params=ev_params_base,
+    )
+
+    candidates = generate_candidates(
+        state=ev_state,
+        params=runtime_optimizer_params_base,
+        mode=RuntimeOptimizerMode.EVENT,
+        structural_event=True,
+    )
+    action_types = {candidate.type for candidate in candidates}
+
+    assert ActionType.REBALANCE_LIGHT in action_types
+    assert ActionType.REBALANCE_FULL in action_types
+
+
+@pytest.mark.contract
 def test_monthly_generation_keeps_safe_actions_but_does_not_add_defense(
     goal_solver_output_base,
     goal_solver_input_base,
@@ -82,6 +128,58 @@ def test_monthly_generation_keeps_safe_actions_but_does_not_add_defense(
     assert ActionType.FREEZE in action_types
     assert ActionType.OBSERVE in action_types
     assert ActionType.ADD_DEFENSE not in action_types
+    assert len(action_types) >= 2
+
+
+@pytest.mark.contract
+def test_monthly_new_cash_candidate_clips_amount_pct_to_cash_budget_and_bucket_deficit(
+    goal_solver_output_base,
+    goal_solver_input_base,
+    live_portfolio_base,
+    market_state_base,
+    behavior_state_base,
+    constraint_state_base,
+    ev_params_base,
+    runtime_optimizer_params_base,
+):
+    goal_solver_output = deepcopy(goal_solver_output_base)
+    goal_solver_output["recommended_allocation"] = dict(goal_solver_output["recommended_allocation"])
+    goal_solver_output["recommended_result"] = dict(goal_solver_output["recommended_result"])
+    goal_solver_output["recommended_allocation"]["weights"] = {
+        "equity_cn": 0.46,
+        "bond_cn": 0.34,
+        "gold": 0.05,
+        "satellite": 0.15,
+    }
+    goal_solver_output["recommended_result"]["weights"] = dict(
+        goal_solver_output["recommended_allocation"]["weights"]
+    )
+
+    ev_state = build_ev_state(
+        solver_output=goal_solver_output,
+        solver_baseline_inp=goal_solver_input_base,
+        live_portfolio=live_portfolio_base,
+        market_state=market_state_base,
+        behavior_state=behavior_state_base,
+        constraint_state=constraint_state_base,
+        ev_params=ev_params_base,
+    )
+
+    candidates = generate_candidates(
+        state=ev_state,
+        params=runtime_optimizer_params_base,
+        mode=RuntimeOptimizerMode.MONTHLY,
+    )
+    add_cash_def = next(candidate for candidate in candidates if candidate.type == ActionType.ADD_CASH_TO_DEF)
+
+    cash_budget = live_portfolio_base["available_cash"] * runtime_optimizer_params_base["new_cash_use_pct"]
+    deficit_value = (
+        goal_solver_output["recommended_allocation"]["weights"]["bond_cn"] - live_portfolio_base["weights"]["bond_cn"]
+    ) * live_portfolio_base["total_value"]
+    expected_amount_pct = min(cash_budget, deficit_value) / live_portfolio_base["total_value"]
+
+    assert add_cash_def.amount_pct == pytest.approx(expected_amount_pct)
+    assert add_cash_def.amount_pct <= runtime_optimizer_params_base["amount_pct_max"]
 
 
 @pytest.mark.contract
@@ -120,5 +218,6 @@ def test_drawdown_event_forces_add_defense(
     )
     action_types = {candidate.type for candidate in candidates}
 
+    assert ActionType.FREEZE in action_types
     assert ActionType.ADD_DEFENSE in action_types
     assert ActionType.OBSERVE in action_types

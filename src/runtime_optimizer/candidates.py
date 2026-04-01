@@ -137,6 +137,20 @@ def _find_most_overweight_bucket(
     return eligible[0]
 
 
+def _clip_amount_pct(
+    raw_pct: float,
+    params: dict[str, Any],
+    *,
+    upper_bound: float = 1.0,
+) -> float:
+    capped_upper = min(float(params.get("amount_pct_max", 1.0) or 1.0), upper_bound)
+    clipped = _clamp(raw_pct, 0.0, max(0.0, capped_upper))
+    minimum = float(params.get("amount_pct_min", 0.0) or 0.0)
+    if clipped < minimum:
+        return 0.0
+    return clipped
+
+
 def generate_candidates(
     state: Any,
     params: Any,
@@ -170,19 +184,34 @@ def generate_candidates(
         )
         if underweight:
             bucket = underweight[0]
-            amount_pct = params_dict.get("new_cash_use_pct", 1.0) / max(float(params_dict.get("new_cash_split_buckets", 1)), 1.0)
-            action_type = ActionType.ADD_CASH_TO_CORE if bucket == "equity_cn" else ActionType.ADD_CASH_TO_DEF if bucket == "bond_cn" else ActionType.ADD_CASH_TO_SAT
-            candidates.append(
-                _build_action(
-                    action_type,
-                    target_bucket=bucket,
-                    amount_pct=amount_pct,
-                    cash_source="new_cash",
-                    policy_tag="monthly_fix",
-                    rationale=f"新增资金补{bucket}",
-                    facts=["new_cash_available"],
+            total_value = float(account.get("total_portfolio_value", 0.0) or 0.0)
+            bucket_deficit_pct = max(0.0, -float(deviation.get(bucket, 0.0) or 0.0))
+            cash_budget_value = available_cash * float(params_dict.get("new_cash_use_pct", 1.0) or 1.0)
+            deficit_value = bucket_deficit_pct * total_value
+            raw_amount_pct = 0.0
+            if total_value > 0.0:
+                raw_amount_pct = min(cash_budget_value, deficit_value) / total_value
+            upper_bound = 1.0
+            if bucket == "satellite":
+                upper_bound = max(
+                    0.0,
+                    float(constraints.get("satellite_cap", 1.0) or 1.0)
+                    - float(current_weights.get("satellite", 0.0) or 0.0),
                 )
-            )
+            amount_pct = _clip_amount_pct(raw_amount_pct, params_dict, upper_bound=upper_bound)
+            action_type = ActionType.ADD_CASH_TO_CORE if bucket == "equity_cn" else ActionType.ADD_CASH_TO_DEF if bucket == "bond_cn" else ActionType.ADD_CASH_TO_SAT
+            if amount_pct > 0.0:
+                candidates.append(
+                    _build_action(
+                        action_type,
+                        target_bucket=bucket,
+                        amount_pct=amount_pct,
+                        cash_source="new_cash",
+                        policy_tag="monthly_fix",
+                        rationale=f"新增资金补{bucket}",
+                        facts=["new_cash_available"],
+                    )
+                )
 
     hard = float(params_dict.get("deviation_hard_threshold", 0.1))
     soft = float(params_dict.get("deviation_soft_threshold", 0.03))
@@ -203,7 +232,13 @@ def generate_candidates(
             )
         )
     full_allowed_monthly = bool(params_dict.get("rebalance_full_allowed_monthly", False))
-    if max_dev >= hard and (mode != RuntimeOptimizerMode.MONTHLY or full_allowed_monthly) and not behavior_event:
+    full_rebalance_allowed = False
+    if not behavior_event:
+        if structural_event and max_dev >= soft:
+            full_rebalance_allowed = True
+        elif max_dev >= hard and (mode != RuntimeOptimizerMode.MONTHLY or full_allowed_monthly):
+            full_rebalance_allowed = True
+    if full_rebalance_allowed:
         candidates.append(
             _build_action(
                 ActionType.REBALANCE_FULL,
@@ -242,10 +277,9 @@ def generate_candidates(
         target_bucket = _select_defense_target_bucket(deviation, constraints, market)
         if target_bucket is not None:
             bucket_deficit = max(0.0, -deviation.get(target_bucket, 0.0))
-            amount_pct = _clamp(
+            amount_pct = _clip_amount_pct(
                 min(float(params_dict.get("defense_add_pct", 0.05)), bucket_deficit),
-                0.0,
-                1.0,
+                params_dict,
             )
             if amount_pct > 0.0:
                 defense_amount = amount_pct * float(account.get("total_portfolio_value", 0.0) or 0.0)

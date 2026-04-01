@@ -227,7 +227,7 @@ def test_run_runtime_optimizer_quarterly_drawdown_path_filters_add_defense_and_k
         nonlocal seen_candidate_types
         candidate_actions = kwargs["candidate_actions"]
         seen_candidate_types = [candidate.type for candidate in candidate_actions]
-        safe_action = next(candidate for candidate in candidate_actions if candidate.type == ActionType.OBSERVE)
+        safe_action = next(candidate for candidate in candidate_actions if candidate.type == ActionType.FREEZE)
         return _report(safe_action, score_total=0.0, confidence_flag="medium")
 
     monkeypatch.setattr(runtime_optimizer_engine, "run_ev_engine", fake_run_ev_engine)
@@ -248,7 +248,7 @@ def test_run_runtime_optimizer_quarterly_drawdown_path_filters_add_defense_and_k
     assert ActionType.ADD_DEFENSE not in seen_candidate_types
     assert result.candidate_poverty is True
     assert result.ev_report.recommended_action is not None
-    assert result.ev_report.recommended_action.type == ActionType.OBSERVE
+    assert result.ev_report.recommended_action.type == ActionType.FREEZE
     assert result.ev_report.confidence_reason == "候选通过过滤数量过少，已降级为安全动作优先"
 
 
