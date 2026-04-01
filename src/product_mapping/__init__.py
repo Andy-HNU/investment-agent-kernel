@@ -1,6 +1,11 @@
 from .catalog import load_builtin_catalog
-from .engine import build_execution_plan
 from .types import ExecutionPlan, ExecutionPlanItem, ProductCandidate
+
+
+def build_execution_plan(*args, **kwargs):
+    from .engine import build_execution_plan as _build_execution_plan
+
+    return _build_execution_plan(*args, **kwargs)
 
 __all__ = [
     "ExecutionPlan",

@@ -984,6 +984,7 @@ def _frontdesk_summary(
         "candidate_options": decision_card.get("candidate_options", []),
         "goal_alternatives": decision_card.get("goal_alternatives", []),
         "refresh_summary": refresh_summary,
+        "active_execution_plan": user_state.get("active_execution_plan"),
         "execution_feedback": user_state.get("execution_feedback"),
         "execution_feedback_summary": user_state.get("execution_feedback_summary"),
         "goal_semantics": _as_dict(profile_payload.get("goal_semantics")),

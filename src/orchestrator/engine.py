@@ -9,6 +9,7 @@ from calibration.engine import run_calibration
 from decision_card.builder import build_decision_card
 from decision_card.types import DecisionCardBuildInput, DecisionCardType
 from goal_solver.engine import run_goal_solver
+from product_mapping import build_execution_plan
 from runtime_optimizer.engine import run_runtime_optimizer
 from runtime_optimizer.types import RuntimeOptimizerMode
 from snapshot_ingestion.engine import build_snapshot_bundle
@@ -1400,6 +1401,54 @@ def _build_audit_record(
     )
 
 
+def _build_execution_plan_summary(execution_plan: Any) -> dict[str, Any]:
+    if execution_plan is None:
+        return {}
+    if hasattr(execution_plan, "summary"):
+        return _as_dict(execution_plan.summary())
+    data = _as_dict(execution_plan)
+    items = list(data.get("items") or [])
+    return {
+        "plan_id": data.get("plan_id"),
+        "plan_version": data.get("plan_version"),
+        "source_run_id": data.get("source_run_id"),
+        "source_allocation_id": data.get("source_allocation_id"),
+        "status": data.get("status"),
+        "item_count": len(items),
+        "confirmation_required": bool(data.get("confirmation_required", True)),
+        "warning_count": len(list(data.get("warnings") or [])),
+    }
+
+
+def _maybe_build_execution_plan(
+    *,
+    run_id: str,
+    workflow_type: WorkflowType,
+    status: WorkflowStatus,
+    goal_solver_output: Any,
+) -> Any | None:
+    if status == WorkflowStatus.BLOCKED or workflow_type not in {
+        WorkflowType.ONBOARDING,
+        WorkflowType.QUARTERLY,
+    }:
+        return None
+    goal_output = _as_dict(goal_solver_output)
+    recommended = _as_dict(goal_output.get("recommended_allocation"))
+    weights = _as_dict(recommended.get("weights"))
+    allocation_name = _first_text(
+        recommended.get("name"),
+        _as_dict(goal_output.get("recommended_result")).get("allocation_name"),
+    )
+    if not weights or allocation_name is None:
+        return None
+    return build_execution_plan(
+        source_run_id=run_id,
+        source_allocation_id=allocation_name,
+        bucket_targets={bucket: float(weight) for bucket, weight in weights.items()},
+        restrictions=None,
+    )
+
+
 def _build_persistence_plan(
     *,
     run_id: str,
@@ -1413,6 +1462,7 @@ def _build_persistence_plan(
     calibration_result: Any,
     goal_solver_output: Any,
     runtime_result: Any,
+    execution_plan: Any,
     decision_card: Any,
     workflow_decision: WorkflowDecision,
     runtime_restriction: RuntimeRestriction,
@@ -1421,6 +1471,8 @@ def _build_persistence_plan(
     escalation_reasons: list[str],
     control_flags: dict[str, Any],
 ) -> OrchestratorPersistencePlan:
+    execution_plan_payload = _payload(execution_plan)
+    execution_plan_summary = _build_execution_plan_summary(execution_plan)
     return OrchestratorPersistencePlan(
         run_record={
             "run_id": run_id,
@@ -1451,6 +1503,16 @@ def _build_persistence_plan(
             "runtime_result": None
             if runtime_result is None
             else {"run_id": run_id, "payload": _payload(runtime_result)},
+            "execution_plan": None
+            if execution_plan is None
+            else {
+                "plan_id": execution_plan_summary.get("plan_id"),
+                "plan_version": execution_plan_summary.get("plan_version"),
+                "source_run_id": execution_plan_summary.get("source_run_id"),
+                "source_allocation_id": execution_plan_summary.get("source_allocation_id"),
+                "status": execution_plan_summary.get("status"),
+                "payload": execution_plan_payload,
+            },
             "decision_card": None
             if decision_card is None
             else {
@@ -1464,6 +1526,10 @@ def _build_persistence_plan(
             "user_override_requested": bool(control_flags["manual_override_requested"]),
             "override_reason": None,
             "manual_review_requested": bool(control_flags["manual_review_requested"]),
+            "plan_id": execution_plan_summary.get("plan_id"),
+            "plan_version": execution_plan_summary.get("plan_version"),
+            "source_run_id": execution_plan_summary.get("source_run_id"),
+            "status": execution_plan_summary.get("status"),
         },
     )
 
@@ -1706,6 +1772,12 @@ def run_orchestrator(
     )
     card_build_input.audit_record = audit_record
     decision_card = build_decision_card(card_build_input)
+    execution_plan = _maybe_build_execution_plan(
+        run_id=run_id,
+        workflow_type=effective_trigger.workflow_type,
+        status=status,
+        goal_solver_output=goal_solver_output,
+    )
     audit_record.artifact_refs["has_decision_card"] = decision_card is not None
     persistence_plan = _build_persistence_plan(
         run_id=run_id,
@@ -1719,6 +1791,7 @@ def run_orchestrator(
         calibration_result=calibration_result,
         goal_solver_output=goal_solver_output,
         runtime_result=runtime_result,
+        execution_plan=execution_plan,
         decision_card=decision_card,
         workflow_decision=workflow_decision,
         runtime_restriction=runtime_restriction,
@@ -1740,6 +1813,7 @@ def run_orchestrator(
         calibration_result=calibration_result,
         goal_solver_output=goal_solver_output,
         runtime_result=runtime_result,
+        execution_plan=execution_plan,
         card_build_input=card_build_input,
         decision_card=decision_card,
         workflow_decision=workflow_decision,

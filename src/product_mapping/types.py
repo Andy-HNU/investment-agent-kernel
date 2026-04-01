@@ -73,3 +73,18 @@ class ExecutionPlan:
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
+
+    def is_active(self) -> bool:
+        return self.status in {"draft", "user_review", "approved"}
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "plan_id": self.plan_id,
+            "plan_version": self.plan_version,
+            "source_run_id": self.source_run_id,
+            "source_allocation_id": self.source_allocation_id,
+            "status": self.status,
+            "item_count": len(self.items),
+            "confirmation_required": self.confirmation_required,
+            "warning_count": len(self.warnings),
+        }

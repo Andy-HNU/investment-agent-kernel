@@ -12,6 +12,7 @@ _SOURCE_LABELS = {
     "default_assumed": "默认假设",
     "externally_fetched": "外部抓取",
 }
+_ACTIVE_EXECUTION_PLAN_STATUSES = {"draft", "user_review", "approved"}
 
 
 def _empty_input_provenance() -> dict[str, Any]:
@@ -155,6 +156,20 @@ class FrontdeskExecutionFeedbackRecord:
     updated_at: str
 
 
+@dataclass
+class FrontdeskExecutionPlanRecord:
+    account_profile_id: str
+    plan_id: str
+    plan_version: int
+    source_run_id: str
+    source_allocation_id: str
+    status: str
+    confirmation_required: bool
+    payload: dict[str, Any]
+    created_at: str
+    updated_at: str
+
+
 def _bool_from_db(value: Any) -> bool | None:
     if value is None:
         return None
@@ -193,6 +208,22 @@ def _execution_feedback_payload(
     if persistence_execution_record:
         payload["persistence_execution_record"] = dict(persistence_execution_record)
     return payload
+
+
+def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    items = list(payload.get("items") or [])
+    return {
+        "plan_id": payload.get("plan_id"),
+        "plan_version": payload.get("plan_version"),
+        "source_run_id": payload.get("source_run_id"),
+        "source_allocation_id": payload.get("source_allocation_id"),
+        "status": payload.get("status"),
+        "item_count": len(items),
+        "confirmation_required": bool(payload.get("confirmation_required", True)),
+        "warning_count": len(list(payload.get("warnings") or [])),
+    }
 
 
 class FrontdeskStore:
@@ -261,6 +292,20 @@ class FrontdeskStore:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS execution_plan_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_profile_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL UNIQUE,
+                    plan_version INTEGER NOT NULL,
+                    source_run_id TEXT NOT NULL,
+                    source_allocation_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    confirmation_required INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS input_provenance_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     account_profile_id TEXT NOT NULL,
@@ -294,6 +339,9 @@ class FrontdeskStore:
 
                 CREATE INDEX IF NOT EXISTS idx_workflow_runs_account_created
                 ON workflow_runs(account_profile_id, created_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_execution_plan_records_account_updated
+                ON execution_plan_records(account_profile_id, updated_at DESC);
 
                 CREATE INDEX IF NOT EXISTS idx_input_provenance_records_run
                 ON input_provenance_records(run_id, source_type);
@@ -449,6 +497,71 @@ class FrontdeskStore:
                 ),
             )
 
+    def save_execution_plan_record(
+        self,
+        *,
+        account_profile_id: str,
+        plan_id: str,
+        plan_version: int,
+        source_run_id: str,
+        source_allocation_id: str,
+        status: str,
+        confirmation_required: bool,
+        payload: dict[str, Any],
+        created_at: str,
+        updated_at: str,
+    ) -> FrontdeskExecutionPlanRecord:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO execution_plan_records(
+                    account_profile_id,
+                    plan_id,
+                    plan_version,
+                    source_run_id,
+                    source_allocation_id,
+                    status,
+                    confirmation_required,
+                    payload_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(plan_id) DO UPDATE SET
+                    account_profile_id=excluded.account_profile_id,
+                    plan_version=excluded.plan_version,
+                    source_run_id=excluded.source_run_id,
+                    source_allocation_id=excluded.source_allocation_id,
+                    status=excluded.status,
+                    confirmation_required=excluded.confirmation_required,
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    account_profile_id,
+                    plan_id,
+                    int(plan_version),
+                    source_run_id,
+                    source_allocation_id,
+                    status,
+                    int(bool(confirmation_required)),
+                    _json_dumps(payload),
+                    created_at,
+                    updated_at,
+                ),
+            )
+        return FrontdeskExecutionPlanRecord(
+            account_profile_id=account_profile_id,
+            plan_id=plan_id,
+            plan_version=int(plan_version),
+            source_run_id=source_run_id,
+            source_allocation_id=source_allocation_id,
+            status=status,
+            confirmation_required=bool(confirmation_required),
+            payload=payload,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
     def save_execution_feedback_record(
         self,
         *,
@@ -601,6 +714,11 @@ class FrontdeskStore:
             account_profile_id=account_profile_id,
             run_id=run_id,
             decision_card=decision_card_payload,
+            created_at=created_at,
+        )
+        self._seed_execution_plan_record(
+            account_profile_id=account_profile_id,
+            result_payload=result_payload_with_provenance,
             created_at=created_at,
         )
         self._seed_execution_feedback_record(
@@ -759,6 +877,38 @@ class FrontdeskStore:
             persistence_execution_record=dict(existing.payload.get("persistence_execution_record") or {}),
         )
 
+    def _seed_execution_plan_record(
+        self,
+        *,
+        account_profile_id: str,
+        result_payload: dict[str, Any],
+        created_at: str,
+    ) -> FrontdeskExecutionPlanRecord | None:
+        persistence_plan = dict(result_payload.get("persistence_plan") or {})
+        execution_plan_record = dict((persistence_plan.get("artifact_records") or {}).get("execution_plan") or {})
+        payload = dict(execution_plan_record.get("payload") or {})
+        plan_id = str(execution_plan_record.get("plan_id") or payload.get("plan_id") or "").strip()
+        if not plan_id:
+            return None
+        return self.save_execution_plan_record(
+            account_profile_id=account_profile_id,
+            plan_id=plan_id,
+            plan_version=int(execution_plan_record.get("plan_version") or payload.get("plan_version") or 1),
+            source_run_id=str(
+                execution_plan_record.get("source_run_id") or payload.get("source_run_id") or ""
+            ),
+            source_allocation_id=str(
+                execution_plan_record.get("source_allocation_id")
+                or payload.get("source_allocation_id")
+                or ""
+            ),
+            status=str(execution_plan_record.get("status") or payload.get("status") or "draft"),
+            confirmation_required=bool(payload.get("confirmation_required", True)),
+            payload=payload,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+
     def list_execution_feedback(
         self,
         account_profile_id: str,
@@ -830,6 +980,7 @@ class FrontdeskStore:
             },
             "decision_card": decision_card,
             "baseline_card": dict(baseline.get("decision_card") or {}),
+            "active_execution_plan": snapshot.get("active_execution_plan"),
             "execution_feedback": snapshot.get("execution_feedback"),
             "execution_feedback_summary": snapshot.get("execution_feedback_summary"),
         }
@@ -904,6 +1055,38 @@ class FrontdeskStore:
             "created_at": row["created_at"],
         }
 
+    def get_latest_active_execution_plan(
+        self,
+        account_profile_id: str,
+    ) -> FrontdeskExecutionPlanRecord | None:
+        placeholders = ", ".join("?" for _ in _ACTIVE_EXECUTION_PLAN_STATUSES)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM execution_plan_records
+                WHERE account_profile_id = ?
+                  AND status IN ({placeholders})
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (account_profile_id, *_ACTIVE_EXECUTION_PLAN_STATUSES),
+            ).fetchone()
+        if row is None:
+            return None
+        return FrontdeskExecutionPlanRecord(
+            account_profile_id=row["account_profile_id"],
+            plan_id=row["plan_id"],
+            plan_version=int(row["plan_version"]),
+            source_run_id=row["source_run_id"],
+            source_allocation_id=row["source_allocation_id"],
+            status=row["status"],
+            confirmation_required=bool(row["confirmation_required"]),
+            payload=_json_loads(row["payload_json"]) or {},
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
     def get_latest_execution_feedback(self, account_profile_id: str) -> dict[str, Any] | None:
         records = self.list_execution_feedback(account_profile_id, limit=1)
         if not records:
@@ -916,6 +1099,7 @@ class FrontdeskStore:
             return None
         baseline = self.get_latest_baseline(account_profile_id)
         latest_run = self.get_latest_run(account_profile_id)
+        active_execution_plan = self.get_latest_active_execution_plan(account_profile_id)
         execution_feedback_summary = self.get_execution_feedback_summary(account_profile_id)
         return {
             "profile": profile,
@@ -930,6 +1114,9 @@ class FrontdeskStore:
                 "created_at": baseline.created_at,
             },
             "latest_run": latest_run,
+            "active_execution_plan": None
+            if active_execution_plan is None
+            else _execution_plan_summary(active_execution_plan.payload),
             "execution_feedback": execution_feedback_summary["latest_feedback"],
             "execution_feedback_summary": execution_feedback_summary,
         }

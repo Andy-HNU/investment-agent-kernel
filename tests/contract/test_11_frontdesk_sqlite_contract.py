@@ -55,6 +55,7 @@ def test_frontdesk_sqlite_initializes_schema_and_persists_onboarding_result(tmp_
         "onboarding_sessions",
         "workflow_runs",
         "decision_cards",
+        "execution_plan_records",
         "input_provenance_records",
         "execution_feedback_records",
     }
@@ -73,9 +74,17 @@ def test_frontdesk_sqlite_initializes_schema_and_persists_onboarding_result(tmp_
     assert user_state["latest_result"]["status"] == "completed"
     assert user_state["decision_card"]["card_type"] == "goal_baseline"
     assert user_state["decision_card"]["input_provenance"]["counts"]["user_provided"] >= 1
+    assert user_state["active_execution_plan"]["source_run_id"] == result.run_id
+    assert user_state["active_execution_plan"]["plan_version"] == 1
+    assert user_state["active_execution_plan"]["status"] == "draft"
+    assert user_state["active_execution_plan"]["item_count"] >= 1
     assert user_state["execution_feedback"]["source_run_id"] == result.run_id
     assert user_state["execution_feedback"]["recommended_action"] == result.decision_card["recommended_action"]
     assert user_state["execution_feedback"]["feedback_status"] == "pending"
+    assert (
+        user_state["execution_feedback"]["payload"]["persistence_execution_record"]["plan_id"]
+        == user_state["active_execution_plan"]["plan_id"]
+    )
 
 
 @pytest.mark.contract

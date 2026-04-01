@@ -179,6 +179,35 @@ def test_run_orchestrator_onboarding_builds_goal_baseline(
 
 
 @pytest.mark.contract
+def test_run_orchestrator_onboarding_persistence_plan_includes_execution_plan_artifact(
+    goal_solver_input_base,
+    calibration_result_base,
+):
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "run_onboarding_execution_plan"},
+        raw_inputs={
+            "bundle_id": "bundle_acc001_20260329T120000Z",
+            "snapshot_bundle": {"bundle_id": "bundle_acc001_20260329T120000Z"},
+            "calibration_result": calibration_result_base,
+            "allocation_engine_input": _allocation_input(goal_solver_input_base),
+            "goal_solver_input": goal_solver_input_base,
+        },
+    )
+
+    assert result.status == WorkflowStatus.COMPLETED
+    assert result.persistence_plan is not None
+    execution_plan = result.persistence_plan.artifact_records["execution_plan"]
+
+    assert execution_plan is not None
+    assert execution_plan["source_run_id"] == "run_onboarding_execution_plan"
+    assert execution_plan["source_allocation_id"] == result.goal_solver_output.recommended_allocation.name
+    assert execution_plan["plan_version"] == 1
+    assert execution_plan["status"] == "draft"
+    assert execution_plan["payload"]["plan_id"] == execution_plan["plan_id"]
+    assert execution_plan["payload"]["items"]
+
+
+@pytest.mark.contract
 def test_run_orchestrator_onboarding_builds_snapshot_and_calibration_from_raw_inputs(
     goal_solver_input_base,
     live_portfolio_base,
