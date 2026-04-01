@@ -989,6 +989,8 @@ def _frontdesk_summary(
         "goal_alternatives": decision_card.get("goal_alternatives", []),
         "refresh_summary": refresh_summary,
         "active_execution_plan": user_state.get("active_execution_plan"),
+        "pending_execution_plan": user_state.get("pending_execution_plan"),
+        "execution_plan_comparison": user_state.get("execution_plan_comparison"),
         "execution_feedback": user_state.get("execution_feedback"),
         "execution_feedback_summary": user_state.get("execution_feedback_summary"),
         "goal_semantics": _as_dict(profile_payload.get("goal_semantics")),
@@ -1423,6 +1425,7 @@ def approve_frontdesk_execution_plan(
         "approved_execution_plan": _as_dict(record),
         "active_execution_plan": (snapshot or {}).get("active_execution_plan"),
         "pending_execution_plan": (snapshot or {}).get("pending_execution_plan"),
+        "execution_plan_comparison": (snapshot or {}).get("execution_plan_comparison"),
         "refresh_summary": (snapshot or {}).get("refresh_summary"),
         "user_state": user_state,
     }

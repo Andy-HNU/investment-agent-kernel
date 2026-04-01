@@ -267,6 +267,111 @@ def _execution_plan_record_from_row(row: sqlite3.Row | None) -> FrontdeskExecuti
     )
 
 
+def _execution_plan_item_index(record: FrontdeskExecutionPlanRecord | None) -> dict[str, dict[str, Any]]:
+    if record is None:
+        return {}
+    index: dict[str, dict[str, Any]] = {}
+    for item in list((record.payload or {}).get("items") or []):
+        payload = dict(item or {})
+        bucket = str(payload.get("asset_bucket") or "").strip()
+        if bucket:
+            index[bucket] = payload
+    return index
+
+
+def _primary_product_id(item: dict[str, Any]) -> str | None:
+    direct = str(item.get("primary_product_id") or "").strip()
+    if direct:
+        return direct
+    product = dict(item.get("primary_product") or {})
+    nested = str(product.get("product_id") or "").strip()
+    return nested or None
+
+
+def _compare_execution_plans(
+    active: FrontdeskExecutionPlanRecord | None,
+    pending: FrontdeskExecutionPlanRecord | None,
+) -> dict[str, Any] | None:
+    if active is None or pending is None:
+        return None
+
+    active_items = _execution_plan_item_index(active)
+    pending_items = _execution_plan_item_index(pending)
+    bucket_changes: list[dict[str, Any]] = []
+    product_switches: list[dict[str, Any]] = []
+    max_weight_delta = 0.0
+
+    for bucket in sorted(set(active_items) | set(pending_items)):
+        active_item = active_items.get(bucket, {})
+        pending_item = pending_items.get(bucket, {})
+        active_weight = round(float(active_item.get("target_weight", 0.0) or 0.0), 4)
+        pending_weight = round(float(pending_item.get("target_weight", 0.0) or 0.0), 4)
+        weight_delta = round(pending_weight - active_weight, 4)
+        active_product_id = _primary_product_id(active_item)
+        pending_product_id = _primary_product_id(pending_item)
+        product_changed = active_product_id != pending_product_id and bool(active_product_id or pending_product_id)
+        if abs(weight_delta) <= 1e-6 and not product_changed:
+            continue
+        max_weight_delta = max(max_weight_delta, abs(weight_delta))
+        change_payload = {
+            "asset_bucket": bucket,
+            "active_target_weight": active_weight,
+            "pending_target_weight": pending_weight,
+            "weight_delta": weight_delta,
+            "active_primary_product_id": active_product_id,
+            "pending_primary_product_id": pending_product_id,
+            "product_changed": product_changed,
+        }
+        bucket_changes.append(change_payload)
+        if product_changed:
+            product_switches.append(
+                {
+                    "asset_bucket": bucket,
+                    "active_primary_product_id": active_product_id,
+                    "pending_primary_product_id": pending_product_id,
+                }
+            )
+
+    bucket_set_changed = any(
+        (item["active_target_weight"] <= 1e-6) != (item["pending_target_weight"] <= 1e-6)
+        for item in bucket_changes
+    )
+    changed_bucket_count = len(bucket_changes)
+    product_switch_count = len(product_switches)
+
+    if changed_bucket_count == 0 and product_switch_count == 0:
+        change_level = "none"
+        recommendation = "keep_active"
+        summary = ["pending plan matches current active plan"]
+    else:
+        if bucket_set_changed or max_weight_delta >= 0.10 or changed_bucket_count >= 3:
+            change_level = "major"
+            recommendation = "replace_active"
+        else:
+            change_level = "minor"
+            recommendation = "review_replace"
+        summary = [f"{changed_bucket_count} bucket changes detected"]
+        if product_switch_count:
+            summary.append(f"{product_switch_count} primary product switches detected")
+        if max_weight_delta > 0.0:
+            summary.append(f"largest weight delta={max_weight_delta:.2%}")
+
+    return {
+        "active_plan_id": active.plan_id,
+        "active_plan_version": active.plan_version,
+        "pending_plan_id": pending.plan_id,
+        "pending_plan_version": pending.plan_version,
+        "change_level": change_level,
+        "recommendation": recommendation,
+        "changed_bucket_count": changed_bucket_count,
+        "product_switch_count": product_switch_count,
+        "max_weight_delta": round(max_weight_delta, 4),
+        "bucket_changes": bucket_changes,
+        "product_switches": product_switches,
+        "summary": summary,
+    }
+
+
 class FrontdeskStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
@@ -1045,6 +1150,7 @@ class FrontdeskStore:
             "baseline_card": dict(baseline.get("decision_card") or {}),
             "active_execution_plan": snapshot.get("active_execution_plan"),
             "pending_execution_plan": snapshot.get("pending_execution_plan"),
+            "execution_plan_comparison": snapshot.get("execution_plan_comparison"),
             "execution_feedback": snapshot.get("execution_feedback"),
             "execution_feedback_summary": snapshot.get("execution_feedback_summary"),
         }
@@ -1282,6 +1388,7 @@ class FrontdeskStore:
             "latest_run": latest_run,
             "active_execution_plan": _execution_plan_record_summary(active_execution_plan),
             "pending_execution_plan": _execution_plan_record_summary(pending_execution_plan),
+            "execution_plan_comparison": _compare_execution_plans(active_execution_plan, pending_execution_plan),
             "execution_feedback": execution_feedback_summary["latest_feedback"],
             "execution_feedback_summary": execution_feedback_summary,
         }

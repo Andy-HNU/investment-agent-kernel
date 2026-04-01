@@ -263,6 +263,42 @@ def test_frontdesk_approve_execution_plan_promotes_pending_and_supersedes_previo
 
 
 @pytest.mark.contract
+def test_frontdesk_snapshot_surfaces_execution_plan_comparison_for_pending_vs_active(tmp_path):
+    profile = _profile(account_profile_id="plan_diff_user")
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    onboarding_summary = run_frontdesk_onboarding(profile, db_path=db_path)
+    first_pending = onboarding_summary["user_state"]["pending_execution_plan"]
+    assert first_pending is not None
+
+    approve_frontdesk_execution_plan(
+        account_profile_id=profile.account_profile_id,
+        plan_id=first_pending["plan_id"],
+        plan_version=int(first_pending["plan_version"]),
+        approved_at="2026-03-31T00:00:00Z",
+        db_path=db_path,
+    )
+
+    updated_profile = profile.to_dict()
+    updated_profile["restrictions"] = ["不碰股票"]
+    second_onboarding = run_frontdesk_onboarding(UserOnboardingProfile(**updated_profile), db_path=db_path)
+
+    comparison = second_onboarding["user_state"]["execution_plan_comparison"]
+
+    assert second_onboarding["status"] == "completed"
+    assert comparison is not None
+    assert comparison["change_level"] == "major"
+    assert comparison["recommendation"] == "replace_active"
+    assert comparison["changed_bucket_count"] >= 1
+    assert any(
+        item["asset_bucket"] == "equity_cn"
+        and item["active_target_weight"] > 0.0
+        and item["pending_target_weight"] == 0.0
+        for item in comparison["bucket_changes"]
+    )
+
+
+@pytest.mark.contract
 def test_frontdesk_monthly_rejects_goal_profile_updates(tmp_path):
     profile = _profile(account_profile_id="goal_change_user")
     db_path = tmp_path / "frontdesk.sqlite"

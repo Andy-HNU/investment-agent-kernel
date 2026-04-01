@@ -216,3 +216,77 @@ def test_frontdesk_cli_approve_plan_promotes_pending_execution_plan(tmp_path, ca
     assert payload["approved_execution_plan"]["plan_id"] == pending_plan["plan_id"]
     assert payload["user_state"]["active_execution_plan"]["status"] == "approved"
     assert payload["user_state"]["pending_execution_plan"] is None
+
+
+@pytest.mark.smoke
+def test_frontdesk_cli_show_user_surfaces_execution_plan_comparison(tmp_path, capsys):
+    from frontdesk.cli import main
+
+    profile = _profile()
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    onboard_exit = main(
+        [
+            "onboard",
+            "--db",
+            str(db_path),
+            "--profile-json",
+            json.dumps(profile.to_dict(), ensure_ascii=False),
+            "--non-interactive",
+            "--json",
+        ]
+    )
+    onboard_payload = json.loads(capsys.readouterr().out)
+    pending_plan = onboard_payload["user_state"]["pending_execution_plan"]
+
+    approve_exit = main(
+        [
+            "approve-plan",
+            "--db",
+            str(db_path),
+            "--account-profile-id",
+            profile.account_profile_id,
+            "--plan-id",
+            str(pending_plan["plan_id"]),
+            "--plan-version",
+            str(pending_plan["plan_version"]),
+            "--approved-at",
+            "2026-03-31T00:00:00Z",
+            "--json",
+        ]
+    )
+    capsys.readouterr()
+
+    updated_profile = profile.to_dict()
+    updated_profile["restrictions"] = ["不碰股票"]
+    second_onboard_exit = main(
+        [
+            "onboard",
+            "--db",
+            str(db_path),
+            "--profile-json",
+            json.dumps(updated_profile, ensure_ascii=False),
+            "--non-interactive",
+            "--json",
+        ]
+    )
+    capsys.readouterr()
+
+    show_user_exit = main(
+        [
+            "show-user",
+            "--db",
+            str(db_path),
+            "--account-profile-id",
+            profile.account_profile_id,
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert onboard_exit == 0
+    assert approve_exit == 0
+    assert second_onboard_exit == 0
+    assert show_user_exit == 0
+    assert "execution_plan_comparison:" in output
+    assert "recommendation=replace_active" in output
+    assert "bucket=equity_cn" in output

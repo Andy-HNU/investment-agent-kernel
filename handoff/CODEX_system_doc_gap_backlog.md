@@ -292,11 +292,15 @@
   - `approve_frontdesk_execution_plan(...)`
   - `approve-plan --account-profile-id ... --plan-id ... --plan-version ...`
 - approving a new plan now promotes `pending -> approved active` and supersedes the previous active plan
+- frontdesk snapshot / user-state / CLI now surface active-vs-pending execution-plan comparison:
+  - bucket-level target deltas
+  - primary-product switches
+  - `recommendation=keep_active/review_replace/replace_active`
 - inline `--profile-json` JSON input now works for long payloads without path-length crashes
 
 仍缺：
 - 更完整的产品池、替代规则、停用策略与用户解释层
-- monthly / quarterly follow-up 针对“现行执行计划 vs 建议新计划”的差异化比对与升级规则
+- monthly / quarterly follow-up 对 comparison recommendation 的工作流消费与升级规则
 
 ## 优先级清单
 
@@ -304,7 +308,7 @@
 
 1. `10 ev_engine`：继续做公式/量纲/回归硬化
 2. `07 orchestrator`：继续补 replay / override / provenance 深水区与 execution-plan state-machine 接线
-3. `11 product_mapping / execution_planner`：补“现行计划 vs 新计划”差异化比对、升级规则与更完整确认闭环
+3. `11 product_mapping / execution_planner`：把 comparison recommendation 真正接入 monthly / quarterly 升级规则
 
 ### P1
 
