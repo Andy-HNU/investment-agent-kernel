@@ -548,6 +548,27 @@ def _append_solver_context_notes(
     )
 
 
+def _append_model_honesty_notes(notes: list[str], inp: GoalSolverInput) -> None:
+    notes.append(
+        "probability_model "
+        "method=parametric_monte_carlo "
+        "distribution=normal "
+        "historical_backtest_used=false"
+    )
+    notes.append(
+        "goal_semantics "
+        f"basis={inp.goal.goal_amount_basis} "
+        f"scope={inp.goal.goal_amount_scope} "
+        f"tax={inp.goal.tax_assumption} "
+        f"fee={inp.goal.fee_assumption}"
+    )
+    notes.append(
+        "contribution_confidence "
+        f"value={inp.goal.contribution_commitment_confidence:.4f} "
+        "absorbed_into_solver=false"
+    )
+
+
 def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
     inp = _goal_solver_input_from_any(inp)
     params = inp.solver_params
@@ -651,6 +672,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
     structure_budget = _build_structure_budget(best_allocation, inp.constraints)
     risk_budget = _build_risk_budget(best_result, inp.constraints)
     _append_solver_context_notes(notes, inp, best_result)
+    _append_model_honesty_notes(notes, inp)
     return GoalSolverOutput(
         input_snapshot_id=inp.snapshot_id,
         generated_at=_now_iso(),

@@ -55,6 +55,9 @@
 - recommended-feasibility note（推荐项可行性与 shortfall baseline）
 - no-feasible dominant-constraint summary
 - fallback pressure score note
+- probability-model honesty notes
+- goal semantics notes
+- contribution-confidence not-yet-absorbed note
 
 ### 03 snapshot_ingestion
 

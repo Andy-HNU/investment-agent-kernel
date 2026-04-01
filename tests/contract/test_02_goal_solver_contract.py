@@ -192,6 +192,45 @@ def test_run_goal_solver_emits_context_and_threshold_gap_notes(goal_solver_input
 
 
 @pytest.mark.contract
+def test_run_goal_solver_emits_model_honesty_notes(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["goal"]["goal_amount_basis"] = "real"
+    solver_input["goal"]["goal_amount_scope"] = "incremental_gain"
+    solver_input["goal"]["tax_assumption"] = "after_tax"
+    solver_input["goal"]["fee_assumption"] = "management_fee_plus_transaction_cost"
+    solver_input["goal"]["contribution_commitment_confidence"] = 0.66
+
+    def _fake_run_monte_carlo(*_args, **_kwargs):
+        return (
+            0.68,
+            {"expected_terminal_value": 2_050_000.0},
+            RiskSummary(
+                max_drawdown_90pct=0.14,
+                terminal_value_tail_mean_95=1_550_000.0,
+                shortfall_probability=0.32,
+                terminal_shortfall_p5_vs_initial=0.08,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert any(
+        note == "probability_model method=parametric_monte_carlo distribution=normal historical_backtest_used=false"
+        for note in result.solver_notes
+    )
+    assert any(
+        note == "goal_semantics basis=real scope=incremental_gain tax=after_tax fee=management_fee_plus_transaction_cost"
+        for note in result.solver_notes
+    )
+    assert any(
+        note == "contribution_confidence value=0.6600 absorbed_into_solver=false"
+        for note in result.solver_notes
+    )
+
+
+@pytest.mark.contract
 def test_run_monte_carlo_respects_seed_and_path_count(goal_solver_input_base):
     normalized = goal_solver_engine._goal_solver_input_from_any(goal_solver_input_base)
     weights = normalized.candidate_allocations[0].weights
