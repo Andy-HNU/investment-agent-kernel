@@ -129,6 +129,18 @@ class ProviderCoverageRecord:
 - 政策以官网为主
 - 新闻先走公开源
 
+Wave 2 的第一条真实历史链路应采用“最窄且诚实”的切片：
+
+- 中国市场主 slice：`AKShare stock_zh_index_daily_tx`
+- 中国市场 cross-check：`baostock`
+- 海外 cross-check：`yfinance`
+
+以下能力在没有独立 live smoke + replay 验证前，不得上调为 `verified`：
+
+- `AKShare` ETF 历史路径
+- `efinance` 历史路径
+- `gold` 的真实历史覆盖
+
 ---
 
 ## 4. 工程红线

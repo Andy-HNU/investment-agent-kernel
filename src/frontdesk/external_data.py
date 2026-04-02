@@ -9,7 +9,9 @@ from snapshot_ingestion.adapters import (
     ExternalSnapshotAdapterError,
     FetchedSnapshotPayload,
     HttpJsonSnapshotAdapterConfig,
+    MarketHistorySnapshotAdapterConfig,
     fetch_http_json_snapshot,
+    fetch_market_history_snapshot,
 )
 from snapshot_ingestion.adapters.file_json_adapter import (
     FileJsonSnapshotAdapterConfig,
@@ -69,6 +71,18 @@ def _ensure_default_providers_registered() -> None:
             )
 
         registry.register_external_snapshot("local_json", _local_json_fetcher)
+
+    if registry.get_external_snapshot("market_history") is None:
+        def _market_history_fetcher(config: dict[str, Any], *, workflow_type: str, account_profile_id: str, as_of: str):
+            adapter_config = MarketHistorySnapshotAdapterConfig.from_mapping(config)
+            return fetch_market_history_snapshot(
+                adapter_config,
+                workflow_type=workflow_type,
+                account_profile_id=account_profile_id,
+                as_of=as_of,
+            )
+
+        registry.register_external_snapshot("market_history", _market_history_fetcher)
 
 
 def fetch_external_snapshot(

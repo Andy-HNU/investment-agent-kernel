@@ -8,7 +8,9 @@ from snapshot_ingestion.adapters import (
     ExternalSnapshotAdapterError,
     FetchedSnapshotPayload,
     HttpJsonSnapshotAdapterConfig,
+    MarketHistorySnapshotAdapterConfig,
     fetch_http_json_snapshot,
+    fetch_market_history_snapshot,
 )
 from snapshot_ingestion.provider_matrix import find_provider_coverage, provider_capability_matrix_dicts
 
@@ -117,6 +119,16 @@ def fetch_snapshot_from_provider_config(
         local_config = dict(config)
         local_config.setdefault("as_of", as_of)
         return _coerce_local_json_snapshot(local_config)
+    if adapter_name == "market_history":
+        market_history_config = dict(config)
+        market_history_config.setdefault("as_of", as_of)
+        adapter_config = MarketHistorySnapshotAdapterConfig.from_mapping(market_history_config)
+        return fetch_market_history_snapshot(
+            adapter_config,
+            workflow_type=workflow_type,
+            account_profile_id=account_profile_id,
+            as_of=as_of,
+        )
     raise ValueError(f"unsupported external data adapter: {adapter_name}")
 
 

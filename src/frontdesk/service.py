@@ -364,6 +364,7 @@ def _build_refresh_summary(
         "fresh": "新鲜",
         "aging": "开始变旧",
         "stale": "已陈旧",
+        "degraded": "已降级",
         "fallback": "已降级",
         "default_assumed": "默认假设",
     }
@@ -395,6 +396,15 @@ def _build_refresh_summary(
                 "detail": domain_meta.get("detail"),
             }
         )
+    external_domain_states = {
+        str(item.get("freshness_state") or "")
+        for item in domain_details
+        if item.get("source_type") == "externally_fetched"
+    }
+    if "degraded" in external_domain_states:
+        freshness = "degraded"
+    elif "fallback" in external_domain_states and freshness != "degraded":
+        freshness = "fallback"
     return {
         "workflow_type": workflow_type,
         "as_of": as_of or None,

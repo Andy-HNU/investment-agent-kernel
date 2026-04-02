@@ -700,3 +700,12 @@ class BucketProxyMappingRaw:
 - real-source provider
 
 真实公开源未通过验收前，不得把 `verified_status` 写成 `verified`。
+
+对于真实历史序列，`03` 层推荐走独立的 `market_history` adapter：
+
+- 先从真实 provider 拉取原始 bars
+- 先落到 dataset cache 并保留 `VersionPin`
+- 再重采样成月频 return series
+- 再写成 version-pinned `HistoricalDatasetSnapshot`
+
+禁止把日频 bars 直接塞进 `historical_dataset.return_series`，否则 `05` 的年化口径会失真。

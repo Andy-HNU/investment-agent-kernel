@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 import pytest
 
 from calibration.engine import run_calibration
+from snapshot_ingestion.adapters import market_history_adapter
 from snapshot_ingestion.engine import build_snapshot_bundle
 from snapshot_ingestion.historical import HistoricalDatasetCache, HistoricalDatasetSnapshot
 from snapshot_ingestion.provider_matrix import find_provider_coverage, load_provider_capability_matrix
 from snapshot_ingestion.providers import fetch_snapshot_from_provider_config, provider_debug_metadata
+from shared.datasets.types import VersionPin
 
 
 def _market_raw_with_history() -> dict[str, object]:
@@ -104,6 +106,22 @@ def _constraint_raw() -> dict[str, object]:
     }
 
 
+def _daily_rows(*monthly_closes: tuple[str, float]) -> list[dict[str, float | str]]:
+    rows: list[dict[str, float | str]] = []
+    for date_text, close_value in monthly_closes:
+        rows.append(
+            {
+                "date": date_text,
+                "open": close_value,
+                "high": close_value,
+                "low": close_value,
+                "close": close_value,
+                "volume": 1000.0,
+            }
+        )
+    return rows
+
+
 @pytest.mark.contract
 def test_provider_capability_matrix_covers_kernel_critical_asset_classes():
     matrix = load_provider_capability_matrix()
@@ -115,6 +133,9 @@ def test_provider_capability_matrix_covers_kernel_critical_asset_classes():
     assert "bond" in asset_classes
     assert "gold" in asset_classes
     assert find_provider_coverage("live_portfolio").primary_source == "manual_snapshot"
+    assert find_provider_coverage("gold").verified_status == "in_progress"
+    assert find_provider_coverage("a_share_equity").fallback_source == "baostock"
+    assert find_provider_coverage("etf").historical_support == "partial"
 
 
 @pytest.mark.contract
@@ -205,6 +226,101 @@ def test_historical_dataset_cache_roundtrip(tmp_path):
     assert loaded is not None
     assert loaded.version_id == dataset.version_id
     assert loaded.return_series["equity_cn"][0] == 0.02
+
+
+@pytest.mark.contract
+def test_historical_dataset_snapshot_defaults_to_in_progress():
+    dataset = HistoricalDatasetSnapshot(
+        dataset_id="cn_core_returns",
+        version_id="cn_core_returns:v1",
+        as_of="2026-04-01T00:00:00Z",
+        source_name="fixture_history",
+        source_ref="fixture://history",
+        lookback_months=6,
+        return_series={"equity_cn": [0.02, -0.01]},
+    )
+
+    assert dataset.coverage_status == "in_progress"
+
+
+@pytest.mark.contract
+def test_market_history_adapter_resamples_daily_bars_and_marks_default_status_in_progress(tmp_path, monkeypatch):
+    rows_by_symbol = {
+        "000300": _daily_rows(("2025-01-31", 100.0), ("2025-02-28", 110.0), ("2025-03-31", 121.0)),
+        "511010": _daily_rows(("2025-01-31", 100.0), ("2025-02-28", 101.0), ("2025-03-31", 102.0)),
+        "Au99.99": _daily_rows(("2025-01-31", 100.0), ("2025-02-28", 98.0), ("2025-03-31", 99.0)),
+        "399006": _daily_rows(("2025-01-31", 100.0), ("2025-02-28", 115.0), ("2025-03-31", 120.0)),
+    }
+
+    def _fake_fetch_timeseries(spec, *, pin, cache, allow_fallback, return_used_pin=False):
+        del cache, allow_fallback
+        rows = rows_by_symbol[str(spec.symbol)]
+        return (rows, pin) if return_used_pin else rows
+
+    monkeypatch.setattr(market_history_adapter, "fetch_timeseries", _fake_fetch_timeseries)
+
+    payload = fetch_snapshot_from_provider_config(
+        {
+            "adapter": "market_history",
+            "provider_name": "market_history_akshare_tx",
+            "dataset_id": "cn_core_history",
+            "dataset_cache_dir": str(tmp_path / "dataset-cache"),
+            "historical_cache_dir": str(tmp_path / "historical-cache"),
+            "lookback_months": 24,
+            "bucket_series": {
+                "equity_cn": {
+                    "provider": "akshare",
+                    "kind": "cn_index_daily",
+                    "dataset_id": "cn_index_000300",
+                    "symbol": "000300",
+                    "version_id": "tx-csi300:v1",
+                    "source_ref": "akshare://stock_zh_index_daily_tx?series_type=cn_index_daily_tx",
+                    "proxy_label": "沪深300指数",
+                },
+                "bond_cn": {
+                    "provider": "akshare",
+                    "kind": "cn_bond_daily",
+                    "dataset_id": "cn_bond_511010",
+                    "symbol": "511010",
+                    "version_id": "bond-511010:v1",
+                    "source_ref": "akshare://bond_zh_hs_daily?series_type=cn_bond_daily",
+                    "proxy_label": "国债ETF",
+                },
+                "gold": {
+                    "provider": "akshare",
+                    "kind": "cn_gold_spot",
+                    "dataset_id": "cn_gold_au9999",
+                    "symbol": "Au99.99",
+                    "version_id": "gold-au9999:v1",
+                    "source_ref": "akshare://spot_hist_sge?series_type=cn_gold_spot",
+                    "proxy_label": "黄金现货",
+                },
+                "satellite": {
+                    "provider": "akshare",
+                    "kind": "cn_index_daily",
+                    "dataset_id": "cn_index_399006",
+                    "symbol": "399006",
+                    "version_id": "tx-cyb:v1",
+                    "source_ref": "akshare://stock_zh_index_daily_tx?series_type=cn_index_daily_tx",
+                    "proxy_label": "创业板指数",
+                },
+            },
+            "coverage_expectation": ["equity_cn", "bond_cn", "gold", "satellite"],
+        },
+        workflow_type="monthly",
+        account_profile_id="provider_contract",
+        as_of="2026-04-01T00:00:00Z",
+    )
+
+    assert payload is not None
+    assert payload.provider_name == "market_history_akshare_tx"
+    market_raw = payload.raw_overrides["market_raw"]
+    dataset = market_raw["historical_dataset"]
+    assert dataset["coverage_status"] == "in_progress"
+    assert dataset["return_series"]["equity_cn"] == pytest.approx([0.10, 0.10])
+    assert market_raw["raw_volatility"]["equity_cn"] > 0.0
+    assert market_raw["bucket_proxy_mapping"]["bucket_to_proxy"]["equity_cn"] == "沪深300指数"
+    assert any("dataset_version=" in item["note"] for item in payload.provenance_items)
 
 
 @pytest.mark.contract

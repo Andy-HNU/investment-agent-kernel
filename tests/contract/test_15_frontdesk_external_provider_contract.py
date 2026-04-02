@@ -6,6 +6,7 @@ import pytest
 
 from frontdesk.external_data import ExternalSnapshotAdapterError
 from frontdesk.service import load_user_state, run_frontdesk_followup, run_frontdesk_onboarding
+from shared.datasets.types import VersionPin
 from shared.onboarding import UserOnboardingProfile
 from tests.support.http_snapshot_server import serve_json_routes
 
@@ -197,3 +198,54 @@ def test_frontdesk_onboarding_accepts_inline_snapshot_provider_config(tmp_path):
     assert summary["external_snapshot_status"] == "fetched"
     assert summary["refresh_summary"]["provider_name"] == "fixture_inline_provider"
     assert summary["user_state"]["profile"]["current_total_assets"] == 62_500.0
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_accepts_market_history_provider_config_and_surfaces_degraded_status(tmp_path, monkeypatch):
+    from snapshot_ingestion.adapters import market_history_adapter
+
+    def _fake_fetch_timeseries(spec, *, pin, cache, allow_fallback=False, return_used_pin=False):
+        rows = [
+            {"date": "2025-01-31", "open": 3900.0, "high": 3910.0, "low": 3890.0, "close": 3905.0, "volume": 1.0},
+            {"date": "2025-02-28", "open": 3920.0, "high": 3940.0, "low": 3910.0, "close": 3936.0, "volume": 1.0},
+            {"date": "2025-03-31", "open": 3940.0, "high": 3960.0, "low": 3930.0, "close": 3955.0, "volume": 1.0},
+        ]
+        used_pin = VersionPin(version_id=pin.version_id, source_ref=pin.source_ref)
+        return (rows, used_pin) if return_used_pin else rows
+
+    monkeypatch.setattr(market_history_adapter, "fetch_timeseries", _fake_fetch_timeseries)
+
+    summary = run_frontdesk_onboarding(
+        _profile(account_profile_id="frontdesk_provider_market_history"),
+        db_path=tmp_path / "frontdesk.sqlite",
+        external_data_config={
+            "adapter": "market_history",
+            "provider_name": "akshare_market_history",
+            "dataset_id": "cn_market_history",
+            "dataset_cache_dir": str(tmp_path / "dataset-cache"),
+            "historical_cache_dir": str(tmp_path / "historical-cache"),
+            "coverage_expectation": ["equity_cn", "bond_cn", "gold", "satellite"],
+            "bucket_series": {
+                "equity_cn": {
+                    "provider": "akshare",
+                    "kind": "cn_index_daily",
+                    "dataset_id": "cn_core_index",
+                    "symbol": "000300",
+                    "version_id": "akshare-cn-core:v1",
+                    "source_ref": "akshare://stock_zh_index_daily_tx?series_type=cn_index_daily_tx",
+                    "proxy_label": "沪深300指数",
+                }
+            },
+        },
+    )
+
+    assert summary["status"] == "completed"
+    assert summary["external_snapshot_status"] == "fetched"
+    assert summary["refresh_summary"]["provider_name"] == "akshare_market_history"
+    assert summary["refresh_summary"]["freshness_state"] == "degraded"
+    market_domain = next(item for item in summary["refresh_summary"]["domain_details"] if item["domain"] == "market_raw")
+    assert market_domain["freshness_state"] == "degraded"
+    assert summary["input_provenance"]["counts"]["externally_fetched"] >= 1
+    fetched_market = summary["decision_card"]["input_provenance"]["externally_fetched"][0]
+    assert "coverage_status=degraded" in str(fetched_market.get("note") or "")
+    assert "dataset_version=" in str(fetched_market.get("note") or "")

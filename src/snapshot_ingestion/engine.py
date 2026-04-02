@@ -3,7 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from snapshot_ingestion.historical import build_historical_dataset_snapshot
+from snapshot_ingestion.historical import (
+    build_bucket_proxy_mapping,
+    build_historical_dataset_snapshot,
+    build_historical_return_panel,
+    build_jump_event_history,
+    build_regime_feature_snapshot,
+)
 from snapshot_ingestion.types import CompletenessLevel, PolicyNewsSignal, QualityFlag, SnapshotBundle
 
 
@@ -272,6 +278,10 @@ def build_snapshot_bundle(
     historical_dataset_metadata = historical_dataset.to_dict() if historical_dataset is not None else {}
     if historical_dataset is not None:
         market["historical_dataset"] = historical_dataset_metadata
+    historical_return_panel = build_historical_return_panel(market.get("historical_return_panel"))
+    regime_feature_snapshot = build_regime_feature_snapshot(market.get("regime_feature_snapshot"))
+    jump_event_history = build_jump_event_history(market.get("jump_event_history"))
+    bucket_proxy_mapping = build_bucket_proxy_mapping(market.get("bucket_proxy_mapping"))
 
     account.setdefault("remaining_horizon_months", remaining_horizon_months)
     goal.setdefault("horizon_months", remaining_horizon_months)
@@ -318,6 +328,10 @@ def build_snapshot_bundle(
         quality_summary=[],
         policy_news_signals=rendered_signals,
         historical_dataset_metadata=historical_dataset_metadata,
+        historical_return_panel=historical_return_panel.to_dict() if historical_return_panel is not None else None,
+        regime_feature_snapshot=regime_feature_snapshot.to_dict() if regime_feature_snapshot is not None else None,
+        jump_event_history=jump_event_history.to_dict() if jump_event_history is not None else None,
+        bucket_proxy_mapping=bucket_proxy_mapping.to_dict() if bucket_proxy_mapping is not None else None,
         schema_version=schema_version,
     )
 

@@ -250,6 +250,7 @@
 要求：
 
 - 先做历史序列获取
+- 先通过 `market_history` adapter 把 bars 重采样成月频 return series
 - 先落到 dataset cache
 - 再进入 calibration / replay
 - 历史数据不能绕过 version pinning

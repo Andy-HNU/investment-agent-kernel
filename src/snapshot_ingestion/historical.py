@@ -24,7 +24,7 @@ class HistoricalDatasetSnapshot:
     source_ref: str
     lookback_months: int
     return_series: dict[str, list[float]]
-    coverage_status: str = "verified"
+    coverage_status: str = "in_progress"
     cached_at: str | None = None
     notes: list[str] = field(default_factory=list)
 
@@ -44,7 +44,7 @@ class HistoricalDatasetSnapshot:
                 str(bucket): [float(value) for value in list(series or [])]
                 for bucket, series in dict(payload.get("return_series") or {}).items()
             },
-            coverage_status=str(payload.get("coverage_status") or "verified"),
+            coverage_status=str(payload.get("coverage_status") or "in_progress"),
             cached_at=payload.get("cached_at"),
             notes=[str(item) for item in list(payload.get("notes") or []) if str(item).strip()],
         )
