@@ -7,7 +7,7 @@ import pytest
 
 @pytest.mark.contract
 def test_agent_and_openclaw_integration_docs_exist():
-    repo = Path("/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1")
+    repo = Path("/root/AndyFtp/investment_system_codex_ready_repo")
     required = [
         repo / "agent" / "AGENT_GUIDE.md",
         repo / "agent" / "TOOL_CONTRACTS.md",
@@ -24,7 +24,7 @@ def test_agent_and_openclaw_integration_docs_exist():
 
 @pytest.mark.contract
 def test_openclaw_source_map_points_to_real_external_assets():
-    repo = Path("/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1")
+    repo = Path("/root/AndyFtp/investment_system_codex_ready_repo")
     source_map = (repo / "integration" / "openclaw" / "SOURCE_MAP.md").read_text(encoding="utf-8")
 
     required_paths = [
@@ -40,7 +40,7 @@ def test_openclaw_source_map_points_to_real_external_assets():
 
 @pytest.mark.contract
 def test_patch_back_policy_declares_no_copy_rule():
-    repo = Path("/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1")
+    repo = Path("/root/AndyFtp/investment_system_codex_ready_repo")
     content = (repo / "integration" / "openclaw" / "PATCH_BACK_POLICY.md").read_text(encoding="utf-8")
 
     assert "不在本仓库存 fork 正文" in content

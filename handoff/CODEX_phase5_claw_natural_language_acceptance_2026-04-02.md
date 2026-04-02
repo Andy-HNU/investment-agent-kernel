@@ -21,7 +21,7 @@
 输入：
 
 ```text
-你现在扮演 advisor shell。请读取 /root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/agent/PLAYBOOK_ADVISOR_FULL.md 和 /root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/README.md，然后用中文告诉一个新用户：第一次 onboarding 后他会看到哪三类关键信息。不要改代码，只给简洁结果。
+你现在扮演 advisor shell。请读取 /root/AndyFtp/investment_system_codex_ready_repo/agent/PLAYBOOK_ADVISOR_FULL.md 和 /root/AndyFtp/investment_system_codex_ready_repo/README.md，然后用中文告诉一个新用户：第一次 onboarding 后他会看到哪三类关键信息。不要改代码，只给简洁结果。
 ```
 
 输出摘要：
@@ -33,16 +33,14 @@
 3) 执行计划（若已有旧计划，还会展示 active vs pending 差异）
 ```
 
-原始日志：
-
-- [openclaw_onboarding_nl_2026-04-02.log](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/openclaw_onboarding_nl_2026-04-02.log)
+原始日志已在主干清理阶段移除；本节保留输入与输出摘要。
 
 ## Case 2. active vs pending execution plan
 
 输入：
 
 ```text
-请读取 /root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/agent/TOOL_CONTRACTS.md 和 /root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/src/frontdesk/service.py，用中文解释 active_execution_plan 和 pending_execution_plan 的区别，以及用户什么时候应该 approve-plan。不要改代码。
+请读取 /root/AndyFtp/investment_system_codex_ready_repo/agent/TOOL_CONTRACTS.md 和 /root/AndyFtp/investment_system_codex_ready_repo/src/frontdesk/service.py，用中文解释 active_execution_plan 和 pending_execution_plan 的区别，以及用户什么时候应该 approve-plan。不要改代码。
 ```
 
 输出摘要：
@@ -53,16 +51,14 @@ pending_execution_plan 是新生成但尚未审批的候选计划。
 首次 onboarding、后续出现新 pending 且决定采用时，或者 comparison 显示 replace_active / review_replace 时，应进入 approve-plan 流程。
 ```
 
-原始日志：
-
-- [openclaw_execution_plan_nl_2026-04-02.log](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/openclaw_execution_plan_nl_2026-04-02.log)
+原始日志已在主干清理阶段移除；本节保留输入与输出摘要。
 
 ## Case 3. policy/news 为什么不能直接改 solver
 
 输入：
 
 ```text
-请读取 /root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/system/13_policy_news_structured_signal_contract_v2.md 和 /root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/src/calibration/engine.py，用中文解释：政策/新闻为什么不能直接改写 solver 数学，而要先变成 structured signal。不要改代码。
+请读取 /root/AndyFtp/investment_system_codex_ready_repo/system/13_policy_news_structured_signal_contract_v2.md 和 /root/AndyFtp/investment_system_codex_ready_repo/src/calibration/engine.py，用中文解释：政策/新闻为什么不能直接改写 solver 数学，而要先变成 structured signal。不要改代码。
 ```
 
 输出摘要：
@@ -72,15 +68,11 @@ pending_execution_plan 是新生成但尚未审批的候选计划。
 所以必须先变成带来源、时间、置信度、人工复核标记的 structured signal，再由 calibration 保守吸收，只影响 review gate、risk penalty、约束边界和解释层。
 ```
 
-原始日志：
-
-- [openclaw_policy_signal_nl_2026-04-02.log](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/openclaw_policy_signal_nl_2026-04-02.log)
+原始日志已在主干清理阶段移除；本节保留输入与输出摘要。
 
 ## Case 4. 仓库内 bridge harness 的自然语言日志
 
-输入任务文件：
-
-- [openclaw_bridge_tasks_2026-04-02.txt](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/openclaw_bridge_tasks_2026-04-02.txt)
+输入任务文件原件已在主干清理阶段移除；保留其任务摘要如下。
 
 内容包括：
 
@@ -90,9 +82,7 @@ show status for user bridge_demo
 monthly follow-up for user bridge_demo
 ```
 
-输出 JSONL：
-
-- [openclaw-bridge-20260402-024333.jsonl](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/openclaw_bridge_artifacts/openclaw-bridge-20260402-024333.jsonl)
+输出 JSONL 原件已在主干清理阶段移除；保留其“自然语言任务被 bridge 路由到 frontdesk 并生成结构化输入/输出对”的验收结论。
 
 这个 JSONL 不是模型解释文本，而是 bridge 真正把自然语言任务路由到 frontdesk 后写出来的结构化输入/输出对。
 

@@ -52,9 +52,9 @@ python3 frontdesk_app.py onboard \
 ```
 
 ## Frozen 样例
-- provider fixture: [provider_snapshot_local.json](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/tests/fixtures/provider_snapshot_local.json)
-- inline provider sample: [inline_snapshot.sample.json](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/examples/provider/inline_snapshot.sample.json)
-- historical dataset sample: [historical_dataset.sample.json](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/examples/provider/historical_dataset.sample.json)
+- provider fixture: [provider_snapshot_local.json](/root/AndyFtp/investment_system_codex_ready_repo/tests/fixtures/provider_snapshot_local.json)
+- inline provider sample: [inline_snapshot.sample.json](/root/AndyFtp/investment_system_codex_ready_repo/examples/provider/inline_snapshot.sample.json)
+- historical dataset sample: [historical_dataset.sample.json](/root/AndyFtp/investment_system_codex_ready_repo/examples/provider/historical_dataset.sample.json)
 
 ## 关键入口
 - 前台：`frontdesk_app.py`

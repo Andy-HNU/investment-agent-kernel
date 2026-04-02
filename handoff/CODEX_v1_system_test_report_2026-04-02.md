@@ -44,9 +44,7 @@ python3 -m pytest
 ```
 
 结果：通过，`261 passed in 31.01s`。  
-完整输出保存在：
-
-- [pytest_full_2026-04-02.log](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/pytest_full_2026-04-02.log)
+完整原始日志已在主干清理阶段移除；保留结论摘要为 `261 passed in 31.01s`。
 
 ### 4. Provider capability matrix
 
@@ -55,8 +53,7 @@ python3 scripts/verify_provider_matrix.py
 ```
 
 结果：通过。输出保存在：
-
-- [provider_matrix_2026-04-02.json](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/provider_matrix_2026-04-02.json)
+原始 JSON 产物已在主干清理阶段移除；保留验证结论为 provider matrix 脚本成功退出且矩阵检查通过。
 
 ### 5. Sample frontdesk flow
 
@@ -65,8 +62,7 @@ python3 scripts/run_sample_frontdesk_flow.py
 ```
 
 结果：通过。输出保存在：
-
-- [sample_frontdesk_flow_2026-04-02.json](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/sample_frontdesk_flow_2026-04-02.json)
+原始 JSON 产物已在主干清理阶段移除；保留验证结论为 sample flow 成功跑通。
 
 该 flow 覆盖了：
 
@@ -81,16 +77,13 @@ python3 scripts/run_sample_frontdesk_flow.py
 
 ```bash
 python3 scripts/accept_openclaw_bridge.py \
-  --file handoff/logs/openclaw_bridge_tasks_2026-04-02.txt \
-  --db handoff/logs/openclaw_bridge_2026-04-02.sqlite \
-  --artifacts handoff/logs/openclaw_bridge_artifacts
+  --file /tmp/openclaw_bridge_tasks.txt \
+  --db /tmp/openclaw_bridge.sqlite \
+  --artifacts /tmp/openclaw_bridge_artifacts
 ```
 
 结果：通过。  
-自然语言输入/输出 JSONL 产物：
-
-- [openclaw_bridge_tasks_2026-04-02.txt](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/openclaw_bridge_tasks_2026-04-02.txt)
-- [openclaw-bridge-20260402-024333.jsonl](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/openclaw_bridge_artifacts/openclaw-bridge-20260402-024333.jsonl)
+自然语言任务文件与 JSONL 原始产物已在主干清理阶段移除；保留验证结论为 harness 成功把自然语言任务路由到 frontdesk 并产出结构化输入/输出对。
 
 ### 7. 真实 OpenClaw 自然语言 turn
 
@@ -100,15 +93,11 @@ python3 scripts/accept_openclaw_bridge.py \
 openclaw agent --agent main --message '<natural language prompt>' --json
 ```
 
-三组真实日志保存在：
-
-- [openclaw_onboarding_nl_2026-04-02.log](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/openclaw_onboarding_nl_2026-04-02.log)
-- [openclaw_execution_plan_nl_2026-04-02.log](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/openclaw_execution_plan_nl_2026-04-02.log)
-- [openclaw_policy_signal_nl_2026-04-02.log](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/logs/openclaw_policy_signal_nl_2026-04-02.log)
+三组真实 turn 的摘要已整理进阶段 5 报告，原始日志已在主干清理阶段移除。
 
 阶段 5 的人工可读摘要见：
 
-- [CODEX_phase5_claw_natural_language_acceptance_2026-04-02.md](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/handoff/CODEX_phase5_claw_natural_language_acceptance_2026-04-02.md)
+- [CODEX_phase5_claw_natural_language_acceptance_2026-04-02.md](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_phase5_claw_natural_language_acceptance_2026-04-02.md)
 
 ## 本轮发现并修复的问题
 
