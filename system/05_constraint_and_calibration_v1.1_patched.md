@@ -906,3 +906,141 @@ def build_ev_inputs_from_calibration(
         calibration.behavior_state,
     )
 ```
+
+## 附录 B：v1.1 Distribution Model Calibration 补丁（追加说明，不替换上文原文）
+
+### B.1 目标
+
+`v1.1` 要让 05 在保持既有：
+
+- `MarketState`
+- `MarketAssumptions`
+- `GoalSolverParams`
+
+不失效的前提下，新增一条“分布模型校准链”，专门服务：
+
+- `GARCH`
+- `DCC`
+- `Jump Overlay`
+- regime-sensitive simulation
+
+### B.2 新增 canonical 输出
+
+```python
+@dataclass
+class GarchState:
+    bucket_id: str
+    model_family: Literal["garch11"]
+    innovation_dist: Literal["student_t", "normal"]
+    mu: float
+    omega: float
+    alpha: float
+    beta: float
+    nu: float | None
+    last_sigma2: float
+    last_residual: float
+    fit_window_start: str
+    fit_window_end: str
+
+
+@dataclass
+class DccState:
+    bucket_order: list[str]
+    model_family: Literal["dcc11"]
+    a: float
+    b: float
+    long_run_corr: dict[str, dict[str, float]]
+    last_q: dict[str, dict[str, float]]
+    last_corr: dict[str, dict[str, float]]
+    fit_window_start: str
+    fit_window_end: str
+
+
+@dataclass
+class JumpOverlayState:
+    bucket_jump_models: dict[str, dict[str, float]]
+    systemic_jump: dict[str, Any]
+
+
+@dataclass
+class DistributionModelState:
+    model_family: Literal["garch_t_dcc_jump"]
+    frequency: Literal["daily", "weekly", "monthly"]
+    bucket_order: list[str]
+    garch_states: list[GarchState]
+    dcc_state: DccState | None
+    jump_state: JumpOverlayState | None
+    regime_overrides: dict[str, Any]
+    source_dataset_version: str
+    calibration_version: str
+```
+
+### B.3 新增校准职责
+
+05 新增以下职责：
+
+1. 从 `HistoricalReturnPanelRaw` 校准单桶条件波动
+2. 从多桶对齐收益序列校准动态相关
+3. 从 jump history 或 stress 参数生成 jump overlay 状态
+4. 把当前 `MarketState` 与 policy/news structured signal 保守吸收到 `regime_overrides`
+
+05 仍不负责：
+
+- 回头抓取历史序列
+- 在 calibration 之外执行 Monte Carlo
+
+### B.4 regime 如何影响分布
+
+`regime_overrides` 的正式职责：
+
+- 调整波动水平
+- 调整相关性压力
+- 调整 jump intensity
+- 调整均值 shift
+
+但约束如下：
+
+1. regime 不能绕过 `DistributionModelState`
+2. policy/news 不能直接改写 02 的数学核心
+3. 所有 override 都必须：
+   - 可记录
+   - 可回放
+   - 可解释
+
+### B.5 与既有 MarketAssumptions 的关系
+
+- `MarketAssumptions`
+  - 继续作为长期均值 / 波动 / 相关的解释层与兼容层
+- `DistributionModelState`
+  - 作为条件分布模拟层
+
+二者关系是：
+
+- `MarketAssumptions` 负责长期静态参数口径
+- `DistributionModelState` 负责运行期条件分布口径
+
+### B.6 v1.1 降级规则
+
+若以下任一条件不满足：
+
+- 历史面板缺失
+- 对齐后的多桶序列不足
+- DCC 校准失败
+- jump history 不可用
+
+则：
+
+- `DistributionModelState` 可部分缺失
+- 05 必须显式降级到较低 `simulation_mode`
+- 禁止静默把失败伪装成完整模型
+
+### B.7 解释链要求
+
+`CalibrationResult.notes` 必须新增记录：
+
+- 分布模型版本
+- 使用的数据集版本
+- 是否启用 regime override
+- 是否启用 DCC
+- 是否启用 jump overlay
+- 若降级，降级原因是什么

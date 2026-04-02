@@ -574,3 +574,129 @@ src/
 
 *文档版本：v1.0 | 状态：可交付实现*
 *下次修订触发条件：新数据源接入、五域结构变更、与 05 接口调整*
+
+## 附录 A：v1.1 历史收益与 regime 原料扩展（追加说明，不替换上文原文）
+
+### A.1 设计目标
+
+`v1.1` 要让 03 成为：
+
+- `GARCH`
+- `DCC`
+- `Jump Overlay`
+- `regime-sensitive simulation`
+
+的唯一原始输入来源。
+
+03 仍只负责：
+
+- 采集
+- 统一化
+- 快照化
+- 版本化
+- 质量标记
+
+03 仍不负责：
+
+- 参数拟合
+- regime 解释
+- 分布选择
+
+### A.2 新增原始结构
+
+#### A.2.1 HistoricalReturnPanelRaw
+
+```python
+@dataclass
+class HistoricalReturnPanelRaw:
+    meta: SnapshotMeta
+    frequency: Literal["daily", "weekly", "monthly"]
+    series_dates: list[str]
+    return_series: dict[str, list[float]]
+    price_series: dict[str, list[float]] = field(default_factory=dict)
+    source_name: str = ""
+    source_ref: str = ""
+    lookback_months: int = 0
+    version_id: str = ""
+```
+
+#### A.2.2 RegimeFeatureSnapshotRaw
+
+```python
+@dataclass
+class RegimeFeatureSnapshotRaw:
+    meta: SnapshotMeta
+    feature_window: str
+    realized_volatility: dict[str, float]
+    rolling_correlation: dict[str, dict[str, float]]
+    drawdown_state: dict[str, float]
+    liquidity_scores: dict[str, float]
+    valuation_z_scores: dict[str, float]
+    macro_tags: dict[str, str] = field(default_factory=dict)
+```
+
+#### A.2.3 JumpEventHistoryRaw
+
+```python
+@dataclass
+class JumpEventHistoryRaw:
+    meta: SnapshotMeta
+    event_dates: list[str]
+    jump_flags: dict[str, list[bool]]
+    jump_sizes: dict[str, list[float]]
+    systemic_jump_flags: list[bool]
+    notes: list[str] = field(default_factory=list)
+```
+
+#### A.2.4 BucketProxyMappingRaw
+
+```python
+@dataclass
+class BucketProxyMappingRaw:
+    meta: SnapshotMeta
+    bucket_to_proxy: dict[str, dict[str, Any]]
+```
+
+### A.3 与 SnapshotBundle 的关系
+
+新增结构统一挂在 `market` 域，不额外创造“第六域”：
+
+- `historical_return_panel`
+- `regime_features_raw`
+- `jump_event_history`
+- `bucket_proxy_mapping`
+
+约束：
+
+1. 所有对象必须带 `source_name / source_ref / version_id`
+2. 真实历史数据与实时快照不得共用同一 `version_id`
+3. `return_series` 必须时间对齐；对不齐的桶要打 quality flag，而不是静默补零
+
+### A.4 v1.1 的新增质量要求
+
+03 需要新增至少以下 flag：
+
+- `HISTORICAL_PANEL_MISSING`
+- `HISTORICAL_PANEL_SHORT_WINDOW`
+- `RETURN_SERIES_DATE_MISMATCH`
+- `BUCKET_PROXY_MAPPING_MISSING`
+- `JUMP_HISTORY_MISSING`
+- `REGIME_FEATURES_MISSING`
+
+这些 flag 默认不直接阻断 03，但必须进入 05 的降级判断。
+
+### A.5 replay 与 version pinning 规则
+
+- 历史收益面板必须 version pin
+- regime raw features 必须 version pin
+- jump history 必须 version pin
+- 同一轮 calibration 使用的 `historical_return_panel.version_id` 必须可在复盘时回取
+
+### A.6 provider 约束
+
+对新增原始结构，provider 层必须区分：
+
+- fixture/local provider
+- real-source provider
+
+真实公开源未通过验收前，不得把 `verified_status` 写成 `verified`。

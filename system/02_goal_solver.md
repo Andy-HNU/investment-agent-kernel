@@ -919,3 +919,97 @@ def build_account_state_baseline(
 ---
 
 *文档版本：v5.0（冻结版）| 状态：可交付实现 | 下次修订触发条件：v1 上线后第一次月度复盘，或 AllocationEngine 接口变更*
+
+## 附录 A：v1.1 分布模拟模式升级补丁（追加说明，不替换上文原文）
+
+### A.1 目标
+
+`v1.1` 要把 Goal Solver 从单一 `static gaussian monte carlo` 升级成“可切换模拟模式”的求解器，同时保持 `v1` 的 backward compatibility。
+
+新增目标不是推翻上文结构，而是在保持：
+
+- `GoalSolverInput`
+- `GoalSolverParams`
+- `GoalSolverOutput`
+
+这三层不失效的前提下，允许 02 消费更高阶的分布模型状态。
+
+### A.2 新增 simulation mode
+
+```python
+class SimulationMode(str, Enum):
+    STATIC_GAUSSIAN = "static_gaussian"
+    GARCH_T = "garch_t"
+    GARCH_T_DCC = "garch_t_dcc"
+    GARCH_T_DCC_JUMP = "garch_t_dcc_jump"
+```
+
+`GoalSolverParams` 追加字段：
+
+```python
+simulation_mode: SimulationMode = SimulationMode.STATIC_GAUSSIAN
+simulation_frequency: Literal["daily", "weekly", "monthly"] = "monthly"
+regime_sensitive: bool = False
+jump_overlay_enabled: bool = False
+```
+
+### A.3 新增 DistributionModelInput
+
+```python
+@dataclass
+class DistributionModelInput:
+    distribution_model_state: dict[str, Any] | None
+    market_assumptions: MarketAssumptions
+    simulation_mode: SimulationMode
+```
+
+约束：
+
+1. `02` 不得直接回头访问原始历史数据源。
+2. `02` 不得在本地重复拟合 GARCH / DCC / jump 参数。
+3. `02` 只消费 `05` 已校准出的 `DistributionModelState`。
+
+### A.4 各模式的正式含义
+
+- `static_gaussian`
+  - 维持 `v1` 语义
+  - 使用静态 `expected_returns / volatility / correlation_matrix`
+  - 月收益按 Gaussian 抽样
+
+- `garch_t`
+  - 每个桶使用条件波动与 `student_t` 创新分布
+  - 不引入动态相关
+
+- `garch_t_dcc`
+  - 在 `garch_t` 基础上引入动态相关矩阵
+
+- `garch_t_dcc_jump`
+  - 在 `garch_t_dcc` 基础上叠加 bucket jump 与 systemic jump
+
+### A.5 输出解释义务
+
+`GoalSolverOutput.solver_notes` 必须新增披露：
+
+- 当前 `simulation_mode`
+- 是否使用历史数据
+- 历史数据版本锚点
+- 当前 regime 是否参与
+- 是否启用 jump overlay
+- 当前结果是否仍可视为 `static gaussian` 口径
+
+### A.6 v1.1 对 success probability 的解释要求
+
+前台与日志必须能解释：
+
+1. 该概率是终值达标概率，不是平均年化收益率
+2. 当前概率是在哪个 `simulation_mode` 下得到
+3. 若模式不是 `static_gaussian`，必须能说明：
+   - 条件波动是否开启
+   - 动态相关是否开启
+   - jump overlay 是否开启
+
+### A.7 backward compatibility
+
+- 若 `DistributionModelState` 缺失，必须回退到 `static_gaussian`
+- 回退必须显式披露，不允许静默降级
+- `run_goal_solver_lightweight(...)` 在 `v1.1` 仍可保留轻量路径，但必须沿用 baseline 的 `simulation_mode`

@@ -41,9 +41,13 @@
 
 ### 主执行地图
 
+- `handoff/CODEX_v1.1_task_map_2026-04-02.md`
+  - 当前 `v1.1` 唯一正式执行地图
+  - 覆盖建模升级、provider 真实源闭环、Claw shell 闭环、acceptance 缺陷修复
+
 - `handoff/CODEX_kernel_first_roadmap_2026-04-01.md`
-  - 当前唯一正式开发顺序
-  - 结论：`kernel first -> data second -> agent last`
+  - `v1` 阶段的历史正式开发顺序
+  - 当前继续作为背景路线保留，不再单独驱动 `v1.1`
 
 ### v1 阶段结论与验收
 
@@ -149,6 +153,7 @@
 ## 当前避免冲突的操作规则
 
 1. 若新增开发路线，必须优先更新 `handoff/CODEX_kernel_first_roadmap_2026-04-01.md`
+1.1 若进入新版本主线，必须新增对应任务地图并登记到本 registry
 2. 若发现模块语义差异，优先更新 `handoff/CODEX_system_doc_gap_backlog.md`
 3. 若发现 Claw / OpenClaw 接入边界变化，优先更新 `handoff/CODEX_openclaw_reuse_map_2026-03-31.md`
 4. 不再新增新的“总路线 handoff”而不登记到本 registry
@@ -160,7 +165,8 @@
 现在开始：
 
 - 看模块语义：先看 `system/`
-- 看当前开发顺序：先看 `CODEX_kernel_first_roadmap_2026-04-01.md`
+- 看当前开发顺序：先看 `CODEX_v1.1_task_map_2026-04-02.md`
+- 看 `v1` 历史路线：再看 `CODEX_kernel_first_roadmap_2026-04-01.md`
 - 看 v1 阶段结论：看 `CODEX_v1_phase_reports_2026-04-02.md`
 - 看验证证据：看 `CODEX_v1_system_test_report_2026-04-02.md`
 - 看当前任务池：先看 `CODEX_system_doc_gap_backlog.md`
