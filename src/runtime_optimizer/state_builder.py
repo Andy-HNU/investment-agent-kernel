@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from datetime import date
+import re
 from typing import Any
 
 from calibration.types import BehaviorState, ConstraintState, EVParams, MarketState, RuntimeOptimizerParams
@@ -15,6 +16,18 @@ def _obj(value: Any) -> Any:
     if is_dataclass(value):
         return asdict(value)
     return value
+
+
+def _reference_snapshot_date(output: dict[str, Any], baseline: dict[str, Any]) -> date:
+    snapshot_ref = str(output.get("input_snapshot_id") or baseline.get("snapshot_id") or "")
+    match = re.search(r"(20\d{2})(\d{2})(\d{2})T", snapshot_ref)
+    if match:
+        return date(
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+        )
+    return date.fromisoformat(str(output["generated_at"])[:10])
 
 
 def validate_ev_state_inputs(
@@ -49,11 +62,11 @@ def validate_ev_state_inputs(
     )
     try:
         snapshot_date = date.fromisoformat(live["as_of_date"])
-        baseline_date = date.fromisoformat(output["generated_at"][:10])
+        baseline_date = _reference_snapshot_date(output, baseline)
         age_days = abs((baseline_date - snapshot_date).days)
         assert age_days <= params["max_portfolio_snapshot_age_days"], (
             f"live_portfolio.as_of_date ({live['as_of_date']}) 与基线生成日期 "
-            f"({output['generated_at'][:10]}) 相差 {age_days} 天，超过允许时效"
+            f"({baseline_date.isoformat()}) 相差 {age_days} 天，超过允许时效"
         )
     except (ValueError, AttributeError, TypeError) as exc:
         raise AssertionError(f"日期字段格式错误，无法校验时效：{exc}") from exc

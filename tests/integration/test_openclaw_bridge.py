@@ -53,3 +53,49 @@ def test_acceptance_cli_writes_logs(tmp_path, capsys):
     assert log_path.exists()
     logs = [json.loads(line) for line in log_path.read_text(encoding='utf-8').splitlines() if line.strip()]
     assert logs and isinstance(logs[0], dict)
+
+
+def test_acceptance_harness_reads_task_file_and_writes_jsonl_logs(tmp_path):
+    import subprocess
+    import sys
+
+    script = Path("scripts/accept_openclaw_bridge.py").resolve()
+    db = tmp_path / "frontdesk.sqlite"
+    tasks = tmp_path / "tasks.txt"
+    tasks.write_text(
+        "\n".join(
+            [
+                "onboard user acc_accept assets 50000 monthly 5000 goal 200000 in 36 months",
+                "show status for user acc_accept",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    artifacts = tmp_path / "artifacts"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--file",
+            str(tasks),
+            "--db",
+            str(db),
+            "--artifacts",
+            str(artifacts),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    out = proc.stdout.strip()
+    assert out.startswith("log_path=")
+    log_path = Path(out.splitlines()[-1].split("=", 1)[-1].strip())
+    assert log_path.exists()
+    lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) >= 4
+    assert lines[0]["task"].startswith("onboard user acc_accept")
+    assert lines[1]["intent"]["name"] == "onboarding"
+    assert lines[2]["task"].startswith("show status for user acc_accept")
+    assert lines[3]["intent"]["name"] == "status"

@@ -1,103 +1,90 @@
-# Investment Decision System — Codex Ready Repo Seed
+# Investment Agent Kernel
 
-这是把你原始“系统规格包 + TDD 启动包 + Codex handoff 说明”整理后的正式仓库版种子。
+这是当前投资系统的 `decision kernel` 仓库。
 
-它的目标不是直接提供完整业务代码，而是把原始压缩包收口成一个 **可直接交给 Codex 开发的 repo seed**：
-- 根目录规则明确
-- 主规格目录明确
-- 测试门禁位置明确
-- 历史文档与冻结规格分层清楚
-- 文件名统一为更稳定的 ASCII 方案
+它提供：
+- frontdesk workflow：`onboard / monthly / event / quarterly / status / feedback / approve-plan`
+- bucket allocation、goal solver、runtime optimizer、decision card 主链
+- execution plan 生成、审批、active/pending comparison
+- provider abstraction、历史数据快照与 policy/news structured signal 入口
+- 给 Claw 使用的 agent / integration 文档边界与 bridge runtime
 
-## 这一版和原始 zip 的区别
-- 把 `system/` 保留为主规格目录
-- 把 `TDD/investment_test_bootstrap/` 正式并入根目录：`tests/`、`pytest.ini`、`.coveragerc`、`.github/workflows/`
-- 把旧文档、审阅记录、TDD 说明移动到 `docs/`
-- 加入 `AGENTS.md`、`handoff/`、`pyproject.toml`、`.gitignore`
-- 加入 `src/` 代码骨架目录与 `__init__.py`
-- 修正测试环境：`tests/conftest.py` 会把 `src/` 加入 `sys.path`
+它不提供：
+- 自动下单
+- scheduler / cron
+- memory runtime
+- 原始新闻正文直接驱动数学内核
 
-## 权威性顺序
+## 权威顺序
 1. `AGENTS.md`
-2. `tests/` 中 contract / smoke tests
-3. `handoff/CODEX_first_round_prompt.md`
-4. `system/` 中 patched / 冻结版文档
-5. `docs/` 中背景与归档文档
+2. `tests/`
+3. `system/`
+4. `handoff/README.md`
+5. `docs/`
 
-## 目录概览
+## 目录
 ```text
 .
 ├─ AGENTS.md
 ├─ README.md
-├─ pyproject.toml
-├─ pytest.ini
-├─ .coveragerc
-├─ .github/workflows/
+├─ frontdesk_app.py
 ├─ system/
-├─ docs/
 ├─ handoff/
+├─ agent/
+├─ integration/openclaw/
+├─ scripts/
 ├─ tests/
 └─ src/
 ```
 
-## 推荐使用方式
-### 交给 Codex 前
-1. 把本目录作为正式仓库根目录
-2. 初始化 git 仓库
-3. 把 `handoff/CODEX_first_round_prompt.md` 直接作为 Codex 首轮任务说明
-
-### 交给 Codex 的首轮目标
-- 阅读 `AGENTS.md`
-- 阅读 `system/` 主规格与 `tests/`
-- 在 `src/` 下补最小类型与入口模块
-- 先通过 contract tests
-- 再通过 smoke test
-
-### 你验收的最低标准
-- contract tests 全通过
-- smoke test 通过
-- 没有越权重定义 canonical types
-- 没有改坏冻结接口
-
-## 当前已知说明
-- `system/` 当前没有 06 号模块规格；这是源包现状，不需要 Codex 自行创造。
-- `docs/legacy/`、`docs/review/` 中保留了历史信息，但不再充当冻结真相源。
-- 当前 `src/` 仍是骨架，正式实现需要由 Codex 或开发者继续补齐。
-
-## 首轮本地检查
+## 快速开始
 ```bash
-pytest -q
+python3 -m pytest -q
+python3 scripts/verify_provider_matrix.py
+python3 scripts/run_sample_frontdesk_flow.py
 ```
 
-在当前仓库骨架下，缺少正式实现时，部分 contract / smoke 会因为 `importorskip(...)` 被跳过；这是正常现象。首轮开发的目标就是把这些入口模块补到可测。
-
-## 本地体验入口
-
-Round 5 之后，仓库根目录保留两个稳定 demo 入口：
-
-1. `python3 demo.py <scenario> [--json]`
-2. `python3 scripts/full_flow_demo.py [--json]`
-
-默认推荐先跑：
-
+一条最小前台体验链：
 ```bash
-python3 scripts/full_flow_demo.py
-python3 demo.py full_lifecycle --json
+python3 frontdesk_app.py onboard \
+  --profile-json '{"account_profile_id":"demo_user","display_name":"Demo","current_total_assets":50000,"monthly_contribution":6000,"goal_amount":300000,"goal_horizon_months":48,"risk_preference":"中等","max_drawdown_tolerance":0.12,"current_holdings":"cash","restrictions":[]}' \
+  --non-interactive --json
 ```
 
-常用 canonical scenario：
+## Frozen 样例
+- provider fixture: [provider_snapshot_local.json](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/tests/fixtures/provider_snapshot_local.json)
+- inline provider sample: [inline_snapshot.sample.json](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/examples/provider/inline_snapshot.sample.json)
+- historical dataset sample: [historical_dataset.sample.json](/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/goal-solver-phase1/examples/provider/historical_dataset.sample.json)
 
+## 关键入口
+- 前台：`frontdesk_app.py`
+- demo：`demo.py`、`scripts/full_flow_demo.py`
+- provider matrix：`scripts/verify_provider_matrix.py`
+- sample flow：`scripts/run_sample_frontdesk_flow.py`
+- Claw 文档入口：`agent/`、`integration/openclaw/`
+- OpenClaw bridge：`scripts/openclaw_bridge_cli.py`、`scripts/accept_openclaw_bridge.py`
+- v1 阶段报告：`handoff/CODEX_v1_phase_reports_2026-04-02.md`
+- v1 测试报告：`handoff/CODEX_v1_system_test_report_2026-04-02.md`
+
+## 当前已实现
+- 用户画像解析与自然语言限制编译
+- bucket 候选方案与具体产品执行计划
+- execution plan 审批、回填、active/pending 差异化 guidance
+- `http_json / inline_snapshot / local_json` provider config
+- provider capability matrix 与 historical dataset cache
+- policy/news structured signal -> `03/05`
+- Claw 接入边界与 shell playbook 文档
+
+## 已知边界
+- 低频、单用户优先，不是高频交易系统
+- provider 覆盖不是商用级全资产全券商
+- OpenClaw 负责 memory / cron / policy-news 搜索分析 / 对话组织
+- 本仓库继续作为 decision kernel，不作为完整 advisor shell
+
+## 推荐验证
 ```bash
-python3 demo.py quarterly_review --json
-python3 demo.py monthly_replay_override --json
-python3 demo.py provenance_relaxed --json
-python3 demo.py provenance_blocked --json
+python3 -m pytest tests/contract/test_18_provider_data_contract.py -q
+python3 -m pytest tests/contract/test_18_provider_registry_contract.py -q
+python3 -m pytest tests/contract/test_18_frontdesk_execution_plan_guidance.py -q
+python3 -m pytest tests/contract/test_18_claw_agent_docs_contract.py -q
 ```
-
-兼容 alias 仍保留，但输出会回落到 canonical scenario 名称：
-
-`quarterly_full_chain`、`monthly_provenance_blocked`、`monthly_provenance_relaxed`、`journey`
-
-其中 `full_lifecycle` / `scripts/full_flow_demo.py` 会覆盖：
-
-`03 snapshot_ingestion -> 05 calibration -> 08 allocation -> 02 goal_solver -> 04 runtime_optimizer -> 07 orchestrator -> 09 decision_card`

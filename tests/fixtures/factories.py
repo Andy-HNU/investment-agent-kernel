@@ -235,14 +235,13 @@ def make_ev_params() -> dict[str, Any]:
 
 
 def make_live_portfolio_snapshot() -> dict[str, Any]:
-    now = datetime.now(timezone.utc).date().isoformat()
     return {
         "weights": {"equity_cn": 0.52, "bond_cn": 0.30, "gold": 0.05, "satellite": 0.13},
         "total_value": 380_000.0,
         "available_cash": 12_000.0,
         "goal_gap": 2_120_000.0,
         "remaining_horizon_months": 144,
-        "as_of_date": now,
+        "as_of_date": "2026-03-29",
         "current_drawdown": 0.05,
     }
 

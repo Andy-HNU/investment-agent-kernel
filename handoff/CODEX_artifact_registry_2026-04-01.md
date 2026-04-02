@@ -45,6 +45,18 @@
   - 当前唯一正式开发顺序
   - 结论：`kernel first -> data second -> agent last`
 
+### v1 阶段结论与验收
+
+- `handoff/CODEX_v1_phase_reports_2026-04-02.md`
+  - roadmap 五个阶段的正式汇总报告
+  - 面向非技术读者说明“做成了什么、没做什么、为什么”
+
+- `handoff/CODEX_v1_system_test_report_2026-04-02.md`
+  - 本次 v1 的统一测试与验证证据入口
+
+- `handoff/CODEX_phase5_claw_natural_language_acceptance_2026-04-02.md`
+  - Phase 5 的真实 OpenClaw 自然语言输入/输出验收记录
+
 ### 当前进展与差异
 
 - `handoff/CODEX_progress_status.md`
@@ -149,6 +161,8 @@
 
 - 看模块语义：先看 `system/`
 - 看当前开发顺序：先看 `CODEX_kernel_first_roadmap_2026-04-01.md`
+- 看 v1 阶段结论：看 `CODEX_v1_phase_reports_2026-04-02.md`
+- 看验证证据：看 `CODEX_v1_system_test_report_2026-04-02.md`
 - 看当前任务池：先看 `CODEX_system_doc_gap_backlog.md`
 - 看 Claw 接入边界：先看 `CODEX_openclaw_reuse_map_2026-03-31.md`
 - 看早期思路：最后才看 `docs/legacy/`

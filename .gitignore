@@ -6,6 +6,7 @@ htmlcov/
 .venv/
 venv/
 .worktrees/
+artifacts/
 dist/
 build/
 *.egg-info/

@@ -1,6 +1,19 @@
 # CODEX Progress Status
 
-更新日期: 2026-04-01
+更新日期: 2026-04-02
+
+## 2026-04-02 v1 收口
+
+- roadmap 五个阶段已推进到 `v1 可验收` 状态
+- 正式阶段结论见 [`CODEX_v1_phase_reports_2026-04-02.md`](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_v1_phase_reports_2026-04-02.md)
+- 正式系统测试报告见 [`CODEX_v1_system_test_report_2026-04-02.md`](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_v1_system_test_report_2026-04-02.md)
+- Phase 5 的真实 OpenClaw 自然语言验收见 [`CODEX_phase5_claw_natural_language_acceptance_2026-04-02.md`](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_phase5_claw_natural_language_acceptance_2026-04-02.md)
+
+当前默认理解已经变成：
+
+1. `v1` 已经形成正式版本，不再处于“只有 Phase 1”状态
+2. 当前 backlog 主要用于 `v1.1+` 的增强，而不是证明 `v1` 是否存在
+3. 若要继续推进，应先基于 `v1` 报告评估下一阶段优先级
 
 ## 2026-04-01 路线更正
 

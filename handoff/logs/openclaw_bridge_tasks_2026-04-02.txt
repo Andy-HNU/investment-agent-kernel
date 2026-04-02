@@ -1,0 +1,3 @@
+onboard user bridge_demo assets 50000 monthly 5000 goal 200000 in 36 months risk moderate
+show status for user bridge_demo
+monthly follow-up for user bridge_demo
