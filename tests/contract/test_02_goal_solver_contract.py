@@ -6,7 +6,13 @@ import pytest
 
 import goal_solver.engine as goal_solver_engine
 from goal_solver.engine import run_goal_solver, run_goal_solver_lightweight
-from goal_solver.types import RANKING_MODE_MATRIX, RankingMode, RiskSummary, infer_ranking_mode
+from goal_solver.types import (
+    RANKING_MODE_MATRIX,
+    RankingMode,
+    RiskSummary,
+    SimulationMode,
+    infer_ranking_mode,
+)
 
 
 def _mode_test_input(goal_solver_input_base: dict) -> dict:
@@ -232,6 +238,83 @@ def test_run_goal_solver_emits_model_honesty_notes(goal_solver_input_base, monke
     )
     assert any(
         note == "contribution_confidence value=0.6600 absorbed_into_solver=false"
+        for note in result.solver_notes
+    )
+
+
+@pytest.mark.contract
+def test_run_goal_solver_exposes_simulation_mode_highest_probability_and_implied_return(
+    goal_solver_input_base,
+    monkeypatch,
+):
+    solver_input = _mode_test_input(goal_solver_input_base)
+    solver_input["goal"]["priority"] = "important"
+    solver_input["goal"]["risk_preference"] = "moderate"
+    solver_input["solver_params"]["simulation_mode"] = "garch_t_dcc_jump"
+    solver_input["solver_params"]["distribution_input"] = {
+        "garch_t_state": {"equity_cn": {"omega": 0.01, "alpha": 0.05, "beta": 0.90, "nu": 7.0}},
+        "dcc_state": {"equity_cn": {"bond_cn": 0.25}},
+    }
+
+    def _fake_run_monte_carlo(weights, *_args, **_kwargs):
+        if weights["equity_cn"] >= 0.70:
+            probability = 0.78
+            drawdown = 0.26
+            expected_terminal_value = 555_000.0
+        else:
+            probability = 0.70
+            drawdown = 0.14
+            expected_terminal_value = 535_000.0
+        return (
+            probability,
+            {"expected_terminal_value": expected_terminal_value},
+            RiskSummary(
+                max_drawdown_90pct=drawdown,
+                terminal_value_tail_mean_95=430_000.0,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.06,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert result.simulation_mode_used == SimulationMode.GARCH_T_DCC
+    assert result.recommended_allocation.name == "defensive"
+    assert result.highest_probability_result is not None
+    assert result.highest_probability_result.allocation_name == "growth"
+    assert result.highest_probability_result.success_probability == pytest.approx(0.78)
+    assert result.recommended_result.implied_required_annual_return == pytest.approx(0.1111111111111111, rel=1e-6)
+    assert any(
+        note
+        == "simulation_mode requested=garch_t_dcc_jump used=garch_t_dcc downgrade=true missing=jump_state"
+        for note in result.solver_notes
+    )
+    assert any(
+        note
+        == "probability_model method=parametric_monte_carlo distribution=garch_t_dcc requested_mode=garch_t_dcc_jump historical_backtest_used=false"
+        for note in result.solver_notes
+    )
+
+
+@pytest.mark.contract
+def test_run_goal_solver_downgrades_when_distribution_input_shape_is_only_partially_present(
+    goal_solver_input_base,
+):
+    solver_input = _mode_test_input(goal_solver_input_base)
+    solver_input["solver_params"]["simulation_mode"] = "garch_t_dcc"
+    solver_input["solver_params"]["distribution_input"] = {
+        "garch_t_state": {"equity_cn": {}},
+        "dcc_state": {"equity_cn": {}},
+    }
+
+    result = run_goal_solver(solver_input)
+
+    assert result.simulation_mode_used == SimulationMode.STATIC_GAUSSIAN
+    assert any(
+        note
+        == "simulation_mode requested=garch_t_dcc used=static_gaussian downgrade=true missing=garch_t_state,dcc_state"
         for note in result.solver_notes
     )
 

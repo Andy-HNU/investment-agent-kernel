@@ -9,6 +9,7 @@ import tempfile
 import pytest
 
 from frontdesk.service import (
+    _frontdesk_summary,
     approve_frontdesk_execution_plan,
     run_frontdesk_followup,
     run_frontdesk_onboarding,
@@ -158,6 +159,62 @@ def test_frontdesk_followup_persists_decision_card_and_provenance(tmp_path):
     assert latest_decision_card["input_provenance"]["counts"]["system_inferred"] >= 1
     for label in ("用户提供", "系统推断", "默认假设"):
         assert label in serialized
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_summary_surfaces_probability_context_fields(tmp_path):
+    profile = _profile(account_profile_id="summary_probability_context")
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    summary = run_frontdesk_onboarding(profile, db_path=db_path)
+
+    assert summary["status"] == "completed"
+    assert summary["simulation_mode_used"] == "static_gaussian"
+    assert isinstance(summary["highest_probability_result"], dict)
+    assert summary["highest_probability_result"]["allocation_name"]
+    recommended_success = float(
+        str(summary["decision_card"]["key_metrics"]["success_probability"]).strip().rstrip("%")
+    ) / 100.0
+    assert summary["highest_probability_result"]["success_probability"] >= recommended_success
+    assert summary["implied_required_annual_return"] is not None
+    assert summary["decision_card"]["key_metrics"]["simulation_mode"] == "static_gaussian"
+    assert summary["decision_card"]["key_metrics"]["highest_probability_success"] is not None
+    assert summary["decision_card"]["key_metrics"]["implied_required_annual_return"] is not None
+
+
+@pytest.mark.contract
+def test_frontdesk_summary_normalizes_quarterly_goal_metrics_from_decision_card(tmp_path):
+    summary = _frontdesk_summary(
+        account_profile_id="quarterly_goal_metric_alias",
+        display_name="Andy",
+        result_payload={
+            "run_id": "quarterly_goal_metric_alias_run",
+            "workflow_type": "quarterly",
+            "status": "completed",
+            "decision_card": {
+                "card_type": "quarterly_review",
+                "key_metrics": {
+                    "new_baseline_simulation_mode": "garch_t_dcc",
+                    "new_baseline_implied_required_annual_return": "8.12%",
+                    "new_baseline_highest_probability_success": "76.00%",
+                },
+                "input_provenance": {},
+            },
+            "goal_solver_output": {
+                "recommended_result": {},
+                "highest_probability_result": {
+                    "allocation_name": "growth_tilt__aggressive__01",
+                    "success_probability": 0.76,
+                },
+            },
+        },
+        db_path=tmp_path / "frontdesk.sqlite",
+    )
+
+    assert summary["simulation_mode_used"] == "garch_t_dcc"
+    assert summary["implied_required_annual_return"] == "8.12%"
+    assert summary["highest_probability_result"]["allocation_name"] == "growth_tilt__aggressive__01"
+    assert summary["key_metrics"]["new_baseline_highest_probability_success"] == "76.00%"
 
 
 @pytest.mark.contract

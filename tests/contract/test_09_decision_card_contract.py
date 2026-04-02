@@ -160,8 +160,14 @@ def test_quarterly_review_card_keeps_review_action_and_consumes_dual_evidence():
             goal_solver_output={
                 "recommended_result": {
                     "success_probability": 0.71,
+                    "implied_required_annual_return": 0.0812,
                     "risk_summary": {"max_drawdown_90pct": 0.18},
                 },
+                "highest_probability_result": {
+                    "allocation_name": "growth_tilt__aggressive__01",
+                    "success_probability": 0.76,
+                },
+                "simulation_mode_used": "garch_t_dcc",
                 "solver_notes": ["baseline refreshed"],
             },
             runtime_result={
@@ -190,6 +196,12 @@ def test_quarterly_review_card_keeps_review_action_and_consumes_dual_evidence():
     assert card["recommended_action"] == "review"
     assert card["primary_recommendation"] == "review"
     assert card["key_metrics"]["quarterly_runtime_action"] == "observe"
+    assert card["key_metrics"]["new_baseline_implied_required_annual_return"] == "8.12%"
+    assert card["key_metrics"]["new_baseline_simulation_mode"] == "garch_t_dcc"
+    assert card["key_metrics"]["new_baseline_highest_probability_success"] == "76.00%"
+    assert card["key_metrics"]["implied_required_annual_return"] == "8.12%"
+    assert card["key_metrics"]["simulation_mode"] == "garch_t_dcc"
+    assert card["key_metrics"]["highest_probability_success"] == "76.00%"
     assert "success_probability=0.71" in card["evidence_highlights"]
     assert card["runner_up_action"] is None
 
@@ -236,3 +248,42 @@ def test_goal_baseline_card_includes_model_disclaimer_and_input_source_summary()
     assert "用户提供 1 项" in card["input_source_summary"]
     assert "系统推断 1 项" in card["input_source_summary"]
     assert card["input_source_sections"][0]["source_label"] == "用户提供"
+
+
+@pytest.mark.contract
+def test_goal_baseline_card_surfaces_simulation_mode_and_probability_context():
+    card = build_decision_card(
+        DecisionCardBuildInput(
+            card_type=DecisionCardType.GOAL_BASELINE,
+            workflow_type="onboarding",
+            run_id="decision_card_goal_probability_context",
+            goal_solver_output={
+                "recommended_allocation": {"name": "balanced_progression__moderate__02"},
+                "recommended_result": {
+                    "allocation_name": "balanced_progression__moderate__02",
+                    "success_probability": 0.72,
+                    "expected_terminal_value": 1_030_000.0,
+                    "implied_required_annual_return": 0.0812,
+                    "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
+                },
+                "highest_probability_result": {
+                    "allocation_name": "growth_tilt__aggressive__01",
+                    "display_name": "增长倾向方案",
+                    "success_probability": 0.76,
+                    "expected_terminal_value": 1_080_000.0,
+                    "risk_summary": {"max_drawdown_90pct": 0.24, "shortfall_probability": 0.24},
+                },
+                "simulation_mode_used": "garch_t_dcc",
+                "solver_notes": [
+                    "simulation_mode requested=garch_t_dcc_jump used=garch_t_dcc downgrade=true missing=jump_state"
+                ],
+                "disclaimer": "以下为模型模拟结果，不是历史回测收益承诺。",
+            },
+        )
+    )
+
+    assert card["key_metrics"]["simulation_mode"] == "garch_t_dcc"
+    assert card["key_metrics"]["implied_required_annual_return"] == "8.12%"
+    assert card["key_metrics"]["highest_probability_success"] == "76.00%"
+    assert any("simulation_mode=garch_t_dcc" == item for item in card["evidence_highlights"])
+    assert any("highest_probability_allocation=growth_tilt__aggressive__01" == item for item in card["evidence_highlights"])

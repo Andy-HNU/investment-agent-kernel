@@ -89,6 +89,72 @@ class BehaviorState:
 
 
 @dataclass
+class GarchState:
+    version: str
+    annualized_volatility: dict[str, float]
+    long_run_variance: dict[str, float]
+    persistence: dict[str, float]
+    shock_loading: dict[str, float]
+    estimation_mode: str = "conservative_fallback"
+    is_degraded: bool = True
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DccState:
+    version: str
+    correlation_matrix: dict[str, dict[str, float]]
+    long_run_correlation: dict[str, dict[str, float]]
+    alpha: float
+    beta: float
+    regime_anchor: str | None = None
+    estimation_mode: str = "conservative_fallback"
+    is_degraded: bool = True
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class JumpOverlayState:
+    version: str
+    event_count: int
+    jump_probability_1m: dict[str, float]
+    jump_loss: dict[str, float]
+    stress_source: str | None = None
+    estimation_mode: str = "conservative_fallback"
+    is_degraded: bool = True
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DistributionModelState:
+    as_of: Any
+    source_bundle_id: str
+    version: str
+    garch_state: GarchState
+    dcc_state: DccState
+    jump_overlay_state: JumpOverlayState
+    historical_dataset_version: str | None = None
+    regime_anchor: str | None = None
+    policy_signal_ids: list[str] = field(default_factory=list)
+    bucket_proxy_map: dict[str, str] = field(default_factory=dict)
+    estimation_mode: str = "conservative_fallback"
+    is_degraded: bool = True
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class RuntimeOptimizerParams:
     version: str
     deviation_soft_threshold: float
@@ -153,6 +219,7 @@ class ParamVersionMeta:
     goal_solver_params_version: str | None = None
     runtime_optimizer_params_version: str | None = None
     ev_params_version: str | None = None
+    distribution_model_state_version: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -177,6 +244,7 @@ class CalibrationResult:
     goal_solver_params: Any
     runtime_optimizer_params: Any
     ev_params: Any
+    distribution_model_state: Any | None = None
     calibration_quality: str = "full"
     degraded_domains: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)

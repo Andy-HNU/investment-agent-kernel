@@ -828,12 +828,17 @@ def _build_runtime_evidence(
 
 def _build_goal_evidence(inp: DecisionCardBuildInput, goal_output: dict[str, Any]) -> list[str]:
     result = _obj(goal_output.get("recommended_result", {}))
+    highest_probability_result = _obj(goal_output.get("highest_probability_result", {}))
     risk_summary = _obj(result.get("risk_summary", {}))
     structure_budget = _obj(goal_output.get("structure_budget", {}))
     evidence = [
         f"success_probability={_metric(result.get('success_probability'))}",
         f"max_drawdown_90pct={_metric(risk_summary.get('max_drawdown_90pct'))}",
         f"shortfall_probability={_metric(risk_summary.get('shortfall_probability'))}",
+        f"implied_required_annual_return={_metric(result.get('implied_required_annual_return'))}",
+        f"simulation_mode={_metric(goal_output.get('simulation_mode_used'))}",
+        f"highest_probability_allocation={_metric(highest_probability_result.get('allocation_name'))}",
+        f"highest_probability_success={_metric(highest_probability_result.get('success_probability'))}",
         f"core_weight={_metric(structure_budget.get('core_weight'))}",
         f"satellite_weight={_metric(structure_budget.get('satellite_weight'))}",
     ]
@@ -841,6 +846,8 @@ def _build_goal_evidence(inp: DecisionCardBuildInput, goal_output: dict[str, Any
         f"success_probability_display={_percent_metric(result.get('success_probability'))}",
         f"max_drawdown_90pct_display={_percent_metric(risk_summary.get('max_drawdown_90pct'))}",
         f"shortfall_probability_display={_percent_metric(risk_summary.get('shortfall_probability'))}",
+        f"implied_required_annual_return_display={_percent_metric(result.get('implied_required_annual_return'))}",
+        f"highest_probability_success_display={_percent_metric(highest_probability_result.get('success_probability'))}",
         f"core_weight_display={_percent_metric(structure_budget.get('core_weight'))}",
         f"satellite_weight_display={_percent_metric(structure_budget.get('satellite_weight'))}",
     ]
@@ -977,6 +984,7 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     goal_output = _obj(inp.goal_solver_output or {})
     recommended = _obj(goal_output.get("recommended_allocation", {}))
     result = _obj(goal_output.get("recommended_result", {}))
+    highest_probability_result = _obj(goal_output.get("highest_probability_result", {}))
     risk_summary = _obj(result.get("risk_summary", {}))
     candidate_options = _build_goal_candidate_options(inp, goal_output)
     fallback_options = _build_goal_fallback_options(goal_output)
@@ -1055,6 +1063,9 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
             "expected_terminal_value": _currency_metric(result.get("expected_terminal_value")),
             "max_drawdown_90pct": _percent_metric(risk_summary.get("max_drawdown_90pct")),
             "shortfall_probability": _percent_metric(risk_summary.get("shortfall_probability")),
+            "implied_required_annual_return": _percent_metric(result.get("implied_required_annual_return")),
+            "simulation_mode": _metric(goal_output.get("simulation_mode_used")),
+            "highest_probability_success": _percent_metric(highest_probability_result.get("success_probability")),
         },
         alternatives=user_visible_alternatives,
         guardrails=_build_guardrails(inp, {}, low_confidence=low_confidence),
@@ -1124,6 +1135,7 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     goal_output = _obj(inp.goal_solver_output or {})
     ev_report = _obj(runtime_result.get("ev_report", {}))
     result = _obj(goal_output.get("recommended_result", {}))
+    highest_probability_result = _obj(goal_output.get("highest_probability_result", {}))
     ranked_actions = _ranked_entries(ev_report)
     quarterly_runtime_action = _action_type(
         ev_report.get("recommended_action") or (ranked_actions[0].get("action") if ranked_actions else None)
@@ -1174,6 +1186,14 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         key_metrics={
             "new_baseline_success_probability": _percent_metric(result.get("success_probability")),
             "new_baseline_max_drawdown_90pct": _percent_metric(risk_summary.get("max_drawdown_90pct")),
+            "new_baseline_implied_required_annual_return": _percent_metric(result.get("implied_required_annual_return")),
+            "new_baseline_simulation_mode": _metric(goal_output.get("simulation_mode_used")),
+            "new_baseline_highest_probability_success": _percent_metric(
+                highest_probability_result.get("success_probability")
+            ),
+            "implied_required_annual_return": _percent_metric(result.get("implied_required_annual_return")),
+            "simulation_mode": _metric(goal_output.get("simulation_mode_used")),
+            "highest_probability_success": _percent_metric(highest_probability_result.get("success_probability")),
             "quarterly_action_confidence": _metric(ev_report.get("confidence_flag")),
             "quarterly_runtime_action": quarterly_runtime_action,
         },

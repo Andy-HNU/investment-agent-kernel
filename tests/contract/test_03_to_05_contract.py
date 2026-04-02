@@ -6,6 +6,8 @@ import pytest
 
 from calibration.engine import run_calibration
 from calibration.types import BehaviorState, CalibrationResult, ConstraintState, MarketState
+from snapshot_ingestion.historical import build_historical_dataset_snapshot
+import snapshot_ingestion.types as snapshot_types
 from snapshot_ingestion.engine import build_snapshot_bundle
 
 
@@ -78,6 +80,61 @@ def _constraint_raw(goal_solver_input_base: dict) -> dict:
         },
         "transaction_fee_rate": {"equity_cn": 0.003, "bond_cn": 0.001},
     }
+
+
+def _market_raw_with_distribution_inputs(goal_solver_input_base: dict) -> dict:
+    market_raw = _market_raw(goal_solver_input_base)
+    panel_cls = getattr(snapshot_types, "HistoricalReturnPanelRaw", dict)
+    regime_cls = getattr(snapshot_types, "RegimeFeatureSnapshotRaw", dict)
+    jump_cls = getattr(snapshot_types, "JumpEventHistoryRaw", dict)
+    proxy_cls = getattr(snapshot_types, "BucketProxyMappingRaw", dict)
+    market_raw["historical_return_panel"] = panel_cls(
+        dataset_id="panel-20260329",
+        version_id="panel-20260329:v1",
+        as_of="2026-03-29",
+        source_name="fixture_panel",
+        lookback_months=36,
+        return_series={
+            "equity_cn": [0.01, 0.02, -0.01, 0.03],
+            "bond_cn": [0.002, 0.004, 0.001, 0.003],
+            "gold": [0.006, -0.002, 0.004, 0.003],
+            "satellite": [0.015, 0.025, -0.02, 0.03],
+        },
+        notes=["panel fixture for contract test"],
+    )
+    market_raw["regime_feature_snapshot"] = regime_cls(
+        snapshot_id="regime-20260329",
+        as_of="2026-03-29T12:00:00Z",
+        feature_values={"inflation": 0.62, "growth": 0.41, "liquidity": 0.35},
+        inferred_regime="tightening",
+        notes=["policy regime proxy"],
+    )
+    market_raw["jump_event_history"] = jump_cls(
+        history_id="jump-20260329",
+        as_of="2026-03-29T12:00:00Z",
+        events=[
+            {
+                "event_id": "evt-1",
+                "bucket": "equity_cn",
+                "event_type": "policy_shock",
+                "magnitude": -0.08,
+                "event_date": "2026-02-17",
+            }
+        ],
+        notes=["single event fixture"],
+    )
+    market_raw["bucket_proxy_mapping"] = proxy_cls(
+        mapping_id="proxy-20260329",
+        as_of="2026-03-29T12:00:00Z",
+        bucket_to_proxy={
+            "equity_cn": "000300.SH",
+            "bond_cn": "CBA00001.CS",
+            "gold": "AU9999.SGE",
+            "satellite": "KWEB",
+        },
+        notes=["proxy fixture"],
+    )
+    return market_raw
 
 
 @pytest.mark.contract
@@ -433,6 +490,31 @@ def test_build_snapshot_bundle_preserves_policy_news_signals_and_historical_data
 
 
 @pytest.mark.contract
+def test_build_snapshot_bundle_accepts_distribution_model_raw_inputs_in_market(
+    goal_solver_input_base,
+    live_portfolio_base,
+    calibration_result_base,
+):
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw=_market_raw_with_distribution_inputs(goal_solver_input_base),
+        account_raw=_account_raw(goal_solver_input_base, live_portfolio_base),
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=calibration_result_base["behavior_state"],
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+    )
+
+    assert type(bundle.market["historical_return_panel"]).__name__ == "HistoricalReturnPanelRaw"
+    assert type(bundle.market["regime_feature_snapshot"]).__name__ == "RegimeFeatureSnapshotRaw"
+    assert type(bundle.market["jump_event_history"]).__name__ == "JumpEventHistoryRaw"
+    assert type(bundle.market["bucket_proxy_mapping"]).__name__ == "BucketProxyMappingRaw"
+    rendered_market = bundle.to_dict()["market"]
+    assert rendered_market["bucket_proxy_mapping"]["bucket_to_proxy"]["equity_cn"] == "000300.SH"
+
+
+@pytest.mark.contract
 def test_run_calibration_uses_historical_dataset_metadata_for_market_assumptions(
     goal_solver_input_base,
     live_portfolio_base,
@@ -468,6 +550,91 @@ def test_run_calibration_uses_historical_dataset_metadata_for_market_assumptions
     assert result.market_assumptions.lookback_months == 36
     assert result.market_assumptions.historical_backtest_used is True
     assert result.goal_solver_params.market_assumptions.dataset_version == "fixture_history:2026-03-29:v1"
+
+
+@pytest.mark.contract
+def test_run_calibration_consumes_historical_return_panel_for_market_assumptions(
+    goal_solver_input_base,
+    live_portfolio_base,
+):
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw=_market_raw_with_distribution_inputs(goal_solver_input_base),
+        account_raw=_account_raw(goal_solver_input_base, live_portfolio_base),
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=None,
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+    )
+
+    result = run_calibration(bundle, prior_calibration=None)
+
+    assert result.market_assumptions.historical_backtest_used is True
+    assert result.market_assumptions.source_name == "fixture_panel"
+    assert result.market_assumptions.dataset_version == "panel-20260329:v1"
+    assert result.goal_solver_params.market_assumptions.dataset_version == "panel-20260329:v1"
+
+
+@pytest.mark.contract
+def test_build_historical_dataset_snapshot_autogenerates_version_when_missing():
+    dataset = build_historical_dataset_snapshot(
+        {
+            "source_name": "fixture_history",
+            "as_of": "2026-03-29",
+            "lookback_months": 36,
+            "return_series": {
+                "equity_cn": [0.01, 0.02, -0.01, 0.03],
+                "bond_cn": [0.002, 0.004, 0.001, 0.003],
+            },
+        }
+    )
+
+    assert dataset is not None
+    assert dataset.version_id.startswith("fixture_history:2026-03-29:")
+    assert dataset.dataset_id == "fixture_history:2026-03-29"
+
+
+@pytest.mark.contract
+def test_run_calibration_emits_minimal_distribution_model_state_with_conservative_notes(
+    goal_solver_input_base,
+    live_portfolio_base,
+    calibration_result_base,
+):
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw=_market_raw_with_distribution_inputs(goal_solver_input_base),
+        account_raw=_account_raw(goal_solver_input_base, live_portfolio_base),
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=calibration_result_base["behavior_state"],
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+        policy_news_signals=[
+            {
+                "signal_id": "signal-tightening",
+                "as_of": "2026-03-29T10:00:00Z",
+                "source_type": "analysis",
+                "source_refs": ["memo://macro"],
+                "policy_regime": "tightening",
+                "macro_uncertainty": "high",
+                "liquidity_stress": "high",
+                "confidence": 0.91,
+            }
+        ],
+    )
+
+    result = run_calibration(bundle, prior_calibration=None)
+    state = getattr(result, "distribution_model_state", None)
+
+    assert type(state).__name__ == "DistributionModelState"
+    assert getattr(state, "source_bundle_id", None) == bundle.bundle_id
+    assert type(getattr(state, "garch_state", None)).__name__ == "GarchState"
+    assert type(getattr(state, "dcc_state", None)).__name__ == "DccState"
+    assert type(getattr(state, "jump_overlay_state", None)).__name__ == "JumpOverlayState"
+    assert getattr(state, "is_degraded", None) is True
+    assert "conservative" in " ".join(getattr(state, "notes", [])).lower()
+    assert "not fully estimated" in " ".join(getattr(state, "notes", [])).lower()
 
 
 @pytest.mark.contract

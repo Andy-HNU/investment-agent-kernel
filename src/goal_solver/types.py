@@ -11,6 +11,13 @@ class RankingMode(str, Enum):
     BALANCED = "balanced"
 
 
+class SimulationMode(str, Enum):
+    STATIC_GAUSSIAN = "static_gaussian"
+    GARCH_T = "garch_t"
+    GARCH_T_DCC = "garch_t_dcc"
+    GARCH_T_DCC_JUMP = "garch_t_dcc_jump"
+
+
 def _normalize_profile_label(value: Any) -> str:
     return str(getattr(value, "value", value)).strip().lower()
 
@@ -117,6 +124,16 @@ class StrategicAllocation:
 
 
 @dataclass
+class DistributionInput:
+    garch_t_state: dict[str, dict[str, float]] = field(default_factory=dict)
+    dcc_state: dict[str, dict[str, float]] = field(default_factory=dict)
+    jump_state: dict[str, float] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class GoalSolverParams:
     version: str
     n_paths: int
@@ -125,9 +142,14 @@ class GoalSolverParams:
     market_assumptions: MarketAssumptions
     shrinkage_factor: float = 0.85
     ranking_mode_default: RankingMode = RankingMode.SUFFICIENCY_FIRST
+    simulation_mode: SimulationMode = SimulationMode.STATIC_GAUSSIAN
+    distribution_input: DistributionInput | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["ranking_mode_default"] = self.ranking_mode_default.value
+        data["simulation_mode"] = self.simulation_mode.value
+        return data
 
 
 @dataclass
@@ -185,6 +207,7 @@ class SuccessProbabilityResult:
     expected_terminal_value: float
     risk_summary: RiskSummary
     is_feasible: bool
+    implied_required_annual_return: float | None = None
     display_name: str = ""
     summary: str = ""
     complexity_label: str = ""
@@ -206,6 +229,8 @@ class GoalSolverOutput:
     ranking_mode_used: RankingMode
     structure_budget: StructureBudget
     risk_budget: RiskBudget
+    simulation_mode_used: SimulationMode = SimulationMode.STATIC_GAUSSIAN
+    highest_probability_result: SuccessProbabilityResult | None = None
     solver_notes: list[str] = field(default_factory=list)
     params_version: str = ""
     candidate_menu: list[dict[str, Any]] = field(default_factory=list)
@@ -220,4 +245,8 @@ class GoalSolverOutput:
         data["structure_budget"] = self.structure_budget.to_dict()
         data["risk_budget"] = self.risk_budget.to_dict()
         data["ranking_mode_used"] = self.ranking_mode_used.value
+        data["simulation_mode_used"] = self.simulation_mode_used.value
+        data["highest_probability_result"] = (
+            self.highest_probability_result.to_dict() if self.highest_probability_result is not None else None
+        )
         return data

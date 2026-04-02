@@ -9,13 +9,30 @@ from calibration.types import (
     BehaviorState,
     CalibrationResult,
     ConstraintState,
+    DccState,
+    DistributionModelState,
     EVParams,
+    GarchState,
+    JumpOverlayState,
     MarketState,
     ParamVersionMeta,
     RuntimeOptimizerParams,
 )
-from goal_solver.types import GoalSolverParams, MarketAssumptions, RankingMode
-from snapshot_ingestion.historical import build_historical_dataset_snapshot, summarize_historical_dataset
+from goal_solver.types import (
+    DistributionInput,
+    GoalSolverParams,
+    MarketAssumptions,
+    RankingMode,
+    SimulationMode,
+)
+from snapshot_ingestion.historical import (
+    build_bucket_proxy_mapping,
+    build_historical_dataset_snapshot,
+    build_historical_return_panel,
+    build_jump_event_history,
+    build_regime_feature_snapshot,
+    summarize_historical_dataset,
+)
 from snapshot_ingestion.types import CompletenessLevel, SnapshotBundle
 
 
@@ -136,6 +153,225 @@ def _default_volatility(bucket: str) -> float:
     if "sat" in bucket:
         return 0.22
     return 0.18
+
+
+def _clip(value: float, low: float, high: float) -> float:
+    return float(max(low, min(value, high)))
+
+
+def _distribution_regime_anchor(
+    regime_snapshot: Any | None,
+    policy_summary: dict[str, Any],
+) -> str | None:
+    regime_data = _obj(regime_snapshot or {})
+    regime_anchor = _first_text(regime_data.get("inferred_regime"), policy_summary.get("policy_regime"))
+    if regime_anchor:
+        return regime_anchor
+    if str(policy_summary.get("macro_uncertainty") or "").lower() == "high":
+        return "uncertain"
+    return None
+
+
+def build_distribution_model_state(
+    bundle: SnapshotBundle | dict[str, Any],
+    market_state: MarketState,
+    market_assumptions: MarketAssumptions,
+) -> DistributionModelState:
+    bundle_data = _bundle_dict(bundle)
+    market_raw = _obj(bundle_data.get("market", {}))
+    created_at = _utc(bundle_data.get("created_at"))
+    bundle_id = str(bundle_data.get("bundle_id", ""))
+    buckets = _bucket_universe(bundle_data)
+    policy_summary = _policy_signal_summary(bundle_data)
+    historical_panel = build_historical_return_panel(_obj(market_raw.get("historical_return_panel")))
+    regime_snapshot = build_regime_feature_snapshot(_obj(market_raw.get("regime_feature_snapshot")))
+    jump_history = build_jump_event_history(_obj(market_raw.get("jump_event_history")))
+    proxy_mapping = build_bucket_proxy_mapping(_obj(market_raw.get("bucket_proxy_mapping")))
+    historical_dataset = build_historical_dataset_snapshot(
+        historical_panel
+        or _obj(bundle_data.get("historical_dataset_metadata") or market_raw.get("historical_dataset"))
+    )
+
+    dataset_volatility: dict[str, float] = {}
+    dataset_corr: dict[str, dict[str, float]] = {}
+    if historical_dataset is not None:
+        _, dataset_volatility, dataset_corr = summarize_historical_dataset(historical_dataset, buckets=buckets)
+
+    stress_multiplier = 1.0
+    if market_state.risk_environment == "high":
+        stress_multiplier += 0.08
+    if str(policy_summary.get("macro_uncertainty") or "").lower() == "high":
+        stress_multiplier += 0.07
+    if str(policy_summary.get("liquidity_stress") or "").lower() == "high":
+        stress_multiplier += 0.05
+
+    garch_notes = [
+        "conservative_fallback volatility seeds applied; not fully estimated",
+    ]
+    annualized_volatility: dict[str, float] = {}
+    long_run_variance: dict[str, float] = {}
+    persistence: dict[str, float] = {}
+    shock_loading: dict[str, float] = {}
+    for bucket in buckets:
+        base_vol = float(
+            dataset_volatility.get(
+                bucket,
+                market_assumptions.volatility.get(bucket, _default_volatility(bucket)),
+            )
+        )
+        adjusted_vol = _clip(base_vol * stress_multiplier, 0.03, 0.60)
+        annualized_volatility[bucket] = adjusted_vol
+        long_run_variance[bucket] = _clip((adjusted_vol**2) / 12.0, 0.0001, 1.0)
+        persistence[bucket] = 0.90 if "bond" in bucket else 0.94
+        shock_loading[bucket] = 0.05 if "bond" in bucket else 0.07
+    if historical_dataset is not None:
+        garch_notes.append(
+            "historical dataset seeded volatility "
+            f"source={historical_dataset.source_name or 'unknown'} "
+            f"version={historical_dataset.version_id or 'unknown'}"
+        )
+    else:
+        garch_notes.append("market assumptions volatility used as fallback seed")
+    garch_state = GarchState(
+        version=_version_id("garch_state", created_at),
+        annualized_volatility=annualized_volatility,
+        long_run_variance=long_run_variance,
+        persistence=persistence,
+        shock_loading=shock_loading,
+        estimation_mode="conservative_fallback",
+        is_degraded=True,
+        notes=garch_notes,
+    )
+
+    regime_anchor = _distribution_regime_anchor(regime_snapshot, policy_summary)
+    dcc_notes = [
+        "conservative_fallback correlation surface applied; not fully estimated",
+    ]
+    long_run_correlation: dict[str, dict[str, float]] = {}
+    correlation_matrix: dict[str, dict[str, float]] = {}
+    stress_shift = 0.12 if market_state.correlation_spike_alert else 0.0
+    if str(policy_summary.get("macro_uncertainty") or "").lower() == "high":
+        stress_shift += 0.08
+    for bucket in buckets:
+        baseline_row: dict[str, float] = {}
+        stressed_row: dict[str, float] = {}
+        for peer in buckets:
+            if bucket == peer:
+                baseline_row[peer] = 1.0
+                stressed_row[peer] = 1.0
+                continue
+            base_corr = float(
+                dataset_corr.get(bucket, {}).get(
+                    peer,
+                    market_assumptions.correlation_matrix.get(bucket, {}).get(peer, 0.1),
+                )
+            )
+            baseline_row[peer] = _clip(base_corr, -0.95, 0.95)
+            stressed_row[peer] = _clip(base_corr + stress_shift, -0.95, 0.95)
+        long_run_correlation[bucket] = baseline_row
+        correlation_matrix[bucket] = stressed_row
+    if regime_anchor:
+        dcc_notes.append(f"regime anchor={regime_anchor}")
+    dcc_state = DccState(
+        version=_version_id("dcc_state", created_at),
+        correlation_matrix=correlation_matrix,
+        long_run_correlation=long_run_correlation,
+        alpha=0.04,
+        beta=0.93,
+        regime_anchor=regime_anchor,
+        estimation_mode="conservative_fallback",
+        is_degraded=True,
+        notes=dcc_notes,
+    )
+
+    jump_notes = [
+        "conservative_fallback jump overlay applied; not fully estimated",
+    ]
+    event_counts: dict[str, int] = {bucket: 0 for bucket in buckets}
+    events = list(_obj(jump_history).get("events", []) if jump_history is not None else [])
+    for event in events:
+        bucket = str(_obj(event).get("bucket") or "").strip()
+        if bucket in event_counts:
+            event_counts[bucket] += 1
+    jump_probability_1m: dict[str, float] = {}
+    jump_loss: dict[str, float] = {}
+    policy_stress = any(
+        [
+            bool(policy_summary.get("manual_review_required")),
+            str(policy_summary.get("macro_uncertainty") or "").lower() == "high",
+            str(policy_summary.get("liquidity_stress") or "").lower() == "high",
+        ]
+    )
+    for bucket in buckets:
+        base_prob = 0.01 if "bond" in bucket else 0.02 if "gold" in bucket else 0.08 if "sat" in bucket else 0.05
+        probability = base_prob + (0.03 * event_counts.get(bucket, 0))
+        if policy_stress and "bond" not in bucket:
+            probability += 0.02
+        if market_state.risk_environment == "high":
+            probability += 0.01
+        jump_probability_1m[bucket] = _clip(probability, 0.0, 0.30)
+        jump_loss[bucket] = _clip(
+            annualized_volatility.get(bucket, _default_volatility(bucket)) * (1.10 + 0.10 * event_counts.get(bucket, 0)),
+            0.03,
+            0.35,
+        )
+    if events:
+        jump_notes.append(f"jump events absorbed count={len(events)}")
+    if policy_stress:
+        jump_notes.append(
+            "policy signal overlay "
+            f"macro_uncertainty={policy_summary.get('macro_uncertainty') or 'unknown'} "
+            f"liquidity_stress={policy_summary.get('liquidity_stress') or 'unknown'}"
+        )
+    jump_overlay_state = JumpOverlayState(
+        version=_version_id("jump_overlay_state", created_at),
+        event_count=len(events),
+        jump_probability_1m=jump_probability_1m,
+        jump_loss=jump_loss,
+        stress_source=_first_text(policy_summary.get("policy_regime"), regime_anchor, "market_state"),
+        estimation_mode="conservative_fallback",
+        is_degraded=True,
+        notes=jump_notes,
+    )
+
+    notes = [
+        "distribution model state uses conservative_fallback parameters; not fully estimated",
+        "wave 1 contract scaffold only; component states are conservative seeds until full estimation lands",
+    ]
+    if historical_dataset is not None:
+        notes.append(
+            "historical dataset attached "
+            f"source={historical_dataset.source_name or 'unknown'} "
+            f"version={historical_dataset.version_id or 'unknown'}"
+        )
+    if regime_anchor:
+        notes.append(f"regime anchor={regime_anchor}")
+    if proxy_mapping is not None:
+        notes.append(f"bucket proxy mapping attached buckets={len(proxy_mapping.bucket_to_proxy)}")
+    if policy_summary:
+        notes.append(
+            "policy signal absorbed "
+            f"confidence={float(policy_summary.get('confidence', 0.0) or 0.0):.2f}"
+        )
+    return DistributionModelState(
+        as_of=created_at.isoformat().replace("+00:00", "Z"),
+        source_bundle_id=bundle_id,
+        version=_version_id("distribution_model_state", created_at),
+        garch_state=garch_state,
+        dcc_state=dcc_state,
+        jump_overlay_state=jump_overlay_state,
+        historical_dataset_version=_first_text(
+            _obj(historical_dataset).get("version_id") if historical_dataset is not None else None,
+            market_state.historical_dataset_version,
+            historical_panel.version_id if historical_panel is not None else None,
+        ),
+        regime_anchor=regime_anchor,
+        policy_signal_ids=list(market_state.policy_signal_ids),
+        bucket_proxy_map=dict(proxy_mapping.bucket_to_proxy) if proxy_mapping is not None else {},
+        estimation_mode="conservative_fallback",
+        is_degraded=True,
+        notes=notes,
+    )
 
 
 def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketState:
@@ -407,8 +643,10 @@ def calibrate_market_assumptions(
     bundle_quality = _quality_text(bundle_data.get("bundle_quality"))
     raw_returns = dict(market_raw.get("expected_returns", {}))
     raw_volatility = dict(market_raw.get("raw_volatility", {}))
+    historical_panel = build_historical_return_panel(_obj(market_raw.get("historical_return_panel")))
     historical_dataset = build_historical_dataset_snapshot(
         _obj(bundle_data.get("historical_dataset_metadata") or market_raw.get("historical_dataset"))
+        or historical_panel
     )
     if historical_dataset is not None:
         dataset_returns, dataset_volatility, dataset_corr = summarize_historical_dataset(
@@ -508,12 +746,14 @@ def _param_meta_from_prior(prior_calibration: CalibrationResult | dict[str, Any]
 
 def update_goal_solver_params(
     market_assumptions: MarketAssumptions,
+    distribution_model_state: DistributionModelState,
     prior_params: GoalSolverParams | dict[str, Any] | None,
     created_at: Any,
 ) -> GoalSolverParams:
     params = _coerce_goal_solver_params(prior_params, market_assumptions)
     params.version = _version_id("goal_solver_params", created_at)
     params.market_assumptions = market_assumptions
+    params.distribution_input = _distribution_input_from_model_state(distribution_model_state)
     return params
 
 
@@ -637,6 +877,7 @@ def _build_param_version_meta(
     goal_solver_params: GoalSolverParams,
     runtime_optimizer_params: RuntimeOptimizerParams,
     ev_params: EVParams,
+    distribution_model_state: DistributionModelState,
 ) -> ParamVersionMeta:
     quality = _param_meta_quality(calibration_quality, manual_override)
     is_temporary = quality == "degraded"
@@ -654,6 +895,7 @@ def _build_param_version_meta(
         goal_solver_params_version=goal_solver_params.version,
         runtime_optimizer_params_version=runtime_optimizer_params.version,
         ev_params_version=ev_params.version,
+        distribution_model_state_version=distribution_model_state.version,
     )
 
 
@@ -662,6 +904,12 @@ def _coerce_goal_solver_params(
     market_assumptions: MarketAssumptions,
 ) -> GoalSolverParams:
     data = _obj(params or {})
+    ranking_mode_default = data.get("ranking_mode_default", "sufficiency_first")
+    simulation_mode = data.get("simulation_mode", SimulationMode.STATIC_GAUSSIAN.value)
+    distribution_input_raw = data.get("distribution_input")
+    distribution_input = None
+    if distribution_input_raw is not None:
+        distribution_input = DistributionInput(**_obj(distribution_input_raw))
     return GoalSolverParams(
         version=str(data.get("version", "v4.0.0")),
         n_paths=int(data.get("n_paths", 5000) or 5000),
@@ -669,7 +917,59 @@ def _coerce_goal_solver_params(
         seed=int(data.get("seed", 42) or 42),
         market_assumptions=market_assumptions,
         shrinkage_factor=float(data.get("shrinkage_factor", 0.85) or 0.85),
-        ranking_mode_default=RankingMode(data.get("ranking_mode_default", "sufficiency_first")),
+        ranking_mode_default=RankingMode(str(getattr(ranking_mode_default, "value", ranking_mode_default))),
+        simulation_mode=SimulationMode(str(getattr(simulation_mode, "value", simulation_mode))),
+        distribution_input=distribution_input,
+    )
+
+
+def _distribution_input_from_model_state(
+    distribution_model_state: DistributionModelState,
+) -> DistributionInput:
+    garch_state = distribution_model_state.garch_state
+    dcc_state = distribution_model_state.dcc_state
+    jump_overlay_state = distribution_model_state.jump_overlay_state
+    historical_ready = bool(str(distribution_model_state.historical_dataset_version or "").strip())
+
+    garch_input: dict[str, dict[str, float]] = {}
+    if historical_ready:
+        garch_input = {
+            bucket: {
+                "annualized_volatility": float(garch_state.annualized_volatility.get(bucket, 0.0) or 0.0),
+                "long_run_variance": float(garch_state.long_run_variance.get(bucket, 0.0) or 0.0),
+                "alpha": float(garch_state.shock_loading.get(bucket, 0.0) or 0.0),
+                "beta": float(garch_state.persistence.get(bucket, 0.0) or 0.0),
+            }
+            for bucket in garch_state.annualized_volatility
+        }
+    jump_drag = 0.0
+    if jump_overlay_state.jump_probability_1m and jump_overlay_state.jump_loss:
+        jump_drag = sum(
+            float(jump_overlay_state.jump_probability_1m.get(bucket, 0.0) or 0.0)
+            * float(jump_overlay_state.jump_loss.get(bucket, 0.0) or 0.0)
+            for bucket in jump_overlay_state.jump_probability_1m
+        ) / max(len(jump_overlay_state.jump_probability_1m), 1)
+    jump_vol_multiplier = 1.0 + min(
+        sum(float(value or 0.0) for value in jump_overlay_state.jump_probability_1m.values()),
+        1.0,
+    )
+    dcc_input: dict[str, dict[str, float]] = {}
+    if historical_ready and dcc_state.correlation_matrix:
+        dcc_input = {
+            bucket: {peer: float(value) for peer, value in row.items()}
+            for bucket, row in dcc_state.correlation_matrix.items()
+        }
+    jump_input: dict[str, float] = {}
+    if historical_ready and jump_overlay_state.event_count > 0:
+        jump_input = {
+            "expected_jump_drag": float(jump_drag),
+            "jump_vol_multiplier": float(jump_vol_multiplier),
+            "event_count": float(jump_overlay_state.event_count),
+        }
+    return DistributionInput(
+        garch_t_state=garch_input,
+        dcc_state=dcc_input,
+        jump_state=jump_input,
     )
 
 
@@ -750,9 +1050,15 @@ def run_calibration(
         and prior_data.get("market_assumptions")
     ):
         notes.append("market assumptions reused from prior due degraded market input")
+    distribution_model_state = build_distribution_model_state(
+        bundle_data,
+        market_state,
+        market_assumptions,
+    )
 
     goal_solver_params = update_goal_solver_params(
         market_assumptions,
+        distribution_model_state,
         default_goal_solver_params or prior_data.get("goal_solver_params"),
         created_at=created_at,
     )
@@ -847,6 +1153,7 @@ def run_calibration(
         goal_solver_params=goal_solver_params,
         runtime_optimizer_params=runtime_optimizer_params,
         ev_params=ev_params,
+        distribution_model_state=distribution_model_state,
     )
 
     return CalibrationResult(
@@ -861,6 +1168,7 @@ def run_calibration(
         goal_solver_params=goal_solver_params,
         runtime_optimizer_params=runtime_optimizer_params,
         ev_params=ev_params,
+        distribution_model_state=distribution_model_state,
         calibration_quality=calibration_quality,
         degraded_domains=degraded_domains,
         notes=notes,

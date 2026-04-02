@@ -7,6 +7,13 @@ from math import sqrt
 from pathlib import Path
 from typing import Any
 
+from snapshot_ingestion.types import (
+    BucketProxyMappingRaw,
+    HistoricalReturnPanelRaw,
+    JumpEventHistoryRaw,
+    RegimeFeatureSnapshotRaw,
+)
+
 
 @dataclass(frozen=True)
 class HistoricalDatasetSnapshot:
@@ -43,6 +50,100 @@ class HistoricalDatasetSnapshot:
         )
 
 
+def build_historical_return_panel(
+    payload: HistoricalReturnPanelRaw | dict[str, Any] | None,
+) -> HistoricalReturnPanelRaw | None:
+    if payload is None:
+        return None
+    if isinstance(payload, HistoricalReturnPanelRaw):
+        return payload
+    data = dict(payload)
+    if "return_series" not in data:
+        return None
+    source_name = str(data.get("source_name") or "unknown_source")
+    as_of = str(data.get("as_of") or "")
+    return HistoricalReturnPanelRaw(
+        dataset_id=str(data.get("dataset_id") or f"{source_name}:{as_of}" or "historical_return_panel"),
+        version_id=str(data.get("version_id") or data.get("dataset_version") or ""),
+        as_of=as_of,
+        source_name=source_name,
+        lookback_months=int(data.get("lookback_months") or 0),
+        return_series={
+            str(bucket): [float(value) for value in list(series or [])]
+            for bucket, series in dict(data.get("return_series") or {}).items()
+        },
+        source_ref=data.get("source_ref"),
+        coverage_status=str(data.get("coverage_status") or "raw"),
+        notes=[str(item) for item in list(data.get("notes") or []) if str(item).strip()],
+    )
+
+
+def build_regime_feature_snapshot(
+    payload: RegimeFeatureSnapshotRaw | dict[str, Any] | None,
+) -> RegimeFeatureSnapshotRaw | None:
+    if payload is None:
+        return None
+    if isinstance(payload, RegimeFeatureSnapshotRaw):
+        return payload
+    data = dict(payload)
+    feature_values = dict(data.get("feature_values") or {})
+    if not feature_values:
+        return None
+    return RegimeFeatureSnapshotRaw(
+        snapshot_id=str(data.get("snapshot_id") or "regime_feature_snapshot"),
+        as_of=str(data.get("as_of") or ""),
+        feature_values={str(key): float(value) for key, value in feature_values.items()},
+        inferred_regime=_optional_text(data.get("inferred_regime")),
+        source_refs=[str(item) for item in list(data.get("source_refs") or []) if str(item).strip()],
+        notes=[str(item) for item in list(data.get("notes") or []) if str(item).strip()],
+    )
+
+
+def build_jump_event_history(
+    payload: JumpEventHistoryRaw | dict[str, Any] | None,
+) -> JumpEventHistoryRaw | None:
+    if payload is None:
+        return None
+    if isinstance(payload, JumpEventHistoryRaw):
+        return payload
+    data = dict(payload)
+    return JumpEventHistoryRaw(
+        history_id=str(data.get("history_id") or "jump_event_history"),
+        as_of=str(data.get("as_of") or ""),
+        events=[dict(event or {}) for event in list(data.get("events") or [])],
+        source_refs=[str(item) for item in list(data.get("source_refs") or []) if str(item).strip()],
+        notes=[str(item) for item in list(data.get("notes") or []) if str(item).strip()],
+    )
+
+
+def build_bucket_proxy_mapping(
+    payload: BucketProxyMappingRaw | dict[str, Any] | None,
+) -> BucketProxyMappingRaw | None:
+    if payload is None:
+        return None
+    if isinstance(payload, BucketProxyMappingRaw):
+        return payload
+    data = dict(payload)
+    mapping = dict(data.get("bucket_to_proxy") or {})
+    if not mapping:
+        return None
+    return BucketProxyMappingRaw(
+        mapping_id=str(data.get("mapping_id") or "bucket_proxy_mapping"),
+        as_of=str(data.get("as_of") or ""),
+        bucket_to_proxy={str(bucket): str(proxy) for bucket, proxy in mapping.items()},
+        proxy_metadata={
+            str(bucket): dict(metadata or {})
+            for bucket, metadata in dict(data.get("proxy_metadata") or {}).items()
+        },
+        notes=[str(item) for item in list(data.get("notes") or []) if str(item).strip()],
+    )
+
+
+def _optional_text(value: Any) -> str | None:
+    rendered = str(value or "").strip()
+    return rendered or None
+
+
 def _dataset_identity(payload: dict[str, Any]) -> tuple[str, str]:
     source_name = str(payload.get("source_name") or "unknown_source")
     as_of = str(payload.get("as_of") or "")
@@ -56,13 +157,21 @@ def _dataset_identity(payload: dict[str, Any]) -> tuple[str, str]:
     return dataset_id, version_id
 
 
-def build_historical_dataset_snapshot(payload: dict[str, Any] | None) -> HistoricalDatasetSnapshot | None:
+def build_historical_dataset_snapshot(
+    payload: HistoricalReturnPanelRaw | dict[str, Any] | None,
+) -> HistoricalDatasetSnapshot | None:
     if not payload:
         return None
-    data = dict(payload)
+    panel = build_historical_return_panel(payload)
+    if panel is not None:
+        data = panel.to_dict()
+    else:
+        data = dict(payload)
     dataset_id, version_id = _dataset_identity(data)
-    data.setdefault("dataset_id", dataset_id)
-    data.setdefault("version_id", version_id)
+    if not str(data.get("dataset_id") or "").strip():
+        data["dataset_id"] = dataset_id
+    if not str(data.get("version_id") or data.get("dataset_version") or "").strip():
+        data["version_id"] = version_id
     if "return_series" not in data:
         return None
     return HistoricalDatasetSnapshot.from_mapping(data)
@@ -157,6 +266,10 @@ class HistoricalDatasetCache:
 __all__ = [
     "HistoricalDatasetCache",
     "HistoricalDatasetSnapshot",
+    "build_bucket_proxy_mapping",
     "build_historical_dataset_snapshot",
+    "build_historical_return_panel",
+    "build_jump_event_history",
+    "build_regime_feature_snapshot",
     "summarize_historical_dataset",
 ]

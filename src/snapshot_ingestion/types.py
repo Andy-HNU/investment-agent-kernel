@@ -40,6 +40,59 @@ class PolicyNewsSignal:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class HistoricalReturnPanelRaw:
+    dataset_id: str
+    version_id: str
+    as_of: str
+    source_name: str
+    lookback_months: int
+    return_series: dict[str, list[float]]
+    source_ref: str | None = None
+    coverage_status: str = "raw"
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RegimeFeatureSnapshotRaw:
+    snapshot_id: str
+    as_of: str
+    feature_values: dict[str, float]
+    inferred_regime: str | None = None
+    source_refs: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class JumpEventHistoryRaw:
+    history_id: str
+    as_of: str
+    events: list[dict[str, Any]]
+    source_refs: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class BucketProxyMappingRaw:
+    mapping_id: str
+    as_of: str
+    bucket_to_proxy: dict[str, str]
+    proxy_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class SnapshotBundle:
     bundle_id: str
@@ -55,6 +108,10 @@ class SnapshotBundle:
     quality_summary: list[QualityFlag] = field(default_factory=list)
     policy_news_signals: list[PolicyNewsSignal] = field(default_factory=list)
     historical_dataset_metadata: dict[str, Any] = field(default_factory=dict)
+    historical_return_panel: HistoricalReturnPanelRaw | dict[str, Any] | None = None
+    regime_feature_snapshot: RegimeFeatureSnapshotRaw | dict[str, Any] | None = None
+    jump_event_history: JumpEventHistoryRaw | dict[str, Any] | None = None
+    bucket_proxy_mapping: BucketProxyMappingRaw | dict[str, Any] | None = None
     schema_version: str = "v1.0"
 
     def to_dict(self) -> dict[str, Any]:

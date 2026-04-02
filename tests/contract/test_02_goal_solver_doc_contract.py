@@ -6,7 +6,7 @@ import pytest
 
 import goal_solver.engine as goal_solver_engine
 from goal_solver.engine import infer_ranking_mode, run_goal_solver, run_goal_solver_lightweight
-from goal_solver.types import RankingMode, RiskSummary
+from goal_solver.types import RankingMode, RiskSummary, SimulationMode
 
 
 @pytest.mark.contract
@@ -252,3 +252,58 @@ def test_run_goal_solver_lightweight_uses_lightweight_paths_and_seed(
     assert risk.max_drawdown_90pct == 0.18
     assert captured["n_paths"] == goal_solver_input_base["solver_params"]["n_paths_lightweight"]
     assert captured["seed"] == goal_solver_input_base["solver_params"]["seed"]
+
+
+@pytest.mark.contract
+def test_goal_solver_output_to_dict_keeps_new_probability_fields(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["goal"]["priority"] = "important"
+    solver_input["goal"]["risk_preference"] = "moderate"
+    solver_input["goal"]["horizon_months"] = 12
+    solver_input["cashflow_plan"]["monthly_contribution"] = 0.0
+    solver_input["current_portfolio_value"] = 450_000.0
+    solver_input["goal"]["goal_amount"] = 500_000.0
+    solver_input["solver_params"]["simulation_mode"] = "static_gaussian"
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "recommended_pick",
+            "weights": {"equity_cn": 0.50, "bond_cn": 0.35, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.10,
+            "description": "recommended pick",
+        },
+        {
+            "name": "higher_prob_pick",
+            "weights": {"equity_cn": 0.62, "bond_cn": 0.20, "gold": 0.08, "satellite": 0.10},
+            "complexity_score": 0.30,
+            "description": "higher prob but riskier",
+        },
+    ]
+
+    def _fake_run_monte_carlo(weights, *_args, **_kwargs):
+        if weights["equity_cn"] >= 0.60:
+            probability = 0.75
+            drawdown = 0.24
+            terminal = 2_700_000.0
+        else:
+            probability = 0.71
+            drawdown = 0.12
+            terminal = 2_520_000.0
+        return (
+            probability,
+            {"expected_terminal_value": terminal},
+            RiskSummary(
+                max_drawdown_90pct=drawdown,
+                terminal_value_tail_mean_95=1_850_000.0,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.08,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input).to_dict()
+
+    assert result["simulation_mode_used"] == SimulationMode.STATIC_GAUSSIAN.value
+    assert result["recommended_result"]["implied_required_annual_return"] == pytest.approx(0.1111111111111111, rel=1e-6)
+    assert result["highest_probability_result"]["allocation_name"] == "higher_prob_pick"
+    assert result["highest_probability_result"]["success_probability"] == pytest.approx(0.75)

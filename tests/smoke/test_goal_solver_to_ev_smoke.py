@@ -55,6 +55,9 @@ def test_goal_solver_output_can_feed_ev_engine_smoke(
     assert report.state_snapshot_id == goal_solver_input_base["snapshot_id"]
     assert report.goal_solver_baseline == expected_baseline
     assert account_state["success_prob_baseline"] == solver_output.recommended_result.success_probability
+    assert solver_output.simulation_mode_used.value == "static_gaussian"
+    assert solver_output.highest_probability_result is not None
+    assert solver_output.recommended_result.implied_required_annual_return is not None
 
 
 @pytest.mark.smoke

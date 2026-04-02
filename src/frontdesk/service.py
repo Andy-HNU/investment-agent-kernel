@@ -95,6 +95,14 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _coalesce_card_metric(key_metrics: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = key_metrics.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def _profile_to_dict(profile: UserOnboardingProfile | dict[str, Any]) -> dict[str, Any]:
     if isinstance(profile, UserOnboardingProfile):
         return profile.to_dict()
@@ -953,6 +961,9 @@ def _frontdesk_summary(
     user_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     user_state = user_state or {}
+    goal_solver_output = _as_dict(result_payload.get("goal_solver_output"))
+    goal_recommended_result = _as_dict(goal_solver_output.get("recommended_result"))
+    goal_highest_probability_result = _as_dict(goal_solver_output.get("highest_probability_result"))
     decision_card = _apply_execution_plan_guidance(
         dict(result_payload.get("decision_card") or {}),
         workflow_type=str(result_payload.get("workflow_type") or ""),
@@ -975,6 +986,7 @@ def _frontdesk_summary(
         result_payload.get("input_source_summary")
         or _build_input_source_summary(decision_card.get("input_provenance", {}) or {})
     )
+    decision_key_metrics = _as_dict(decision_card.get("key_metrics"))
     profile_payload = _as_dict(user_state.get("profile"))
     if isinstance(profile_payload.get("profile"), dict):
         profile_payload = _as_dict(profile_payload.get("profile"))
@@ -999,6 +1011,23 @@ def _frontdesk_summary(
         "execution_feedback_summary": user_state.get("execution_feedback_summary"),
         "goal_semantics": _as_dict(profile_payload.get("goal_semantics")),
         "profile_dimensions": _as_dict(profile_payload.get("profile_dimensions")),
+        "simulation_mode_used": (
+            _coalesce_card_metric(
+                decision_key_metrics,
+                "simulation_mode",
+                "new_baseline_simulation_mode",
+            )
+            or goal_solver_output.get("simulation_mode_used")
+        ),
+        "implied_required_annual_return": (
+            _coalesce_card_metric(
+                decision_key_metrics,
+                "implied_required_annual_return",
+                "new_baseline_implied_required_annual_return",
+            )
+            or goal_recommended_result.get("implied_required_annual_return")
+        ),
+        "highest_probability_result": goal_highest_probability_result or None,
     }
     if external_snapshot_source is not None:
         summary["external_snapshot_source"] = external_snapshot_source

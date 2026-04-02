@@ -200,6 +200,45 @@ def _render_candidate_lines(options: list[dict[str, Any]], *, prefix: str) -> li
     return lines
 
 
+def _render_percent_metric(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        rendered = str(value).strip()
+        return rendered or None
+    if abs(numeric) <= 1.0:
+        numeric *= 100.0
+    return f"{numeric:.2f}%"
+
+
+def _render_wave1_probability_lines(key_metrics: dict[str, Any], payload: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    simulation_mode = key_metrics.get("simulation_mode") or payload.get("simulation_mode_used")
+    implied_required_annual_return = (
+        key_metrics.get("implied_required_annual_return") or payload.get("implied_required_annual_return")
+    )
+    highest_probability_result = payload.get("highest_probability_result") or {}
+    highest_probability_allocation = highest_probability_result.get("allocation_name")
+    highest_probability_success = (
+        key_metrics.get("highest_probability_success")
+        or _render_percent_metric(highest_probability_result.get("success_probability"))
+    )
+
+    if simulation_mode is not None:
+        lines.append(f"simulation_mode={simulation_mode}")
+    if implied_required_annual_return is not None:
+        lines.append(f"implied_required_annual_return={implied_required_annual_return}")
+    if highest_probability_allocation:
+        lines.append(f"highest_probability_allocation={highest_probability_allocation}")
+    if highest_probability_success is not None:
+        lines.append(f"highest_probability_success={highest_probability_success}")
+    return lines
+
+
 def _render_refresh_block(refresh_summary: dict[str, Any]) -> list[str]:
     if not refresh_summary:
         return []
@@ -420,6 +459,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
             )
         lines.extend(_render_provenance_block(decision_card.get("input_provenance") or {}))
         lines.extend(_render_input_source_summary(decision_card.get("input_provenance") or {}))
+        lines.extend(_render_wave1_probability_lines(decision_card.get("key_metrics") or {}, payload))
         lines.extend(_render_candidate_lines(decision_card.get("candidate_options") or [], prefix="candidate"))
         lines.extend(_render_candidate_lines(decision_card.get("goal_alternatives") or [], prefix="alternative"))
         lines.extend(_render_goal_semantics_block(goal_semantics_payload))
@@ -496,6 +536,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
             value = key_metrics.get(key)
             if value is not None:
                 lines.append(f"{key}={value}")
+    lines.extend(_render_wave1_probability_lines(key_metrics, payload))
     lines.extend(_render_provenance_block(payload.get("input_provenance") or {}))
     lines.extend(_render_input_source_summary(payload.get("input_provenance") or {}))
     lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))

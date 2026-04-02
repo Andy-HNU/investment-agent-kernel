@@ -116,3 +116,64 @@ def test_frontdesk_cli_followup_profile_json_updates_state_and_output(tmp_path, 
     assert user_state["profile"]["current_total_assets"] == 62_000.0
     assert user_state["profile"]["current_holdings"] == "cash"
     assert user_state["latest_result"]["workflow_type"] == "monthly"
+
+
+@pytest.mark.smoke
+def test_render_frontdesk_summary_surfaces_wave1_probability_fields():
+    from frontdesk.cli import render_frontdesk_summary
+
+    rendered = render_frontdesk_summary(
+        {
+            "account_profile_id": "wave1_summary_user",
+            "display_name": "Andy",
+            "workflow_type": "onboarding",
+            "status": "completed",
+            "decision_card": {
+                "card_type": "goal_baseline",
+                "summary": "summary",
+                "primary_recommendation": "稳健推进方案",
+                "recommended_action": "adopt_recommended_plan",
+                "model_disclaimer": "以下为模型模拟结果，不是历史回测收益承诺。",
+            },
+            "key_metrics": {
+                "success_probability": "72.00%",
+                "max_drawdown_90pct": "16.00%",
+                "shortfall_probability": "28.00%",
+                "expected_terminal_value": "¥1,030,000",
+                "simulation_mode": "garch_t_dcc",
+                "implied_required_annual_return": "8.12%",
+                "highest_probability_success": "76.00%",
+            },
+            "input_provenance": {},
+            "candidate_options": [
+                {
+                    "label": "稳健推进方案",
+                    "highlight": "系统推荐",
+                    "success_probability": "72.00%",
+                    "max_drawdown_90pct": "16.00%",
+                    "shortfall_probability": "28.00%",
+                },
+                {
+                    "label": "增长倾向方案",
+                    "highlight": "达成率更高",
+                    "success_probability": "76.00%",
+                    "max_drawdown_90pct": "24.00%",
+                    "shortfall_probability": "24.00%",
+                },
+            ],
+            "goal_alternatives": [],
+            "goal_semantics": {},
+            "profile_dimensions": {},
+            "simulation_mode_used": "garch_t_dcc",
+            "implied_required_annual_return": "8.12%",
+            "highest_probability_result": {
+                "allocation_name": "growth_tilt__aggressive__01",
+                "success_probability": 0.76,
+            },
+        }
+    )
+
+    assert "simulation_mode=garch_t_dcc" in rendered
+    assert "implied_required_annual_return=8.12%" in rendered
+    assert "highest_probability_allocation=growth_tilt__aggressive__01" in rendered
+    assert "highest_probability_success=76.00%" in rendered

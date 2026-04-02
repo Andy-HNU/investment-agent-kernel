@@ -11,6 +11,7 @@ from goal_solver.types import (
     AccountConstraints,
     CashFlowEvent,
     CashFlowPlan,
+    DistributionInput,
     GoalCard,
     GoalSolverInput,
     GoalSolverOutput,
@@ -20,10 +21,25 @@ from goal_solver.types import (
     RankingMode,
     RiskBudget,
     RiskSummary,
+    SimulationMode,
     StrategicAllocation,
     StructureBudget,
     SuccessProbabilityResult,
     infer_ranking_mode,
+)
+
+
+_SIMULATION_MODE_REQUIREMENTS: dict[SimulationMode, tuple[str, ...]] = {
+    SimulationMode.STATIC_GAUSSIAN: (),
+    SimulationMode.GARCH_T: ("garch_t_state",),
+    SimulationMode.GARCH_T_DCC: ("garch_t_state", "dcc_state"),
+    SimulationMode.GARCH_T_DCC_JUMP: ("garch_t_state", "dcc_state", "jump_state"),
+}
+_SIMULATION_MODE_ORDER = (
+    SimulationMode.STATIC_GAUSSIAN,
+    SimulationMode.GARCH_T,
+    SimulationMode.GARCH_T_DCC,
+    SimulationMode.GARCH_T_DCC_JUMP,
 )
 
 
@@ -65,6 +81,14 @@ def _goal_solver_input_from_any(value: GoalSolverInput | dict[str, Any]) -> Goal
         "ranking_mode_default",
         RankingMode.SUFFICIENCY_FIRST.value,
     )
+    simulation_mode_raw = data["solver_params"].get(
+        "simulation_mode",
+        SimulationMode.STATIC_GAUSSIAN.value,
+    )
+    distribution_input_raw = data["solver_params"].get("distribution_input")
+    distribution_input = None
+    if distribution_input_raw is not None:
+        distribution_input = DistributionInput(**dict(distribution_input_raw))
     solver_params = GoalSolverParams(
         version=str(data["solver_params"]["version"]),
         n_paths=int(data["solver_params"]["n_paths"]),
@@ -73,6 +97,8 @@ def _goal_solver_input_from_any(value: GoalSolverInput | dict[str, Any]) -> Goal
         market_assumptions=market_assumptions,
         shrinkage_factor=float(data["solver_params"].get("shrinkage_factor", 0.85)),
         ranking_mode_default=RankingMode(str(getattr(ranking_mode_raw, "value", ranking_mode_raw))),
+        simulation_mode=SimulationMode(str(getattr(simulation_mode_raw, "value", simulation_mode_raw))),
+        distribution_input=distribution_input,
     )
     candidate_allocations = [
         StrategicAllocation(**dict(item))
@@ -117,6 +143,66 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _distribution_input_availability(distribution_input: DistributionInput | None) -> dict[str, bool]:
+    def _has_non_empty_mapping(value: Any) -> bool:
+        if not isinstance(value, dict) or not value:
+            return False
+        return any(
+            isinstance(item, dict) and bool(item)
+            for item in value.values()
+        )
+
+    def _has_non_empty_state(value: Any) -> bool:
+        if not isinstance(value, dict) or not value:
+            return False
+        return any(bool(item) for item in value.values())
+
+    if distribution_input is None:
+        return {"garch_t_state": False, "dcc_state": False, "jump_state": False}
+    return {
+        "garch_t_state": _has_non_empty_mapping(distribution_input.garch_t_state),
+        "dcc_state": _has_non_empty_mapping(distribution_input.dcc_state),
+        "jump_state": _has_non_empty_state(distribution_input.jump_state),
+    }
+
+
+def _supports_simulation_mode(
+    mode: SimulationMode,
+    distribution_input: DistributionInput | None,
+) -> bool:
+    availability = _distribution_input_availability(distribution_input)
+    return all(availability.get(key, False) for key in _SIMULATION_MODE_REQUIREMENTS[mode])
+
+
+def _resolve_simulation_mode(
+    params: GoalSolverParams,
+    notes: list[str] | None = None,
+) -> tuple[SimulationMode, SimulationMode]:
+    requested_mode = params.simulation_mode
+    if _supports_simulation_mode(requested_mode, params.distribution_input):
+        used_mode = requested_mode
+    else:
+        requested_index = _SIMULATION_MODE_ORDER.index(requested_mode)
+        used_mode = SimulationMode.STATIC_GAUSSIAN
+        for mode in reversed(_SIMULATION_MODE_ORDER[: requested_index + 1]):
+            if _supports_simulation_mode(mode, params.distribution_input):
+                used_mode = mode
+                break
+    if notes is not None:
+        availability = _distribution_input_availability(params.distribution_input)
+        missing = [
+            key for key in _SIMULATION_MODE_REQUIREMENTS[requested_mode] if not availability.get(key, False)
+        ]
+        notes.append(
+            "simulation_mode "
+            f"requested={requested_mode.value} "
+            f"used={used_mode.value} "
+            f"downgrade={'true' if used_mode != requested_mode else 'false'} "
+            f"missing={','.join(missing) if missing else 'none'}"
+        )
+    return requested_mode, used_mode
 
 
 def _build_cashflow_schedule(plan: CashFlowPlan, horizon_months: int) -> list[float]:
@@ -196,6 +282,70 @@ def _bucket_correlation(bucket_a: str, bucket_b: str, market_state: MarketAssump
     if _is_equity_like(bucket_a) and _is_equity_like(bucket_b):
         return 0.75
     return 0.30
+
+
+def _mode_adjusted_market_assumptions(
+    market_state: MarketAssumptions,
+    mode: SimulationMode,
+    distribution_input: DistributionInput | None,
+) -> MarketAssumptions:
+    expected_returns = {key: float(value) for key, value in market_state.expected_returns.items()}
+    volatility = {key: float(value) for key, value in market_state.volatility.items()}
+    correlation_matrix = {
+        key: {sub_key: float(sub_value) for sub_key, sub_value in row.items()}
+        for key, row in market_state.correlation_matrix.items()
+    }
+    if mode == SimulationMode.STATIC_GAUSSIAN:
+        return MarketAssumptions(
+            expected_returns=expected_returns,
+            volatility=volatility,
+            correlation_matrix=correlation_matrix,
+            source_name=market_state.source_name,
+            dataset_version=market_state.dataset_version,
+            lookback_months=market_state.lookback_months,
+            historical_backtest_used=market_state.historical_backtest_used,
+        )
+
+    garch_state = distribution_input.garch_t_state if distribution_input is not None else {}
+    dcc_state = distribution_input.dcc_state if distribution_input is not None else {}
+    jump_state = distribution_input.jump_state if distribution_input is not None else {}
+
+    volatility_multiplier = 1.10
+    if garch_state:
+        multipliers = [
+            1.0 + max(0.0, float(item.get("alpha", 0.0)) + float(item.get("beta", 0.0)) - 0.80)
+            for item in garch_state.values()
+        ]
+        volatility_multiplier = max(sum(multipliers) / len(multipliers), volatility_multiplier)
+    for bucket, value in list(volatility.items()):
+        volatility[bucket] = _clamp(float(value) * volatility_multiplier, 0.0, 1.50)
+    for bucket, value in list(expected_returns.items()):
+        expected_returns[bucket] = float(value) - 0.003
+
+    if mode in {SimulationMode.GARCH_T_DCC, SimulationMode.GARCH_T_DCC_JUMP} and dcc_state:
+        for bucket_a, row in dcc_state.items():
+            target_row = correlation_matrix.setdefault(bucket_a, {})
+            for bucket_b, value in row.items():
+                target_row[bucket_b] = _clamp(float(value), -0.95, 0.95)
+                correlation_matrix.setdefault(bucket_b, {})[bucket_a] = target_row[bucket_b]
+
+    if mode == SimulationMode.GARCH_T_DCC_JUMP:
+        jump_penalty = float(jump_state.get("expected_jump_drag", 0.01))
+        jump_vol_multiplier = 1.0 + float(jump_state.get("jump_vol_multiplier", 0.15))
+        for bucket, value in list(expected_returns.items()):
+            expected_returns[bucket] = float(value) - jump_penalty
+        for bucket, value in list(volatility.items()):
+            volatility[bucket] = _clamp(float(value) * jump_vol_multiplier, 0.0, 1.50)
+
+    return MarketAssumptions(
+        expected_returns=expected_returns,
+        volatility=volatility,
+        correlation_matrix=correlation_matrix,
+        source_name=market_state.source_name,
+        dataset_version=market_state.dataset_version,
+        lookback_months=market_state.lookback_months,
+        historical_backtest_used=market_state.historical_backtest_used,
+    )
 
 
 def _portfolio_params(weights: dict[str, float], market_state: MarketAssumptions) -> tuple[float, float]:
@@ -544,6 +694,87 @@ def _build_risk_budget(
     )
 
 
+def _terminal_value_at_monthly_rate(
+    initial_value: float,
+    cashflow_schedule: list[float],
+    monthly_rate: float,
+) -> float:
+    terminal_value = float(initial_value)
+    for contribution in cashflow_schedule:
+        terminal_value = terminal_value * (1.0 + monthly_rate) + float(contribution)
+    return terminal_value
+
+
+def _implied_required_annual_return(
+    *,
+    initial_value: float,
+    cashflow_schedule: list[float],
+    goal_amount: float,
+) -> float | None:
+    target = float(goal_amount)
+    if target <= 0.0:
+        return 0.0
+
+    low = -0.95
+    high = 0.10
+    if _terminal_value_at_monthly_rate(initial_value, cashflow_schedule, low) >= target:
+        return (1.0 + low) ** 12 - 1.0
+
+    while _terminal_value_at_monthly_rate(initial_value, cashflow_schedule, high) < target and high < 1.0:
+        high = high * 2.0 + 0.05
+    if _terminal_value_at_monthly_rate(initial_value, cashflow_schedule, high) < target:
+        return None
+
+    for _ in range(80):
+        mid = (low + high) / 2.0
+        if _terminal_value_at_monthly_rate(initial_value, cashflow_schedule, mid) >= target:
+            high = mid
+        else:
+            low = mid
+    return (1.0 + high) ** 12 - 1.0
+
+
+def _complexity_label(score: float) -> str:
+    if score <= 0.15:
+        return "low"
+    if score <= 0.30:
+        return "medium"
+    return "high"
+
+
+def _decorate_result(
+    allocation: StrategicAllocation,
+    result: SuccessProbabilityResult,
+    implied_required_annual_return: float | None,
+) -> SuccessProbabilityResult:
+    return SuccessProbabilityResult(
+        allocation_name=result.allocation_name,
+        weights=result.weights,
+        success_probability=result.success_probability,
+        expected_terminal_value=result.expected_terminal_value,
+        risk_summary=result.risk_summary,
+        is_feasible=result.is_feasible,
+        implied_required_annual_return=implied_required_annual_return,
+        display_name=allocation.display_name or allocation.name,
+        summary=allocation.user_summary or allocation.description,
+        complexity_label=_complexity_label(allocation.complexity_score),
+        infeasibility_reasons=list(result.infeasibility_reasons),
+    )
+
+
+def _highest_probability_result(all_results: list[SuccessProbabilityResult]) -> SuccessProbabilityResult | None:
+    if not all_results:
+        return None
+    return max(
+        all_results,
+        key=lambda result: (
+            result.success_probability,
+            -result.risk_summary.max_drawdown_90pct,
+            result.expected_terminal_value,
+        ),
+    )
+
+
 def _resolve_ranking_mode(inp: GoalSolverInput, notes: list[str]) -> RankingMode:
     if inp.ranking_mode_override is not None:
         mode = inp.ranking_mode_override
@@ -597,14 +828,25 @@ def _append_model_honesty_notes(
     notes: list[str],
     inp: GoalSolverInput,
     shrinkage_factor_note_value: str,
+    requested_mode: SimulationMode,
+    used_mode: SimulationMode,
 ) -> None:
     historical_backtest_used = bool(inp.solver_params.market_assumptions.historical_backtest_used)
-    notes.append(
-        "probability_model "
-        "method=parametric_monte_carlo "
-        "distribution=normal "
-        f"historical_backtest_used={'true' if historical_backtest_used else 'false'}"
-    )
+    if requested_mode == SimulationMode.STATIC_GAUSSIAN and used_mode == SimulationMode.STATIC_GAUSSIAN:
+        notes.append(
+            "probability_model "
+            "method=parametric_monte_carlo "
+            "distribution=normal "
+            f"historical_backtest_used={'true' if historical_backtest_used else 'false'}"
+        )
+    else:
+        notes.append(
+            "probability_model "
+            "method=parametric_monte_carlo "
+            f"distribution={used_mode.value} "
+            f"requested_mode={requested_mode.value} "
+            f"historical_backtest_used={'true' if historical_backtest_used else 'false'}"
+        )
     if historical_backtest_used:
         notes.append(
             "historical_dataset "
@@ -639,6 +881,17 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
     cashflow_schedule = _build_cashflow_schedule(inp.cashflow_plan, inp.goal.horizon_months)
     notes: list[str] = []
     ranking_mode = _resolve_ranking_mode(inp, notes)
+    requested_mode, used_mode = _resolve_simulation_mode(params, notes)
+    simulation_market_state = _mode_adjusted_market_assumptions(
+        params.market_assumptions,
+        used_mode,
+        params.distribution_input,
+    )
+    implied_required_annual_return = _implied_required_annual_return(
+        initial_value=inp.current_portfolio_value,
+        cashflow_schedule=cashflow_schedule,
+        goal_amount=inp.goal.goal_amount,
+    )
     all_results: list[SuccessProbabilityResult] = []
 
     for allocation in inp.candidate_allocations:
@@ -647,18 +900,22 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             cashflow_schedule,
             inp.current_portfolio_value,
             inp.goal.goal_amount,
-            params.market_assumptions,
+            simulation_market_state,
             params.n_paths,
             params.seed,
         )
-        interim_result = SuccessProbabilityResult(
-            allocation_name=allocation.name,
-            weights=allocation.weights,
-            success_probability=probability,
-            expected_terminal_value=extra["expected_terminal_value"],
-            risk_summary=risk,
-            is_feasible=True,
-            infeasibility_reasons=[],
+        interim_result = _decorate_result(
+            allocation,
+            SuccessProbabilityResult(
+                allocation_name=allocation.name,
+                weights=allocation.weights,
+                success_probability=probability,
+                expected_terminal_value=extra["expected_terminal_value"],
+                risk_summary=risk,
+                is_feasible=True,
+                infeasibility_reasons=[],
+            ),
+            implied_required_annual_return,
         )
         is_feasible, infeasibility_reasons = _check_allocation_feasibility(
             allocation,
@@ -666,14 +923,18 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             inp.constraints,
         )
         all_results.append(
-            SuccessProbabilityResult(
-                allocation_name=allocation.name,
-                weights=allocation.weights,
-                success_probability=probability,
-                expected_terminal_value=extra["expected_terminal_value"],
-                risk_summary=risk,
-                is_feasible=is_feasible,
-                infeasibility_reasons=infeasibility_reasons,
+            _decorate_result(
+                allocation,
+                SuccessProbabilityResult(
+                    allocation_name=allocation.name,
+                    weights=allocation.weights,
+                    success_probability=probability,
+                    expected_terminal_value=extra["expected_terminal_value"],
+                    risk_summary=risk,
+                    is_feasible=is_feasible,
+                    infeasibility_reasons=infeasibility_reasons,
+                ),
+                implied_required_annual_return,
             )
         )
 
@@ -689,18 +950,22 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             cashflow_schedule,
             inp.current_portfolio_value,
             inp.goal.goal_amount,
-            params.market_assumptions,
+            simulation_market_state,
             params.n_paths,
             params.seed,
         )
-        fallback_result = SuccessProbabilityResult(
-            allocation_name=fallback.name,
-            weights=fallback.weights,
-            success_probability=probability,
-            expected_terminal_value=extra["expected_terminal_value"],
-            risk_summary=risk,
-            is_feasible=True,
-            infeasibility_reasons=[],
+        fallback_result = _decorate_result(
+            fallback,
+            SuccessProbabilityResult(
+                allocation_name=fallback.name,
+                weights=fallback.weights,
+                success_probability=probability,
+                expected_terminal_value=extra["expected_terminal_value"],
+                risk_summary=risk,
+                is_feasible=True,
+                infeasibility_reasons=[],
+            ),
+            implied_required_annual_return,
         )
         all_results = [fallback_result]
         best_allocation = fallback
@@ -733,10 +998,17 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             )
             notes.extend(fallback_notes)
 
+    highest_probability_result = _highest_probability_result(all_results)
     structure_budget = _build_structure_budget(best_allocation, inp.constraints)
     risk_budget = _build_risk_budget(best_result, inp.constraints)
     _append_solver_context_notes(notes, inp, best_result)
-    _append_model_honesty_notes(notes, inp, shrinkage_factor_note_value)
+    _append_model_honesty_notes(
+        notes,
+        inp,
+        shrinkage_factor_note_value,
+        requested_mode,
+        used_mode,
+    )
     return GoalSolverOutput(
         input_snapshot_id=inp.snapshot_id,
         generated_at=_now_iso(),
@@ -746,8 +1018,11 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
         ranking_mode_used=ranking_mode,
         structure_budget=structure_budget,
         risk_budget=risk_budget,
+        simulation_mode_used=used_mode,
+        highest_probability_result=highest_probability_result,
         solver_notes=notes,
         params_version=params.version,
+        candidate_menu=[item.to_dict() for item in all_results],
     )
 
 
@@ -756,6 +1031,7 @@ def run_goal_solver_lightweight(
     baseline_inp: GoalSolverInput | dict[str, Any],
 ) -> tuple[float, RiskSummary]:
     baseline_inp = _goal_solver_input_from_any(baseline_inp)
+    _requested_mode, used_mode = _resolve_simulation_mode(baseline_inp.solver_params)
     cashflow_schedule = _build_cashflow_schedule(
         baseline_inp.cashflow_plan,
         baseline_inp.goal.horizon_months,
@@ -765,7 +1041,11 @@ def run_goal_solver_lightweight(
         cashflow_schedule,
         baseline_inp.current_portfolio_value,
         baseline_inp.goal.goal_amount,
-        baseline_inp.solver_params.market_assumptions,
+        _mode_adjusted_market_assumptions(
+            baseline_inp.solver_params.market_assumptions,
+            used_mode,
+            baseline_inp.solver_params.distribution_input,
+        ),
         baseline_inp.solver_params.n_paths_lightweight,
         baseline_inp.solver_params.seed,
     )
