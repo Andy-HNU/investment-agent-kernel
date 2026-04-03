@@ -126,8 +126,8 @@ class StrategicAllocation:
 @dataclass
 class DistributionInput:
     garch_t_state: dict[str, dict[str, float]] = field(default_factory=dict)
-    dcc_state: dict[str, dict[str, float]] = field(default_factory=dict)
-    jump_state: dict[str, float] = field(default_factory=dict)
+    dcc_state: dict[str, Any] = field(default_factory=dict)
+    jump_state: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

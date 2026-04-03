@@ -295,48 +295,6 @@ def _mode_adjusted_market_assumptions(
         key: {sub_key: float(sub_value) for sub_key, sub_value in row.items()}
         for key, row in market_state.correlation_matrix.items()
     }
-    if mode == SimulationMode.STATIC_GAUSSIAN:
-        return MarketAssumptions(
-            expected_returns=expected_returns,
-            volatility=volatility,
-            correlation_matrix=correlation_matrix,
-            source_name=market_state.source_name,
-            dataset_version=market_state.dataset_version,
-            lookback_months=market_state.lookback_months,
-            historical_backtest_used=market_state.historical_backtest_used,
-        )
-
-    garch_state = distribution_input.garch_t_state if distribution_input is not None else {}
-    dcc_state = distribution_input.dcc_state if distribution_input is not None else {}
-    jump_state = distribution_input.jump_state if distribution_input is not None else {}
-
-    volatility_multiplier = 1.10
-    if garch_state:
-        multipliers = [
-            1.0 + max(0.0, float(item.get("alpha", 0.0)) + float(item.get("beta", 0.0)) - 0.80)
-            for item in garch_state.values()
-        ]
-        volatility_multiplier = max(sum(multipliers) / len(multipliers), volatility_multiplier)
-    for bucket, value in list(volatility.items()):
-        volatility[bucket] = _clamp(float(value) * volatility_multiplier, 0.0, 1.50)
-    for bucket, value in list(expected_returns.items()):
-        expected_returns[bucket] = float(value) - 0.003
-
-    if mode in {SimulationMode.GARCH_T_DCC, SimulationMode.GARCH_T_DCC_JUMP} and dcc_state:
-        for bucket_a, row in dcc_state.items():
-            target_row = correlation_matrix.setdefault(bucket_a, {})
-            for bucket_b, value in row.items():
-                target_row[bucket_b] = _clamp(float(value), -0.95, 0.95)
-                correlation_matrix.setdefault(bucket_b, {})[bucket_a] = target_row[bucket_b]
-
-    if mode == SimulationMode.GARCH_T_DCC_JUMP:
-        jump_penalty = float(jump_state.get("expected_jump_drag", 0.01))
-        jump_vol_multiplier = 1.0 + float(jump_state.get("jump_vol_multiplier", 0.15))
-        for bucket, value in list(expected_returns.items()):
-            expected_returns[bucket] = float(value) - jump_penalty
-        for bucket, value in list(volatility.items()):
-            volatility[bucket] = _clamp(float(value) * jump_vol_multiplier, 0.0, 1.50)
-
     return MarketAssumptions(
         expected_returns=expected_returns,
         volatility=volatility,
@@ -372,6 +330,211 @@ def _monthly_return_params(weights: dict[str, float], market_state: MarketAssump
     mu_monthly = (1.0 + mu_annual) ** (1.0 / 12.0) - 1.0 if mu_annual > -0.999 else -0.99
     sigma_monthly = sigma_annual / math.sqrt(12.0)
     return mu_monthly, sigma_monthly
+
+
+def _annual_to_monthly_return(value: float) -> float:
+    annual = float(value)
+    return (1.0 + annual) ** (1.0 / 12.0) - 1.0 if annual > -0.999 else -0.99
+
+
+def _bucket_order_for_simulation(weights: dict[str, float], market_state: MarketAssumptions) -> list[str]:
+    buckets = [bucket for bucket, weight in weights.items() if float(weight) > 0.0]
+    if not buckets:
+        buckets = list(market_state.expected_returns)
+    return buckets
+
+
+def _symmetrize_matrix(matrix: np.ndarray) -> np.ndarray:
+    symmetric = (matrix + matrix.T) / 2.0
+    np.fill_diagonal(symmetric, 1.0)
+    return symmetric
+
+
+def _safe_correlation_matrix(
+    matrix: np.ndarray,
+) -> np.ndarray:
+    if matrix.size == 0:
+        return matrix
+    symmetric = _symmetrize_matrix(matrix)
+    eigenvalues, eigenvectors = np.linalg.eigh(symmetric)
+    clipped = np.clip(eigenvalues, 1e-6, None)
+    repaired = eigenvectors @ np.diag(clipped) @ eigenvectors.T
+    repaired = _symmetrize_matrix(repaired)
+    scale = np.sqrt(np.maximum(np.diag(repaired), 1e-9))
+    repaired = repaired / np.outer(scale, scale)
+    return _symmetrize_matrix(np.clip(repaired, -0.95, 0.95))
+
+
+def _correlation_from_payload(
+    buckets: list[str],
+    market_state: MarketAssumptions,
+    dcc_state: dict[str, Any] | None = None,
+    *,
+    long_run: bool = False,
+) -> np.ndarray:
+    payload = _obj(dcc_state or {})
+    raw_matrix = payload.get("long_run_correlation") if long_run else payload.get("correlation_matrix")
+    matrix = np.eye(len(buckets), dtype=float)
+    if isinstance(raw_matrix, dict) and raw_matrix:
+        for i, bucket_a in enumerate(buckets):
+            row = _obj(raw_matrix.get(bucket_a) or {})
+            for j, bucket_b in enumerate(buckets):
+                if i == j:
+                    matrix[i, j] = 1.0
+                    continue
+                if bucket_b in row:
+                    matrix[i, j] = float(row[bucket_b])
+    else:
+        for i, bucket_a in enumerate(buckets):
+            for j, bucket_b in enumerate(buckets):
+                if i == j:
+                    matrix[i, j] = 1.0
+                else:
+                    matrix[i, j] = _bucket_correlation(bucket_a, bucket_b, market_state)
+    return _safe_correlation_matrix(matrix)
+
+
+def _multivariate_t_shocks(
+    rng: np.random.Generator,
+    correlation: np.ndarray,
+    *,
+    df: float,
+    size: int,
+) -> np.ndarray:
+    n_assets = correlation.shape[0]
+    if n_assets == 0:
+        return np.empty((size, 0), dtype=float)
+    safe_df = max(float(df), 2.5)
+    repaired_corr = _safe_correlation_matrix(correlation)
+    jitter = 1e-9
+    for _ in range(6):
+        try:
+            cholesky = np.linalg.cholesky(repaired_corr)
+            break
+        except np.linalg.LinAlgError:
+            repaired_corr = _safe_correlation_matrix(
+                repaired_corr + np.eye(n_assets, dtype=float) * jitter
+            )
+            jitter *= 10.0
+    else:  # pragma: no cover - defensive safeguard
+        cholesky = np.linalg.cholesky(np.eye(n_assets, dtype=float))
+    gaussian = rng.normal(size=(size, n_assets)) @ cholesky.T
+    chi = rng.chisquare(safe_df, size=size) / safe_df
+    student = gaussian / np.sqrt(np.maximum(chi, 1e-9))[:, None]
+    variance_scale = math.sqrt((safe_df - 2.0) / safe_df)
+    return student * variance_scale
+
+
+def _simulate_dynamic_monthly_returns(
+    *,
+    weights: dict[str, float],
+    market_state: MarketAssumptions,
+    distribution_input: DistributionInput | None,
+    mode: SimulationMode,
+    horizon: int,
+    paths: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    buckets = _bucket_order_for_simulation(weights, market_state)
+    n_assets = len(buckets)
+    if n_assets == 0:
+        return np.zeros((paths, horizon), dtype=float)
+
+    weight_vector = np.array([float(weights.get(bucket, 0.0)) for bucket in buckets], dtype=float)
+    monthly_mu = np.array(
+        [_annual_to_monthly_return(_bucket_expected_return(bucket, market_state)) for bucket in buckets],
+        dtype=float,
+    )
+    distribution_payload = distribution_input or DistributionInput()
+    garch_state = _obj(distribution_payload.garch_t_state)
+    dcc_state = _obj(distribution_payload.dcc_state)
+    jump_state = _obj(distribution_payload.jump_state)
+
+    init_sigma2 = np.array(
+        [
+            max(
+                float(garch_state.get(bucket, {}).get("long_run_variance", 0.0) or 0.0),
+                float(garch_state.get(bucket, {}).get("annualized_volatility", _bucket_volatility(bucket, market_state)) or 0.0)
+                ** 2
+                / 12.0,
+                1e-6,
+            )
+            for bucket in buckets
+        ],
+        dtype=float,
+    )
+    alpha = np.array([float(garch_state.get(bucket, {}).get("alpha", 0.06) or 0.06) for bucket in buckets], dtype=float)
+    beta = np.array([float(garch_state.get(bucket, {}).get("beta", 0.90) or 0.90) for bucket in buckets], dtype=float)
+    beta = np.clip(beta, 0.0, 0.985)
+    alpha = np.clip(alpha, 0.0, 0.25)
+    omega = init_sigma2 * np.maximum(1.0 - alpha - beta, 1e-4)
+    df_values = [float(garch_state.get(bucket, {}).get("nu", 7.0) or 7.0) for bucket in buckets]
+    df = max(min(df_values), 3.0)
+
+    static_corr = _correlation_from_payload(buckets, market_state)
+    dcc_corr = _correlation_from_payload(buckets, market_state, dcc_state)
+    dcc_long_run = _correlation_from_payload(buckets, market_state, dcc_state, long_run=True)
+    dcc_alpha = float(dcc_state.get("alpha", 0.04) or 0.04)
+    dcc_beta = float(dcc_state.get("beta", 0.93) or 0.93)
+    dcc_alpha = _clamp(dcc_alpha, 0.0, 0.25)
+    dcc_beta = _clamp(dcc_beta, 0.0, 0.98)
+    q_matrix = dcc_long_run.copy()
+
+    bucket_jump_probability = np.array(
+        [
+            float(_obj(jump_state.get("bucket_jump_probability_1m", {})).get(bucket, 0.0) or 0.0)
+            for bucket in buckets
+        ],
+        dtype=float,
+    )
+    bucket_jump_loss = np.array(
+        [
+            float(_obj(jump_state.get("bucket_jump_loss", {})).get(bucket, 0.0) or 0.0)
+            for bucket in buckets
+        ],
+        dtype=float,
+    )
+    systemic_jump_probability = float(jump_state.get("systemic_jump_probability_1m", 0.0) or 0.0)
+    systemic_jump_scale = float(jump_state.get("systemic_jump_scale", 0.75) or 0.75)
+
+    sigma2 = np.tile(init_sigma2, (paths, 1))
+    monthly_returns = np.zeros((paths, horizon), dtype=float)
+
+    for month in range(horizon):
+        if mode in {SimulationMode.GARCH_T_DCC, SimulationMode.GARCH_T_DCC_JUMP} and n_assets > 1:
+            current_corr = _safe_correlation_matrix(q_matrix)
+        else:
+            current_corr = static_corr
+        z = _multivariate_t_shocks(rng, current_corr, df=df, size=paths)
+        sigma = np.sqrt(np.maximum(sigma2, 1e-9))
+        eps = sigma * z
+        bucket_returns = monthly_mu + eps
+
+        if mode == SimulationMode.GARCH_T_DCC_JUMP and np.any(bucket_jump_probability > 0.0):
+            idio_jump_flags = rng.random((paths, n_assets)) < bucket_jump_probability[None, :]
+            systemic_jump_flags = rng.random(paths) < max(systemic_jump_probability, 0.0)
+            jump_losses = idio_jump_flags.astype(float) * bucket_jump_loss[None, :]
+            if np.any(systemic_jump_flags):
+                jump_losses += systemic_jump_flags[:, None].astype(float) * bucket_jump_loss[None, :] * systemic_jump_scale
+            jump_losses *= rng.uniform(0.8, 1.2, size=(paths, n_assets))
+            bucket_returns -= jump_losses
+
+        bucket_returns = np.clip(bucket_returns, -0.99, 2.0)
+        monthly_returns[:, month] = np.clip(bucket_returns @ weight_vector, -0.99, 2.0)
+
+        sigma2 = omega[None, :] + alpha[None, :] * (eps**2) + beta[None, :] * sigma2
+        sigma2 = np.clip(sigma2, 1e-6, 4.0)
+
+        if mode in {SimulationMode.GARCH_T_DCC, SimulationMode.GARCH_T_DCC_JUMP} and n_assets > 1:
+            shock_outer = (z.T @ z) / max(paths, 1)
+            q_matrix = (
+                (1.0 - dcc_alpha - dcc_beta) * dcc_long_run
+                + dcc_alpha * shock_outer
+                + dcc_beta * q_matrix
+            )
+            q_matrix = _safe_correlation_matrix(q_matrix)
+
+    return monthly_returns
 
 
 def _compute_path_drawdowns(values: np.ndarray) -> np.ndarray:
@@ -447,18 +610,31 @@ def _run_monte_carlo(
     market_state: MarketAssumptions,
     n_paths: int,
     seed: int,
+    *,
+    mode: SimulationMode = SimulationMode.STATIC_GAUSSIAN,
+    distribution_input: DistributionInput | None = None,
 ) -> tuple[float, dict[str, float], RiskSummary]:
     horizon = max(len(cashflow_schedule), 1)
     paths = max(int(n_paths), 1)
     rng = np.random.default_rng(int(seed))
-    mu_monthly, sigma_monthly = _monthly_return_params(weights, market_state)
-
-    monthly_returns = rng.normal(
-        loc=mu_monthly,
-        scale=max(sigma_monthly, 0.0),
-        size=(paths, horizon),
-    )
-    monthly_returns = np.clip(monthly_returns, -0.99, None)
+    if mode == SimulationMode.STATIC_GAUSSIAN:
+        mu_monthly, sigma_monthly = _monthly_return_params(weights, market_state)
+        monthly_returns = rng.normal(
+            loc=mu_monthly,
+            scale=max(sigma_monthly, 0.0),
+            size=(paths, horizon),
+        )
+        monthly_returns = np.clip(monthly_returns, -0.99, None)
+    else:
+        monthly_returns = _simulate_dynamic_monthly_returns(
+            weights=weights,
+            market_state=market_state,
+            distribution_input=distribution_input,
+            mode=mode,
+            horizon=horizon,
+            paths=paths,
+            rng=rng,
+        )
 
     values = np.zeros((paths, horizon + 1), dtype=float)
     values[:, 0] = float(initial_value)
@@ -842,7 +1018,7 @@ def _append_model_honesty_notes(
     else:
         notes.append(
             "probability_model "
-            "method=parametric_monte_carlo "
+            "method=conditional_monte_carlo "
             f"distribution={used_mode.value} "
             f"requested_mode={requested_mode.value} "
             f"historical_backtest_used={'true' if historical_backtest_used else 'false'}"
@@ -903,6 +1079,8 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             simulation_market_state,
             params.n_paths,
             params.seed,
+            mode=used_mode,
+            distribution_input=params.distribution_input,
         )
         interim_result = _decorate_result(
             allocation,

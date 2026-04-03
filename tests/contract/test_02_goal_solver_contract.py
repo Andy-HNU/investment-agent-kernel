@@ -293,7 +293,7 @@ def test_run_goal_solver_exposes_simulation_mode_highest_probability_and_implied
     )
     assert any(
         note
-        == "probability_model method=parametric_monte_carlo distribution=garch_t_dcc requested_mode=garch_t_dcc_jump historical_backtest_used=false"
+        == "probability_model method=conditional_monte_carlo distribution=garch_t_dcc requested_mode=garch_t_dcc_jump historical_backtest_used=false"
         for note in result.solver_notes
     )
 
@@ -420,3 +420,104 @@ def test_run_monte_carlo_preserves_basic_monotonicity(goal_solver_input_base):
     assert high_extra["expected_terminal_value"] >= low_extra["expected_terminal_value"]
     assert high_prob >= low_prob
     assert harder_goal_prob <= high_prob
+
+
+@pytest.mark.contract
+def test_run_monte_carlo_advanced_modes_change_distribution_shape(goal_solver_input_base):
+    normalized = goal_solver_engine._goal_solver_input_from_any(goal_solver_input_base)
+    weights = normalized.candidate_allocations[0].weights
+    market_state = normalized.solver_params.market_assumptions
+    schedule = goal_solver_engine._build_cashflow_schedule(
+        normalized.cashflow_plan,
+        normalized.goal.horizon_months,
+    )
+
+    static_prob, static_extra, static_risk = goal_solver_engine._run_monte_carlo(
+        weights,
+        schedule,
+        normalized.current_portfolio_value,
+        normalized.goal.goal_amount,
+        market_state,
+        2048,
+        42,
+    )
+    advanced_prob, advanced_extra, advanced_risk = goal_solver_engine._run_monte_carlo(
+        weights,
+        schedule,
+        normalized.current_portfolio_value,
+        normalized.goal.goal_amount,
+        market_state,
+        2048,
+        42,
+        mode=SimulationMode.GARCH_T_DCC_JUMP,
+        distribution_input=goal_solver_engine.DistributionInput(
+            garch_t_state={
+                "equity_cn": {
+                    "annualized_volatility": 0.28,
+                    "long_run_variance": 0.006,
+                    "alpha": 0.12,
+                    "beta": 0.84,
+                    "nu": 6.0,
+                },
+                "bond_cn": {
+                    "annualized_volatility": 0.06,
+                    "long_run_variance": 0.0005,
+                    "alpha": 0.06,
+                    "beta": 0.90,
+                    "nu": 8.0,
+                },
+                "gold": {
+                    "annualized_volatility": 0.18,
+                    "long_run_variance": 0.002,
+                    "alpha": 0.10,
+                    "beta": 0.86,
+                    "nu": 7.0,
+                },
+                "satellite": {
+                    "annualized_volatility": 0.38,
+                    "long_run_variance": 0.012,
+                    "alpha": 0.15,
+                    "beta": 0.80,
+                    "nu": 5.0,
+                },
+            },
+            dcc_state={
+                "correlation_matrix": {
+                    "equity_cn": {"equity_cn": 1.0, "bond_cn": 0.55, "gold": 0.25, "satellite": 0.78},
+                    "bond_cn": {"equity_cn": 0.55, "bond_cn": 1.0, "gold": 0.15, "satellite": 0.45},
+                    "gold": {"equity_cn": 0.25, "bond_cn": 0.15, "gold": 1.0, "satellite": 0.20},
+                    "satellite": {"equity_cn": 0.78, "bond_cn": 0.45, "gold": 0.20, "satellite": 1.0},
+                },
+                "long_run_correlation": {
+                    "equity_cn": {"equity_cn": 1.0, "bond_cn": 0.20, "gold": 0.05, "satellite": 0.50},
+                    "bond_cn": {"equity_cn": 0.20, "bond_cn": 1.0, "gold": 0.00, "satellite": 0.10},
+                    "gold": {"equity_cn": 0.05, "bond_cn": 0.00, "gold": 1.0, "satellite": 0.05},
+                    "satellite": {"equity_cn": 0.50, "bond_cn": 0.10, "gold": 0.05, "satellite": 1.0},
+                },
+                "alpha": 0.08,
+                "beta": 0.90,
+            },
+            jump_state={
+                "bucket_jump_probability_1m": {
+                    "equity_cn": 0.08,
+                    "bond_cn": 0.01,
+                    "gold": 0.03,
+                    "satellite": 0.12,
+                },
+                "bucket_jump_loss": {
+                    "equity_cn": 0.09,
+                    "bond_cn": 0.01,
+                    "gold": 0.04,
+                    "satellite": 0.14,
+                },
+                "systemic_jump_probability_1m": 0.03,
+                "systemic_jump_scale": 0.75,
+                "event_count": 4.0,
+            },
+        ),
+    )
+
+    assert advanced_prob != pytest.approx(static_prob, abs=1e-6)
+    assert advanced_extra["expected_terminal_value"] != pytest.approx(static_extra["expected_terminal_value"], rel=1e-6)
+    assert advanced_risk.max_drawdown_90pct > static_risk.max_drawdown_90pct
+    assert advanced_risk.terminal_value_tail_mean_95 < static_risk.terminal_value_tail_mean_95

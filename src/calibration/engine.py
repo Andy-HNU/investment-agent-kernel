@@ -939,6 +939,7 @@ def _distribution_input_from_model_state(
                 "long_run_variance": float(garch_state.long_run_variance.get(bucket, 0.0) or 0.0),
                 "alpha": float(garch_state.shock_loading.get(bucket, 0.0) or 0.0),
                 "beta": float(garch_state.persistence.get(bucket, 0.0) or 0.0),
+                "nu": 7.0,
             }
             for bucket in garch_state.annualized_volatility
         }
@@ -953,18 +954,46 @@ def _distribution_input_from_model_state(
         sum(float(value or 0.0) for value in jump_overlay_state.jump_probability_1m.values()),
         1.0,
     )
-    dcc_input: dict[str, dict[str, float]] = {}
+    dcc_input: dict[str, Any] = {}
     if historical_ready and dcc_state.correlation_matrix:
         dcc_input = {
-            bucket: {peer: float(value) for peer, value in row.items()}
-            for bucket, row in dcc_state.correlation_matrix.items()
+            "correlation_matrix": {
+                bucket: {peer: float(value) for peer, value in row.items()}
+                for bucket, row in dcc_state.correlation_matrix.items()
+            },
+            "long_run_correlation": {
+                bucket: {peer: float(value) for peer, value in row.items()}
+                for bucket, row in dcc_state.long_run_correlation.items()
+            },
+            "alpha": float(dcc_state.alpha),
+            "beta": float(dcc_state.beta),
+            "regime_anchor": dcc_state.regime_anchor,
         }
-    jump_input: dict[str, float] = {}
+    jump_input: dict[str, Any] = {}
     if historical_ready and jump_overlay_state.event_count > 0:
         jump_input = {
             "expected_jump_drag": float(jump_drag),
             "jump_vol_multiplier": float(jump_vol_multiplier),
             "event_count": float(jump_overlay_state.event_count),
+            "bucket_jump_probability_1m": {
+                bucket: float(value) for bucket, value in jump_overlay_state.jump_probability_1m.items()
+            },
+            "bucket_jump_loss": {
+                bucket: float(value) for bucket, value in jump_overlay_state.jump_loss.items()
+            },
+            "systemic_jump_probability_1m": float(
+                min(
+                    max(
+                        sum(float(value or 0.0) for value in jump_overlay_state.jump_probability_1m.values())
+                        / max(len(jump_overlay_state.jump_probability_1m), 1)
+                        / 3.0,
+                        0.0,
+                    ),
+                    0.20,
+                )
+            ),
+            "systemic_jump_scale": 0.75,
+            "stress_source": jump_overlay_state.stress_source,
         }
     return DistributionInput(
         garch_t_state=garch_input,

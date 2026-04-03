@@ -286,10 +286,17 @@ def test_calibration_to_goal_solver_preserves_requested_simulation_mode_and_dist
     assert calibration_result.goal_solver_params.distribution_input.garch_t_state
     assert calibration_result.goal_solver_params.distribution_input.dcc_state
     assert calibration_result.goal_solver_params.distribution_input.jump_state
+    assert "correlation_matrix" in calibration_result.goal_solver_params.distribution_input.dcc_state
+    assert "bucket_jump_probability_1m" in calibration_result.goal_solver_params.distribution_input.jump_state
     assert solver_output.simulation_mode_used == SimulationMode.GARCH_T_DCC_JUMP
     assert any(
         note
         == "simulation_mode requested=garch_t_dcc_jump used=garch_t_dcc_jump downgrade=false missing=none"
+        for note in solver_output.solver_notes
+    )
+    assert any(
+        note
+        == "probability_model method=conditional_monte_carlo distribution=garch_t_dcc_jump requested_mode=garch_t_dcc_jump historical_backtest_used=true"
         for note in solver_output.solver_notes
     )
 
