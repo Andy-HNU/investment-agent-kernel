@@ -228,6 +228,7 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "warning_count": len(list(payload.get("warnings") or [])),
         "approved_at": payload.get("approved_at"),
         "superseded_by_plan_id": payload.get("superseded_by_plan_id"),
+        "quarterly_execution_policy": payload.get("quarterly_execution_policy"),
     }
 
 

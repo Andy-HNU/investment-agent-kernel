@@ -84,6 +84,7 @@ def test_frontdesk_sqlite_initializes_schema_and_persists_onboarding_result(tmp_
     assert user_state["pending_execution_plan"]["plan_version"] == 1
     assert user_state["pending_execution_plan"]["status"] == "draft"
     assert user_state["pending_execution_plan"]["item_count"] >= 1
+    assert user_state["pending_execution_plan"]["quarterly_execution_policy"]["cash_reserve_target"] > 0
     assert (
         user_state["decision_card"]["execution_plan_summary"]["plan_id"]
         == user_state["pending_execution_plan"]["plan_id"]

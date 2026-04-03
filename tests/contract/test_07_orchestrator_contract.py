@@ -213,6 +213,10 @@ def test_run_orchestrator_onboarding_persistence_plan_includes_execution_plan_ar
     assert result.decision_card["execution_plan_summary"]["product_adjusted_success_probability"] <= (
         result.decision_card["execution_plan_summary"]["bucket_success_probability"]
     )
+    policy = result.decision_card["execution_plan_summary"]["quarterly_execution_policy"]
+    assert policy["budget_structure"]["core_budget"] > 0
+    assert policy["cash_reserve_target"] > 0
+    assert any(rule["scope"] == "core" for rule in policy["trigger_rules"])
     assert result.decision_card["product_evidence_panel"]["items"]
     first_panel_item = result.decision_card["product_evidence_panel"]["items"][0]
     assert first_panel_item["recommended_products"]

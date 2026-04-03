@@ -9,7 +9,7 @@ from calibration.engine import run_calibration
 from decision_card.builder import build_decision_card
 from decision_card.types import DecisionCardBuildInput, DecisionCardType
 from goal_solver.engine import run_goal_solver
-from product_mapping import build_execution_plan
+from product_mapping import build_execution_plan, build_quarterly_execution_policy
 from runtime_optimizer.engine import run_runtime_optimizer
 from runtime_optimizer.types import RuntimeOptimizerMode
 from snapshot_ingestion.engine import build_snapshot_bundle
@@ -1468,7 +1468,22 @@ def _product_evidence_panel(execution_plan: Any) -> dict[str, Any]:
     }
 
 
-def _build_execution_plan_summary(execution_plan: Any, goal_solver_output: Any | None = None) -> dict[str, Any]:
+def _risk_tolerance_score_from_goal_input(goal_input: dict[str, Any]) -> float:
+    goal = _as_dict(goal_input.get("goal"))
+    pref = _first_text(goal.get("risk_preference")) or ""
+    normalized = pref.lower()
+    if normalized in {"保守", "conservative"}:
+        return 0.30
+    if normalized in {"进取", "aggressive"}:
+        return 0.78
+    return 0.58
+
+
+def _build_execution_plan_summary(
+    execution_plan: Any,
+    goal_solver_output: Any | None = None,
+    goal_solver_input: Any | None = None,
+) -> dict[str, Any]:
     if execution_plan is None:
         return {}
     if hasattr(execution_plan, "summary"):
@@ -1508,6 +1523,22 @@ def _build_execution_plan_summary(execution_plan: Any, goal_solver_output: Any |
             "product_evidence_panel": product_panel,
         }
     )
+    goal_input = _as_dict(goal_solver_input)
+    goal_payload = _as_dict(goal_input.get("goal"))
+    if goal_payload:
+        target_success_probability = float(goal_payload.get("success_prob_threshold", 0.80) or 0.80)
+        horizon_months = int(goal_payload.get("horizon_months", 36) or 36)
+        implied_required = _float_or_none(recommended_result.get("implied_required_annual_return"))
+        quarterly_policy = build_quarterly_execution_policy(
+            execution_plan=execution_plan,
+            quarter_start_date=datetime.now(timezone.utc).date().isoformat(),
+            implied_required_annual_return=implied_required,
+            product_adjusted_success_probability=product_adjusted_success_probability,
+            target_success_probability=target_success_probability,
+            risk_tolerance_score=_risk_tolerance_score_from_goal_input(goal_input),
+            horizon_months=horizon_months,
+        )
+        summary["quarterly_execution_policy"] = _payload(quarterly_policy)
     return summary
 
 
@@ -1672,6 +1703,7 @@ def _build_persistence_plan(
     solver_snapshot_id: str | None,
     snapshot_bundle: Any,
     calibration_result: Any,
+    goal_solver_input: Any,
     goal_solver_output: Any,
     runtime_result: Any,
     execution_plan: Any,
@@ -1684,7 +1716,14 @@ def _build_persistence_plan(
     control_flags: dict[str, Any],
 ) -> OrchestratorPersistencePlan:
     execution_plan_payload = _payload(execution_plan)
-    execution_plan_summary = _build_execution_plan_summary(execution_plan, goal_solver_output)
+    execution_plan_summary = _build_execution_plan_summary(
+        execution_plan,
+        goal_solver_output,
+        goal_solver_input,
+    )
+    if execution_plan_payload is not None and execution_plan_summary.get("quarterly_execution_policy") is not None:
+        execution_plan_payload = dict(execution_plan_payload)
+        execution_plan_payload["quarterly_execution_policy"] = execution_plan_summary["quarterly_execution_policy"]
     return OrchestratorPersistencePlan(
         run_record={
             "run_id": run_id,
@@ -1970,13 +2009,17 @@ def run_orchestrator(
     control_directives = _unique_items(control_directives)
 
     # Prefer pending plan summary (if present) when monthly has no new plan
-    execution_plan_summary = _build_execution_plan_summary(execution_plan, goal_solver_output)
+    execution_plan_summary = _build_execution_plan_summary(
+        execution_plan,
+        goal_solver_output,
+        goal_solver_input_used,
+    )
     if (
         not execution_plan_summary
         and effective_trigger.workflow_type == WorkflowType.MONTHLY
         and plan_context.get("pending")
     ):
-        execution_plan_summary = _build_execution_plan_summary(plan_context.get("pending"), goal_solver_output)
+        execution_plan_summary = _build_execution_plan_summary(plan_context.get("pending"), goal_solver_output, goal_solver_input_used)
     card_build_input = _build_card_input(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,
@@ -2035,6 +2078,7 @@ def run_orchestrator(
         solver_snapshot_id=solver_snapshot_id,
         snapshot_bundle=snapshot_bundle,
         calibration_result=calibration_result,
+        goal_solver_input=goal_solver_input_used,
         goal_solver_output=goal_solver_output,
         runtime_result=runtime_result,
         execution_plan=execution_plan,

@@ -56,6 +56,9 @@ def test_quarterly_card_emits_plan_guidance_next_steps(tmp_path):
     card = quarterly["decision_card"]
     if card.get("card_type") != "blocked":
         assert _has_any_plan_step(card), f"missing plan guidance in next_steps: {card.get('next_steps')}"
+        policy = card["execution_plan_summary"]["quarterly_execution_policy"]
+        assert policy["initial_actions"], "quarterly policy should include staged initial actions"
+        assert any(rule["scope"] == "core" for rule in policy["trigger_rules"])
 
 
 @pytest.mark.smoke

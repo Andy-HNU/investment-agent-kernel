@@ -82,6 +82,32 @@ class RecommendedProduct:
         return _serialize(asdict(self))
 
 
+@dataclass(frozen=True)
+class BudgetStructure:
+    core_budget: float
+    defense_budget: float
+    satellite_budget: float
+    cash_reserve_budget: float
+    selection_reason: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
+class TriggerRule:
+    rule_id: str
+    scope: Literal["core", "satellite", "bond", "gold", "cash"]
+    trigger_type: Literal["drawdown", "valuation", "profit_take", "rebalance_band", "regime_shift"]
+    threshold: float
+    action: str
+    size_rule: str
+    note: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
 @dataclass
 class ExecutionPlanItem:
     asset_bucket: str
@@ -94,6 +120,20 @@ class ExecutionPlanItem:
     alternate_products: list[ProductCandidate] = field(default_factory=list)
     recommended_products: list[RecommendedProduct] = field(default_factory=list)
     selection_evidence: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
+class QuarterlyExecutionPolicy:
+    plan_id: str
+    quarter_start_date: str
+    budget_structure: BudgetStructure
+    initial_actions: list[dict[str, Any]] = field(default_factory=list)
+    trigger_rules: list[TriggerRule] = field(default_factory=list)
+    cash_reserve_target: float = 0.0
+    review_date: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
