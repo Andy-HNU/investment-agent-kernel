@@ -90,6 +90,25 @@ def handle_task(task: str, *, db_path: str | Path = DEFAULT_DB_PATH, now: Option
         result = dict(summary)
     elif intent.name == "approve_plan":
         args = parse_approve_plan(task)
+        if not args.get("plan_id"):
+            snapshot = load_frontdesk_snapshot(args["account_profile_id"], db_path=db_path) or {}
+            pending = dict(snapshot.get("pending_execution_plan") or {})
+            if pending:
+                args["plan_id"] = pending.get("plan_id")
+                args["plan_version"] = pending.get("plan_version") or args["plan_version"]
+            else:
+                invocation = {"tool": "frontdesk.approve_plan", **args}
+                result = {
+                    "workflow": "approve_plan",
+                    "status": "needs_context",
+                    "note": "no pending execution plan found; explicit plan_id is required",
+                }
+                return {
+                    "intent": asdict(intent),
+                    "invocation": invocation,
+                    "result": result,
+                    "at": when,
+                }
         summary = approve_frontdesk_execution_plan(
             account_profile_id=args["account_profile_id"],
             plan_id=args["plan_id"],

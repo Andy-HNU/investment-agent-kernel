@@ -57,6 +57,46 @@ def test_bridge_handles_quarterly_event_show_user_and_explanations(tmp_path):
     assert explain_plan["result"]["explanation"]
 
 
+def test_bridge_routes_feedback_even_when_run_id_contains_monthly_and_colons(tmp_path):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    onboarding = handle_task(
+        "onboard user bridge_feedback assets 50000 monthly 5000 goal 200000 in 36 months risk moderate",
+        db_path=str(db),
+    )
+    run_id = onboarding["result"]["run_id"]
+
+    feedback = handle_task(
+        f"用户 bridge_feedback 已执行，run_id: {run_id} actual_action: rebalance_partial 备注：已处理",
+        db_path=str(db),
+    )
+
+    assert feedback["intent"]["name"] == "feedback"
+    assert feedback["invocation"]["tool"] == "frontdesk.feedback"
+    assert feedback["result"]["execution_feedback"]["source_run_id"] == run_id
+    assert feedback["result"]["execution_feedback"]["feedback_status"] == "executed"
+
+
+def test_bridge_can_approve_single_pending_plan_without_explicit_plan_id(tmp_path):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    onboarding = handle_task(
+        "onboard user bridge_approve assets 50000 monthly 5000 goal 200000 in 36 months risk moderate",
+        db_path=str(db),
+    )
+
+    pending = onboarding["result"]["user_state"]["pending_execution_plan"]
+    assert pending
+
+    approved = handle_task("confirm plan for user bridge_approve", db_path=str(db))
+
+    assert approved["intent"]["name"] == "approve_plan"
+    assert approved["result"]["status"] == "approved"
+    assert approved["result"]["approved_execution_plan"]["plan_id"] == pending["plan_id"]
+
+
 def test_acceptance_cli_writes_logs(tmp_path, capsys):
     # Smoke test the CLI wrapper to ensure it writes a log file
     import sys

@@ -186,26 +186,26 @@ def _extract_restrictions(text: str) -> list[str]:
 
 def route(text: str) -> Intent:
     t = _normalized_text(text).lower()
-    if re.search(r"(onboard|onboarding|create profile|new user|新用户|建档|开户|画像)", t):
-        return Intent(name="onboarding", confidence=0.96)
     if re.search(r"(why|为什么).*(replace|plan|方案|替换|变更)", t):
         return Intent(name="explain_plan_change", confidence=0.92)
     if re.search(r"(why|为什么).*(probability|success|达成率|概率)", t):
         return Intent(name="explain_probability", confidence=0.92)
-    if re.search(r"(approve plan|confirm plan|批准方案|确认方案|采用方案)", t):
+    if re.search(r"(\bapprove plan\b|\bconfirm plan\b|\bpromote\b|批准方案|确认方案|采用方案)", t):
         return Intent(name="approve_plan", confidence=0.95)
-    if re.search(r"(show[- ]user|show user|show profile|展示用户|用户全貌|查看用户快照)", t):
+    if re.search(r"(\bshow[- ]user\b|\bshow user\b|\bshow profile\b|展示用户|用户全貌|查看用户快照)", t):
         return Intent(name="show_user", confidence=0.9)
-    if re.search(r"(季度|quarterly|quarter review|quarter review|季检|季度复查|quarterly review)", t):
+    if re.search(r"(季度|季检|季度复查|\bquarterly\b|\bquarter review\b|\bquarterly review\b)", t):
         return Intent(name="quarterly", confidence=0.88)
-    if re.search(r"(事件|event|drawdown|selloff|回撤|大跌|突发)", t):
-        return Intent(name="event", confidence=0.84)
-    if re.search(r"(monthly|follow-?up|next month|月度|月检|月度复查)", t):
-        return Intent(name="monthly", confidence=0.84)
-    if re.search(r"(show status|status|how am i doing|状态|近况|查看状态)", t):
-        return Intent(name="status", confidence=0.82)
     if re.search(r"(executed|skipped|i did|took action|已执行|跳过|没执行|未执行)", t):
-        return Intent(name="feedback", confidence=0.8)
+        return Intent(name="feedback", confidence=0.86)
+    if re.search(r"(\bshow status\b|\bstatus\b|\bhow am i doing\b|\bcheck user\b|状态查询|查看状态|近况)", t):
+        return Intent(name="status", confidence=0.84)
+    if re.search(r"(事件|回撤|大跌|突发|\bevent\b|\bdrawdown\b|\bselloff\b)", t):
+        return Intent(name="event", confidence=0.84)
+    if re.search(r"(\bonboard\b|\bonboarding\b|\bcreate profile\b|\bnew user\b|新用户|建档|开户|画像)", t):
+        return Intent(name="onboarding", confidence=0.96)
+    if re.search(r"(月度|月检|月度复查|\bmonthly\b|\bfollow-?up\b|\bnext month\b)", t):
+        return Intent(name="monthly", confidence=0.84)
 
     has_profile_shape = any(
         token in t
@@ -293,8 +293,10 @@ def parse_approve_plan(text: str) -> dict[str, Any]:
     account = parse_status(text)
     plan_id = (
         _extract_first(r"(?:plan(?:[_ ]?id)?|方案)\s*[:=：]?\s*([^\s,，]+)", text)
-        or "plan_0"
+        or _extract_first(r"(?:approve plan|confirm plan|promote|批准方案|确认方案|采用方案)\s+([^\s,，]+)", text)
     )
+    if plan_id in {"for", "user", "账户", "用户"}:
+        plan_id = None
     version = (
         _extract_number(r"(?:version|版本)\s*[:=：]?\s*([0-9]+)", text)
         or _extract_number(r"\bv([0-9]+)\b", text)
@@ -335,7 +337,9 @@ def parse_event_context(text: str) -> dict[str, Any]:
         event_context["manual_review_requested"] = True
     if re.search(r"(override|手动覆盖)", normalized):
         event_context["manual_override_requested"] = True
-    if re.search(r"(rebalance|调仓|满仓|抄底|高风险)", normalized):
+    if re.search(r"(?:do not|don't|不要|别|暂不|先不).{0,8}(rebalance|调仓|满仓|抄底)", normalized):
+        event_context["manual_review_requested"] = True
+    elif re.search(r"(rebalance|调仓|满仓|抄底|高风险)", normalized):
         event_context["high_risk_request"] = True
         event_context["requested_action"] = "rebalance_full"
     return event_context

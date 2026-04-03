@@ -22,19 +22,19 @@
       "name": "frontdesk.followup.monthly",
       "summary": "Run monthly follow-up using saved baseline; optional minor profile overrides.",
       "inputs": ["account_profile_id", "profile_json", "external_snapshot_source", "external_data_config"],
-      "outputs": ["workflow", "status", "run_id", "decision_card"]
+      "outputs": ["workflow_type", "status", "run_id", "decision_card"]
     },
     {
       "name": "frontdesk.followup.quarterly",
       "summary": "Run quarterly full review using saved baseline and optional profile refresh.",
       "inputs": ["account_profile_id", "profile_json", "external_snapshot_source", "external_data_config"],
-      "outputs": ["workflow", "status", "run_id", "decision_card", "pending_execution_plan"]
+      "outputs": ["workflow_type", "status", "run_id", "decision_card", "pending_execution_plan"]
     },
     {
       "name": "frontdesk.followup.event",
       "summary": "Run event-driven review with explicit event_context and runtime risk controls.",
       "inputs": ["account_profile_id", "event_context", "profile_json", "external_snapshot_source", "external_data_config"],
-      "outputs": ["workflow", "status", "run_id", "decision_card"]
+      "outputs": ["workflow_type", "status", "run_id", "decision_card"]
     },
     {
       "name": "frontdesk.status",
