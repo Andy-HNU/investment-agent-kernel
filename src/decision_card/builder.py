@@ -430,7 +430,15 @@ def _build_goal_candidate_options(inp: DecisionCardBuildInput, goal_output: dict
         expected_terminal_value = _currency_metric(result.get("expected_terminal_value"))
         max_drawdown_90pct = _percent_metric(risk_summary.get("max_drawdown_90pct"))
         shortfall_probability = _percent_metric(risk_summary.get("shortfall_probability"))
+        bucket_success_probability = _percent_metric(
+            result.get("bucket_success_probability", result.get("success_probability"))
+        )
+        product_adjusted_success_probability = _percent_metric(
+            result.get("product_adjusted_success_probability", result.get("success_probability"))
+        )
+        implied_required_annual_return = _percent_metric(result.get("implied_required_annual_return"))
         option = {
+            "allocation_name": allocation_name,
             "label": label,
             "highlight": _candidate_highlight(
                 result,
@@ -443,11 +451,17 @@ def _build_goal_candidate_options(inp: DecisionCardBuildInput, goal_output: dict
             "description": description,
             "allocation_mix": _candidate_mix(result.get("weights")),
             "success_probability": success_probability,
+            "bucket_success_probability": bucket_success_probability,
+            "product_adjusted_success_probability": product_adjusted_success_probability,
+            "implied_required_annual_return": implied_required_annual_return,
             "expected_terminal_value": expected_terminal_value,
             "max_drawdown_90pct": max_drawdown_90pct,
             "shortfall_probability": shortfall_probability,
             "metrics": {
                 "success_probability": success_probability,
+                "bucket_success_probability": bucket_success_probability,
+                "product_adjusted_success_probability": product_adjusted_success_probability,
+                "implied_required_annual_return": implied_required_annual_return,
                 "expected_terminal_value": expected_terminal_value,
                 "max_drawdown_90pct": max_drawdown_90pct,
                 "shortfall_probability": shortfall_probability,
@@ -467,12 +481,64 @@ def _build_goal_candidate_options(inp: DecisionCardBuildInput, goal_output: dict
                 no_feasible=no_feasible,
             ),
             "model_disclaimer": _model_disclaimer(goal_output),
+            "simulation_mode_used": _metric(result.get("simulation_mode_used") or goal_output.get("simulation_mode_used")),
             "evidence_source": "model_estimate",
         }
         if complexity is not None:
             option["complexity_score"] = f"{complexity:.2f}"
         options.append(option)
     return options
+
+
+def _build_probability_explanation(
+    goal_output: dict[str, Any],
+    candidate_options: list[dict[str, Any]],
+) -> dict[str, Any]:
+    recommended_result = _obj(goal_output.get("recommended_result", {}))
+    recommended_name = _metric(recommended_result.get("allocation_name"))
+    recommended_label = _metric(candidate_options[0].get("label")) if candidate_options else _candidate_label(recommended_name)
+    recommended_probability = _percent_metric(
+        recommended_result.get("bucket_success_probability", recommended_result.get("success_probability"))
+    )
+    highest_candidate = max(
+        [_obj(item) for item in goal_output.get("candidate_menu", []) or goal_output.get("all_results", [])],
+        key=lambda item: _coalesce_metric(item.get("success_probability"), float("-inf")),
+        default=recommended_result,
+    )
+    highest_name = _metric(highest_candidate.get("allocation_name"))
+    highest_label = next(
+        (
+            _metric(item.get("label"))
+            for item in candidate_options
+            if _metric(item.get("label")) and _metric(item.get("allocation_name")) == highest_name
+        ),
+        _metric(highest_candidate.get("display_name")) or _candidate_label(highest_name),
+    )
+    highest_probability = _percent_metric(highest_candidate.get("success_probability"))
+    if highest_name and recommended_name and highest_name != recommended_name:
+        why_not = "当前推荐不是最高达成率方案，因为排序会同时权衡回撤、短缺风险和执行复杂度。"
+    else:
+        why_not = "当前推荐方案同时也是当前候选中的最高达成率方案。"
+    return {
+        "recommended_allocation_name": recommended_name,
+        "recommended_allocation_label": recommended_label,
+        "recommended_success_probability": recommended_probability,
+        "highest_probability_allocation_name": highest_name,
+        "highest_probability_allocation_label": highest_label,
+        "highest_probability_success_probability": highest_probability,
+        "why_not_highest_probability": why_not,
+    }
+
+
+def _product_evidence_panel(inp: DecisionCardBuildInput) -> dict[str, Any]:
+    summary = _execution_plan_summary(inp)
+    return dict(_obj(summary.get("product_evidence_panel", {})))
+
+
+def _sanitize_user_visible_candidate_option(option: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(option)
+    sanitized.pop("allocation_name", None)
+    return sanitized
 
 
 def _build_goal_fallback_options(goal_output: dict[str, Any]) -> list[dict[str, Any]]:
@@ -830,8 +896,13 @@ def _build_goal_evidence(inp: DecisionCardBuildInput, goal_output: dict[str, Any
     result = _obj(goal_output.get("recommended_result", {}))
     risk_summary = _obj(result.get("risk_summary", {}))
     structure_budget = _obj(goal_output.get("structure_budget", {}))
+    execution_plan_summary = _execution_plan_summary(inp)
     evidence = [
         f"success_probability={_metric(result.get('success_probability'))}",
+        f"bucket_success_probability={_metric(result.get('bucket_success_probability') or result.get('success_probability'))}",
+        f"product_adjusted_success_probability={_metric(execution_plan_summary.get('product_adjusted_success_probability') or result.get('product_adjusted_success_probability'))}",
+        f"implied_required_annual_return={_metric(result.get('implied_required_annual_return'))}",
+        f"simulation_mode_used={_metric(result.get('simulation_mode_used') or goal_output.get('simulation_mode_used'))}",
         f"max_drawdown_90pct={_metric(risk_summary.get('max_drawdown_90pct'))}",
         f"shortfall_probability={_metric(risk_summary.get('shortfall_probability'))}",
         f"core_weight={_metric(structure_budget.get('core_weight'))}",
@@ -839,6 +910,9 @@ def _build_goal_evidence(inp: DecisionCardBuildInput, goal_output: dict[str, Any
     ]
     formatted = [
         f"success_probability_display={_percent_metric(result.get('success_probability'))}",
+        f"bucket_success_probability_display={_percent_metric(result.get('bucket_success_probability') or result.get('success_probability'))}",
+        f"product_adjusted_success_probability_display={_percent_metric(execution_plan_summary.get('product_adjusted_success_probability') or result.get('product_adjusted_success_probability'))}",
+        f"implied_required_annual_return_display={_percent_metric(result.get('implied_required_annual_return'))}",
         f"max_drawdown_90pct_display={_percent_metric(risk_summary.get('max_drawdown_90pct'))}",
         f"shortfall_probability_display={_percent_metric(risk_summary.get('shortfall_probability'))}",
         f"core_weight_display={_percent_metric(structure_budget.get('core_weight'))}",
@@ -979,6 +1053,9 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     result = _obj(goal_output.get("recommended_result", {}))
     risk_summary = _obj(result.get("risk_summary", {}))
     candidate_options = _build_goal_candidate_options(inp, goal_output)
+    probability_explanation = _build_probability_explanation(goal_output, candidate_options)
+    execution_plan_summary = _execution_plan_summary(inp)
+    product_evidence_panel = _product_evidence_panel(inp)
     fallback_options = _build_goal_fallback_options(goal_output)
     model_disclaimer = _model_disclaimer(goal_output)
     goal_semantics = _goal_semantics(inp.goal_solver_input)
@@ -1025,7 +1102,10 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         summary += recommended_description
     if model_disclaimer:
         summary += f" {model_disclaimer}"
-    user_visible_alternatives = fallback_options or candidate_options[1:]
+    user_visible_alternatives = [
+        _sanitize_user_visible_candidate_option(item)
+        for item in (fallback_options or candidate_options[1:])
+    ]
     review_conditions = _build_review_conditions(
         inp,
         {},
@@ -1052,6 +1132,14 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         not_recommended_reason=[],
         key_metrics={
             "success_probability": _percent_metric(result.get("success_probability")),
+            "bucket_success_probability": _percent_metric(
+                result.get("bucket_success_probability", result.get("success_probability"))
+            ),
+            "product_adjusted_success_probability": _percent_metric(
+                execution_plan_summary.get("product_adjusted_success_probability")
+                or result.get("product_adjusted_success_probability")
+            ),
+            "implied_required_annual_return": _percent_metric(result.get("implied_required_annual_return")),
             "expected_terminal_value": _currency_metric(result.get("expected_terminal_value")),
             "max_drawdown_90pct": _percent_metric(risk_summary.get("max_drawdown_90pct")),
             "shortfall_probability": _percent_metric(risk_summary.get("shortfall_probability")),
@@ -1071,7 +1159,9 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         next_steps=next_steps,
         low_confidence=low_confidence,
         goal_semantics=goal_semantics,
-        execution_plan_summary=_execution_plan_summary(inp),
+        execution_plan_summary=execution_plan_summary,
+        probability_explanation=probability_explanation,
+        product_evidence_panel=product_evidence_panel,
     )
     return _finalize_card(card)
 
@@ -1154,6 +1244,9 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     )
     risk_summary = _obj(result.get("risk_summary", {}))
     candidate_options = _build_goal_candidate_options(inp, goal_output)
+    probability_explanation = _build_probability_explanation(goal_output, candidate_options)
+    execution_plan_summary = _execution_plan_summary(inp)
+    product_evidence_panel = _product_evidence_panel(inp)
     model_disclaimer = _model_disclaimer(goal_output)
     recommended_baseline_label = _candidate_label(
         result.get("allocation_name") or _obj(goal_output.get("recommended_allocation", {})).get("name")
@@ -1173,6 +1266,11 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         not_recommended_reason=not_recommended_reason,
         key_metrics={
             "new_baseline_success_probability": _percent_metric(result.get("success_probability")),
+            "product_adjusted_success_probability": _percent_metric(
+                execution_plan_summary.get("product_adjusted_success_probability")
+                or result.get("product_adjusted_success_probability")
+            ),
+            "implied_required_annual_return": _percent_metric(result.get("implied_required_annual_return")),
             "new_baseline_max_drawdown_90pct": _percent_metric(risk_summary.get("max_drawdown_90pct")),
             "quarterly_action_confidence": _metric(ev_report.get("confidence_flag")),
             "quarterly_runtime_action": quarterly_runtime_action,
@@ -1203,7 +1301,9 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         ),
         runner_up_action=_runner_up_action(ev_report),
         low_confidence=low_confidence,
-        execution_plan_summary=_execution_plan_summary(inp),
+        execution_plan_summary=execution_plan_summary,
+        probability_explanation=probability_explanation,
+        product_evidence_panel=product_evidence_panel,
     )
     return _finalize_card(card)
 

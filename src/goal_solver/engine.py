@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
+import inspect
 import math
 from typing import Any
 
@@ -25,6 +26,14 @@ from goal_solver.types import (
     SuccessProbabilityResult,
     infer_ranking_mode,
 )
+
+
+_SIMULATION_MODE_ORDER = {
+    "static_gaussian": 0,
+    "garch_t": 1,
+    "garch_t_dcc": 2,
+    "garch_t_dcc_jump": 3,
+}
 
 
 def _obj(value: Any) -> Any:
@@ -73,6 +82,16 @@ def _goal_solver_input_from_any(value: GoalSolverInput | dict[str, Any]) -> Goal
         market_assumptions=market_assumptions,
         shrinkage_factor=float(data["solver_params"].get("shrinkage_factor", 0.85)),
         ranking_mode_default=RankingMode(str(getattr(ranking_mode_raw, "value", ranking_mode_raw))),
+        simulation_mode_requested=str(
+            data["solver_params"].get("simulation_mode_requested", "static_gaussian")
+        ),
+        simulation_frequency=str(data["solver_params"].get("simulation_frequency", "monthly")),
+        regime_sensitive=bool(data["solver_params"].get("regime_sensitive", False)),
+        jump_overlay_enabled=bool(data["solver_params"].get("jump_overlay_enabled", False)),
+        distribution_model_state=_obj(data["solver_params"].get("distribution_model_state")),
+        simulation_mode_auto_selected=bool(
+            data["solver_params"].get("simulation_mode_auto_selected", False)
+        ),
     )
     candidate_allocations = [
         StrategicAllocation(**dict(item))
@@ -115,8 +134,75 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _mode_rank(mode: str) -> int:
+    return _SIMULATION_MODE_ORDER.get(str(mode or "static_gaussian").strip().lower(), 0)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _project_terminal_value(
+    *,
+    initial_value: float,
+    cashflow_schedule: list[float],
+    monthly_rate: float,
+) -> float:
+    value = float(initial_value)
+    horizon = max(len(cashflow_schedule), 1)
+    for month in range(horizon):
+        month_cf = float(cashflow_schedule[month] if month < len(cashflow_schedule) else 0.0)
+        value = value * (1.0 + monthly_rate) + month_cf
+    return float(value)
+
+
+def _solve_implied_required_annual_return(
+    *,
+    initial_value: float,
+    cashflow_schedule: list[float],
+    goal_amount: float,
+) -> float | None:
+    target = float(goal_amount)
+    if target <= 0.0:
+        return None
+
+    lower = -0.999
+    upper = 0.02
+    lower_value = _project_terminal_value(
+        initial_value=float(initial_value),
+        cashflow_schedule=cashflow_schedule,
+        monthly_rate=lower,
+    )
+    upper_value = _project_terminal_value(
+        initial_value=float(initial_value),
+        cashflow_schedule=cashflow_schedule,
+        monthly_rate=upper,
+    )
+    while upper_value < target and upper < 5.0:
+        upper = upper * 2.0 + 0.01
+        upper_value = _project_terminal_value(
+            initial_value=float(initial_value),
+            cashflow_schedule=cashflow_schedule,
+            monthly_rate=upper,
+        )
+
+    if lower_value > target:
+        return (1.0 + lower) ** 12 - 1.0
+    if upper_value < target:
+        return None
+
+    for _ in range(100):
+        mid = (lower + upper) / 2.0
+        mid_value = _project_terminal_value(
+            initial_value=float(initial_value),
+            cashflow_schedule=cashflow_schedule,
+            monthly_rate=mid,
+        )
+        if mid_value >= target:
+            upper = mid
+        else:
+            lower = mid
+    return (1.0 + upper) ** 12 - 1.0
 
 
 def _build_cashflow_schedule(plan: CashFlowPlan, horizon_months: int) -> list[float]:
@@ -224,6 +310,118 @@ def _monthly_return_params(weights: dict[str, float], market_state: MarketAssump
     return mu_monthly, sigma_monthly
 
 
+def _resolve_simulation_mode(params: GoalSolverParams) -> tuple[str, bool, str | None]:
+    requested = str(params.simulation_mode_requested or "static_gaussian").strip().lower() or "static_gaussian"
+    distribution_state = _obj(params.distribution_model_state or {})
+    available_modes = [str(mode).strip().lower() for mode in list(distribution_state.get("available_modes") or []) if str(mode).strip()]
+
+    if requested == "static_gaussian":
+        return "static_gaussian", bool(params.simulation_mode_auto_selected), None
+
+    if not available_modes:
+        return "static_gaussian", True, "distribution_model_state_missing"
+
+    compatible = [mode for mode in available_modes if _mode_rank(mode) <= _mode_rank(requested)]
+    if compatible:
+        used = max(compatible, key=_mode_rank)
+        return used, bool(params.simulation_mode_auto_selected or used != requested), None
+    return "static_gaussian", True, "requested_mode_unsupported"
+
+
+def _regime_sigma_multiplier(distribution_model_state: dict[str, Any] | None) -> float:
+    state = _obj(distribution_model_state or {})
+    overrides = _obj(state.get("regime_overrides") or {})
+    return float(overrides.get("risk_multiplier", 1.0) or 1.0)
+
+
+def _regime_corr_multiplier(distribution_model_state: dict[str, Any] | None) -> float:
+    state = _obj(distribution_model_state or {})
+    overrides = _obj(state.get("regime_overrides") or {})
+    return float(overrides.get("correlation_multiplier", 1.0) or 1.0)
+
+
+def _regime_jump_multiplier(distribution_model_state: dict[str, Any] | None) -> float:
+    state = _obj(distribution_model_state or {})
+    overrides = _obj(state.get("regime_overrides") or {})
+    return float(overrides.get("jump_intensity_multiplier", 1.0) or 1.0)
+
+
+def _t_scale(df: float) -> float:
+    if df <= 2.0:
+        return 1.0
+    return math.sqrt((df - 2.0) / df)
+
+
+def _distribution_garch_state_map(distribution_model_state: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    state = _obj(distribution_model_state or {})
+    return {
+        str(item.get("bucket_id")): _obj(item)
+        for item in list(state.get("garch_states") or [])
+        if _obj(item).get("bucket_id") is not None
+    }
+
+
+def _distribution_dcc_state(distribution_model_state: dict[str, Any] | None) -> dict[str, Any]:
+    state = _obj(distribution_model_state or {})
+    return _obj(state.get("dcc_state") or {})
+
+
+def _distribution_jump_state(distribution_model_state: dict[str, Any] | None) -> dict[str, Any]:
+    state = _obj(distribution_model_state or {})
+    return _obj(state.get("jump_state") or {})
+
+
+def _multivariate_normal_with_corr(
+    rng: np.random.Generator,
+    corr_matrix: np.ndarray,
+    size: tuple[int, int],
+) -> np.ndarray:
+    safe_corr = np.array(corr_matrix, dtype=float)
+    safe_corr = (safe_corr + safe_corr.T) / 2.0
+    np.fill_diagonal(safe_corr, 1.0)
+    try:
+        return rng.multivariate_normal(mean=np.zeros(safe_corr.shape[0]), cov=safe_corr, size=size)
+    except np.linalg.LinAlgError:
+        safe_corr = safe_corr + np.eye(safe_corr.shape[0]) * 1e-6
+        return rng.multivariate_normal(mean=np.zeros(safe_corr.shape[0]), cov=safe_corr, size=size)
+
+
+def _run_monte_carlo_dispatch(
+    weights: dict[str, float],
+    cashflow_schedule: list[float],
+    initial_value: float,
+    goal_amount: float,
+    market_state: MarketAssumptions,
+    n_paths: int,
+    seed: int,
+    *,
+    simulation_mode: str,
+    distribution_model_state: dict[str, Any] | None,
+) -> tuple[float, dict[str, float], RiskSummary]:
+    signature = inspect.signature(_run_monte_carlo)
+    if "simulation_mode" in signature.parameters:
+        return _run_monte_carlo(
+            weights,
+            cashflow_schedule,
+            initial_value,
+            goal_amount,
+            market_state,
+            n_paths,
+            seed,
+            simulation_mode=simulation_mode,
+            distribution_model_state=distribution_model_state,
+        )
+    return _run_monte_carlo(
+        weights,
+        cashflow_schedule,
+        initial_value,
+        goal_amount,
+        market_state,
+        n_paths,
+        seed,
+    )
+
+
 def _compute_path_drawdowns(values: np.ndarray) -> np.ndarray:
     running_max = np.maximum.accumulate(values, axis=1)
     safe_running_max = np.maximum(running_max, 1e-9)
@@ -297,17 +495,159 @@ def _run_monte_carlo(
     market_state: MarketAssumptions,
     n_paths: int,
     seed: int,
+    simulation_mode: str = "static_gaussian",
+    distribution_model_state: dict[str, Any] | None = None,
 ) -> tuple[float, dict[str, float], RiskSummary]:
     horizon = max(len(cashflow_schedule), 1)
     paths = max(int(n_paths), 1)
     rng = np.random.default_rng(int(seed))
-    mu_monthly, sigma_monthly = _monthly_return_params(weights, market_state)
+    simulation_mode = str(simulation_mode or "static_gaussian").strip().lower() or "static_gaussian"
 
-    monthly_returns = rng.normal(
-        loc=mu_monthly,
-        scale=max(sigma_monthly, 0.0),
-        size=(paths, horizon),
-    )
+    if simulation_mode == "static_gaussian":
+        mu_monthly, sigma_monthly = _monthly_return_params(weights, market_state)
+        monthly_returns = rng.normal(
+            loc=mu_monthly,
+            scale=max(sigma_monthly, 0.0),
+            size=(paths, horizon),
+        )
+    else:
+        ordered_buckets = [bucket for bucket in sorted(weights) if float(weights.get(bucket, 0.0)) > 0.0]
+        bucket_weights = np.array([float(weights[bucket]) for bucket in ordered_buckets], dtype=float)
+        garch_state_map = _distribution_garch_state_map(distribution_model_state)
+        dcc_state = _distribution_dcc_state(distribution_model_state)
+        jump_state = _distribution_jump_state(distribution_model_state)
+        risk_multiplier = _regime_sigma_multiplier(distribution_model_state)
+        corr_multiplier = _regime_corr_multiplier(distribution_model_state)
+        jump_multiplier = _regime_jump_multiplier(distribution_model_state)
+
+        mu_vec = np.array(
+            [
+                ((1.0 + _bucket_expected_return(bucket, market_state)) ** (1.0 / 12.0) - 1.0)
+                if _bucket_expected_return(bucket, market_state) > -0.999
+                else -0.99
+                for bucket in ordered_buckets
+            ],
+            dtype=float,
+        )
+        sigma2_vec = np.array(
+            [
+                max(
+                    float(_obj(garch_state_map.get(bucket, {})).get("last_sigma2", (_bucket_volatility(bucket, market_state) / math.sqrt(12.0)) ** 2)),
+                    1e-8,
+                )
+                * risk_multiplier
+                for bucket in ordered_buckets
+            ],
+            dtype=float,
+        )
+        corr_base = np.array(
+            [
+                [
+                    float(_bucket_correlation(bucket, peer, market_state))
+                    for peer in ordered_buckets
+                ]
+                for bucket in ordered_buckets
+            ],
+            dtype=float,
+        )
+        if dcc_state:
+            corr_base = np.array(
+                [
+                    [
+                        float(_obj(dcc_state.get("last_corr", {})).get(bucket, {}).get(peer, corr_base[row_idx, col_idx]))
+                        for col_idx, peer in enumerate(ordered_buckets)
+                    ]
+                    for row_idx, bucket in enumerate(ordered_buckets)
+                ],
+                dtype=float,
+            )
+        np.fill_diagonal(corr_base, 1.0)
+        q_bar = np.array(
+            [
+                [
+                    float(_obj(dcc_state.get("long_run_corr", {})).get(bucket, {}).get(peer, corr_base[row_idx, col_idx]))
+                    for col_idx, peer in enumerate(ordered_buckets)
+                ]
+                for row_idx, bucket in enumerate(ordered_buckets)
+            ],
+            dtype=float,
+        ) if dcc_state else corr_base.copy()
+        q_current = np.array(
+            [
+                [
+                    float(_obj(dcc_state.get("last_q", {})).get(bucket, {}).get(peer, corr_base[row_idx, col_idx]))
+                    for col_idx, peer in enumerate(ordered_buckets)
+                ]
+                for row_idx, bucket in enumerate(ordered_buckets)
+            ],
+            dtype=float,
+        ) if dcc_state else corr_base.copy()
+        dcc_a = float(dcc_state.get("a", 0.03) or 0.03) if dcc_state else 0.03
+        dcc_b = float(dcc_state.get("b", 0.94) or 0.94) if dcc_state else 0.94
+        monthly_returns = np.zeros((paths, horizon), dtype=float)
+        prev_std_shocks = np.zeros((paths, len(ordered_buckets)), dtype=float)
+        t_df = float(
+            min(
+                max(
+                    [
+                        float(_obj(garch_state_map.get(bucket, {})).get("nu", 7.0) or 7.0)
+                        for bucket in ordered_buckets
+                    ]
+                    or [7.0]
+                ),
+                30.0,
+            )
+        )
+        t_df = max(t_df, 4.0)
+
+        for month in range(horizon):
+            if simulation_mode in {"garch_t_dcc", "garch_t_dcc_jump"}:
+                if month > 0:
+                    sample_cov = (prev_std_shocks.T @ prev_std_shocks) / max(paths, 1)
+                    q_current = (1.0 - dcc_a - dcc_b) * q_bar + dcc_a * sample_cov + dcc_b * q_current
+                diag = np.sqrt(np.maximum(np.diag(q_current), 1e-8))
+                corr_matrix = q_current / np.outer(diag, diag)
+            else:
+                corr_matrix = corr_base
+            corr_matrix = np.clip(corr_matrix * corr_multiplier, -0.95, 0.95)
+            np.fill_diagonal(corr_matrix, 1.0)
+            normals = _multivariate_normal_with_corr(rng, corr_matrix, (paths,))
+            t_scale = np.sqrt(t_df / rng.chisquare(t_df, size=paths))[:, None] * _t_scale(t_df)
+            std_shocks = normals * t_scale
+            sigma_vec = np.sqrt(np.maximum(sigma2_vec, 1e-8))
+            bucket_returns = mu_vec + std_shocks * sigma_vec
+
+            if simulation_mode == "garch_t_dcc_jump" and jump_state:
+                systemic = _obj(jump_state.get("systemic_jump", {}))
+                systemic_intensity = float(systemic.get("intensity", 0.0) or 0.0) * jump_multiplier
+                systemic_flags = rng.random(paths) < systemic_intensity
+                scale = float(_obj(systemic.get("jump_size_dist", {})).get("scale", 0.05) or 0.05)
+                systemic_sizes = rng.normal(loc=-abs(scale), scale=max(scale / 2.0, 1e-6), size=paths)
+                loadings = _obj(systemic.get("loading", {}))
+                for bucket_idx, bucket in enumerate(ordered_buckets):
+                    loading = float(loadings.get(bucket, -1.0 if _is_equity_like(bucket) or bucket == "satellite" else 0.25))
+                    bucket_returns[:, bucket_idx] += systemic_flags * systemic_sizes * loading
+                for bucket_idx, bucket in enumerate(ordered_buckets):
+                    bucket_jump_model = _obj(_obj(jump_state.get("bucket_jump_models", {})).get(bucket, {}))
+                    if not bucket_jump_model:
+                        continue
+                    jump_intensity = float(bucket_jump_model.get("jump_intensity", 0.0) or 0.0) * jump_multiplier
+                    jump_flags = rng.random(paths) < jump_intensity
+                    jump_mean = float(bucket_jump_model.get("jump_mean", 0.0) or 0.0)
+                    jump_vol = float(bucket_jump_model.get("jump_vol", 0.01) or 0.01)
+                    bucket_returns[:, bucket_idx] += jump_flags * rng.normal(jump_mean, max(jump_vol, 1e-6), size=paths)
+
+            monthly_returns[:, month] = bucket_returns @ bucket_weights
+
+            for bucket_idx, bucket in enumerate(ordered_buckets):
+                state = _obj(garch_state_map.get(bucket, {}))
+                alpha = float(state.get("alpha", 0.08) or 0.08)
+                beta = float(state.get("beta", 0.90) or 0.90)
+                omega = float(state.get("omega", 1e-6) or 1e-6)
+                residual_sq = float(np.mean((bucket_returns[:, bucket_idx] - mu_vec[bucket_idx]) ** 2))
+                sigma2_vec[bucket_idx] = max(omega + alpha * residual_sq + beta * sigma2_vec[bucket_idx], 1e-8)
+            prev_std_shocks = std_shocks
+
     monthly_returns = np.clip(monthly_returns, -0.99, None)
 
     values = np.zeros((paths, horizon + 1), dtype=float)
@@ -591,20 +931,33 @@ def _append_solver_context_notes(
         f"is_feasible={'true' if recommended_result.is_feasible else 'false'} "
         f"shortfall_probability={recommended_result.risk_summary.shortfall_probability:.4f}"
     )
+    notes.append(
+        "simulation_mode "
+        f"requested={recommended_result.simulation_mode_requested} "
+        f"used={recommended_result.simulation_mode_used} "
+        f"auto_selected={'true' if inp.solver_params.simulation_mode_auto_selected else 'false'}"
+    )
 
 
 def _append_model_honesty_notes(
     notes: list[str],
     inp: GoalSolverInput,
     shrinkage_factor_note_value: str,
+    simulation_mode_used: str,
 ) -> None:
     historical_backtest_used = bool(inp.solver_params.market_assumptions.historical_backtest_used)
+    simulation_mode = simulation_mode_used or inp.solver_params.simulation_mode_requested or "static_gaussian"
+    distribution_label = "normal"
+    if simulation_mode in {"garch_t", "garch_t_dcc", "garch_t_dcc_jump"}:
+        distribution_label = "student_t"
+    method_label = simulation_mode if simulation_mode != "static_gaussian" else "parametric_monte_carlo"
     notes.append(
         "probability_model "
-        "method=parametric_monte_carlo "
-        "distribution=normal "
+        f"method={method_label} "
+        f"distribution={distribution_label} "
         f"historical_backtest_used={'true' if historical_backtest_used else 'false'}"
     )
+    notes.append(f"simulation_mode_used={simulation_mode}")
     if historical_backtest_used:
         notes.append(
             "historical_dataset "
@@ -650,9 +1003,23 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
     notes: list[str] = []
     ranking_mode = _resolve_ranking_mode(inp, notes)
     all_results: list[SuccessProbabilityResult] = []
+    implied_required_annual_return = _solve_implied_required_annual_return(
+        initial_value=inp.current_portfolio_value,
+        cashflow_schedule=cashflow_schedule,
+        goal_amount=inp.goal.goal_amount,
+    )
+    simulation_mode_requested = params.simulation_mode_requested or "static_gaussian"
+    simulation_mode_used, simulation_mode_auto_selected, fallback_reason = _resolve_simulation_mode(params)
+    params.simulation_mode_auto_selected = simulation_mode_auto_selected
+    if simulation_mode_auto_selected and simulation_mode_requested != simulation_mode_used:
+        notes.append(
+            "simulation_mode_fallback "
+            f"requested={simulation_mode_requested} used={simulation_mode_used} "
+            f"reason={fallback_reason or 'requested_mode_unavailable'}"
+        )
 
     for allocation in inp.candidate_allocations:
-        probability, extra, risk = _run_monte_carlo(
+        probability, extra, risk = _run_monte_carlo_dispatch(
             allocation.weights,
             cashflow_schedule,
             inp.current_portfolio_value,
@@ -660,14 +1027,21 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             params.market_assumptions,
             params.n_paths,
             params.seed,
+            simulation_mode=simulation_mode_used,
+            distribution_model_state=params.distribution_model_state,
         )
         interim_result = SuccessProbabilityResult(
             allocation_name=allocation.name,
             weights=allocation.weights,
             success_probability=probability,
+            bucket_success_probability=probability,
+            product_adjusted_success_probability=probability,
             expected_terminal_value=extra["expected_terminal_value"],
+            implied_required_annual_return=implied_required_annual_return,
             risk_summary=risk,
             is_feasible=True,
+            simulation_mode_requested=simulation_mode_requested,
+            simulation_mode_used=simulation_mode_used,
             infeasibility_reasons=[],
         )
         is_feasible, infeasibility_reasons = _check_allocation_feasibility(
@@ -680,9 +1054,14 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
                 allocation_name=allocation.name,
                 weights=allocation.weights,
                 success_probability=probability,
+                bucket_success_probability=probability,
+                product_adjusted_success_probability=probability,
                 expected_terminal_value=extra["expected_terminal_value"],
+                implied_required_annual_return=implied_required_annual_return,
                 risk_summary=risk,
                 is_feasible=is_feasible,
+                simulation_mode_requested=simulation_mode_requested,
+                simulation_mode_used=simulation_mode_used,
                 infeasibility_reasons=infeasibility_reasons,
             )
         )
@@ -694,7 +1073,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             complexity_score=0.10,
             description="synthetic fallback allocation",
         )
-        probability, extra, risk = _run_monte_carlo(
+        probability, extra, risk = _run_monte_carlo_dispatch(
             fallback.weights,
             cashflow_schedule,
             inp.current_portfolio_value,
@@ -702,14 +1081,21 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             params.market_assumptions,
             params.n_paths,
             params.seed,
+            simulation_mode=simulation_mode_used,
+            distribution_model_state=params.distribution_model_state,
         )
         fallback_result = SuccessProbabilityResult(
             allocation_name=fallback.name,
             weights=fallback.weights,
             success_probability=probability,
+            bucket_success_probability=probability,
+            product_adjusted_success_probability=probability,
             expected_terminal_value=extra["expected_terminal_value"],
+            implied_required_annual_return=implied_required_annual_return,
             risk_summary=risk,
             is_feasible=True,
+            simulation_mode_requested=simulation_mode_requested,
+            simulation_mode_used=simulation_mode_used,
             infeasibility_reasons=[],
         )
         all_results = [fallback_result]
@@ -746,7 +1132,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
     structure_budget = _build_structure_budget(best_allocation, inp.constraints)
     risk_budget = _build_risk_budget(best_result, inp.constraints)
     _append_solver_context_notes(notes, inp, best_result)
-    _append_model_honesty_notes(notes, inp, shrinkage_factor_note_value)
+    _append_model_honesty_notes(notes, inp, shrinkage_factor_note_value, simulation_mode_used)
     return GoalSolverOutput(
         input_snapshot_id=inp.snapshot_id,
         generated_at=_now_iso(),
@@ -758,6 +1144,9 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
         risk_budget=risk_budget,
         solver_notes=notes,
         params_version=params.version,
+        simulation_mode_requested=simulation_mode_requested,
+        simulation_mode_used=simulation_mode_used,
+        simulation_mode_auto_selected=simulation_mode_auto_selected,
     )
 
 
@@ -770,7 +1159,7 @@ def run_goal_solver_lightweight(
         baseline_inp.cashflow_plan,
         baseline_inp.goal.horizon_months,
     )
-    probability, _extra, risk = _run_monte_carlo(
+    probability, _extra, risk = _run_monte_carlo_dispatch(
         weights,
         cashflow_schedule,
         baseline_inp.current_portfolio_value,
@@ -778,6 +1167,8 @@ def run_goal_solver_lightweight(
         baseline_inp.solver_params.market_assumptions,
         baseline_inp.solver_params.n_paths_lightweight,
         baseline_inp.solver_params.seed,
+        simulation_mode=_resolve_simulation_mode(baseline_inp.solver_params)[0],
+        distribution_model_state=baseline_inp.solver_params.distribution_model_state,
     )
     return probability, risk
 

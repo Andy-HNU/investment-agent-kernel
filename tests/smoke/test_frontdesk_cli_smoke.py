@@ -56,6 +56,8 @@ def test_frontdesk_cli_non_interactive_onboarding_smoke(tmp_path, capsys):
     assert payload["user_state"]["active_execution_plan"] is None
     assert payload["user_state"]["pending_execution_plan"]["plan_version"] == 1
     assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["user_provided"] >= 1
+    assert "probability_explanation" in payload["user_state"]["decision_card"]
+    assert "product_evidence_panel" in payload["user_state"]["decision_card"]
 
 
 @pytest.mark.smoke

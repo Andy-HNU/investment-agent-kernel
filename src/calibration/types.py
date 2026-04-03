@@ -147,6 +147,68 @@ class EVParams:
 
 
 @dataclass
+class GarchState:
+    bucket_id: str
+    model_family: str
+    innovation_dist: str
+    mu: float
+    omega: float
+    alpha: float
+    beta: float
+    nu: float | None
+    last_sigma2: float
+    last_residual: float
+    fit_window_start: str
+    fit_window_end: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DccState:
+    bucket_order: list[str]
+    model_family: str
+    a: float
+    b: float
+    long_run_corr: dict[str, dict[str, float]]
+    last_q: dict[str, dict[str, float]]
+    last_corr: dict[str, dict[str, float]]
+    fit_window_start: str
+    fit_window_end: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class JumpOverlayState:
+    bucket_jump_models: dict[str, dict[str, float]]
+    systemic_jump: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DistributionModelState:
+    model_family: str
+    frequency: str
+    bucket_order: list[str]
+    garch_states: list[GarchState] = field(default_factory=list)
+    dcc_state: DccState | None = None
+    jump_state: JumpOverlayState | None = None
+    regime_overrides: dict[str, Any] = field(default_factory=dict)
+    source_dataset_version: str = ""
+    calibration_version: str = ""
+    available_modes: list[str] = field(default_factory=list)
+    selected_mode: str = "static_gaussian"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class ParamVersionMeta:
     version_id: str
     source_bundle_id: str
@@ -184,6 +246,7 @@ class CalibrationResult:
     goal_solver_params: Any
     runtime_optimizer_params: Any
     ev_params: Any
+    distribution_model_state: DistributionModelState | dict[str, Any] | None = None
     calibration_quality: str = "full"
     degraded_domains: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)

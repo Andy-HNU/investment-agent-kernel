@@ -252,3 +252,87 @@ def test_run_goal_solver_lightweight_uses_lightweight_paths_and_seed(
     assert risk.max_drawdown_90pct == 0.18
     assert captured["n_paths"] == goal_solver_input_base["solver_params"]["n_paths_lightweight"]
     assert captured["seed"] == goal_solver_input_base["solver_params"]["seed"]
+
+
+@pytest.mark.contract
+def test_run_goal_solver_surfaces_dual_probability_fields_and_implied_required_return(
+    goal_solver_input_base,
+    monkeypatch,
+):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["current_portfolio_value"] = 100_000.0
+    solver_input["cashflow_plan"]["monthly_contribution"] = 0.0
+    solver_input["goal"]["goal_amount"] = 200_000.0
+    solver_input["goal"]["horizon_months"] = 12
+
+    def _fake_run_monte_carlo(weights, *_args, **_kwargs):
+        del weights
+        probability = 0.61
+        return (
+            probability,
+            {"expected_terminal_value": 180_000.0},
+            RiskSummary(
+                max_drawdown_90pct=0.15,
+                terminal_value_tail_mean_95=125_000.0,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.04,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+    recommended = result.recommended_result
+
+    assert recommended.success_probability == 0.61
+    assert recommended.bucket_success_probability == pytest.approx(0.61)
+    assert recommended.product_adjusted_success_probability == pytest.approx(0.61)
+    assert recommended.implied_required_annual_return == pytest.approx(1.0, rel=1e-3)
+    assert recommended.simulation_mode_requested == "static_gaussian"
+    assert recommended.simulation_mode_used == "static_gaussian"
+    assert any("simulation_mode_used=static_gaussian" in note for note in result.solver_notes)
+
+
+@pytest.mark.contract
+def test_run_goal_solver_uses_garch_t_mode_when_calibration_supplies_distribution_state(goal_solver_input_base):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["solver_params"]["simulation_mode_requested"] = "garch_t"
+    solver_input["solver_params"]["distribution_model_state"] = {
+        "model_family": "garch_t_dcc",
+        "available_modes": ["garch_t", "garch_t_dcc"],
+        "frequency": "daily",
+        "garch_states": [
+            {
+                "bucket_id": "equity_cn",
+                "innovation_dist": "student_t",
+                "nu": 7.0,
+                "last_sigma2": 0.0324,
+            }
+        ],
+        "dcc_state": None,
+        "jump_state": None,
+        "regime_overrides": {},
+    }
+
+    result = run_goal_solver(solver_input)
+
+    assert result.simulation_mode_requested == "garch_t"
+    assert result.simulation_mode_used == "garch_t"
+    assert result.simulation_mode_auto_selected is False
+    assert result.recommended_result.simulation_mode_used == "garch_t"
+    assert any("simulation_mode_used=garch_t" in note for note in result.solver_notes)
+
+
+@pytest.mark.contract
+def test_run_goal_solver_explicitly_falls_back_to_static_gaussian_when_distribution_state_missing(goal_solver_input_base):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["solver_params"]["simulation_mode_requested"] = "garch_t_dcc_jump"
+    solver_input["solver_params"]["distribution_model_state"] = None
+
+    result = run_goal_solver(solver_input)
+
+    assert result.simulation_mode_requested == "garch_t_dcc_jump"
+    assert result.simulation_mode_used == "static_gaussian"
+    assert result.simulation_mode_auto_selected is True
+    assert result.recommended_result.simulation_mode_used == "static_gaussian"
+    assert any("simulation_mode_fallback requested=garch_t_dcc_jump used=static_gaussian" in note for note in result.solver_notes)

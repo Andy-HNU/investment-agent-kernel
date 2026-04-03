@@ -48,6 +48,9 @@ _HIGH_RISK_ACTION_TYPES = {
     "add_cash_sat",
     "reduce_defense",
 }
+_FEE_TIER_PENALTY = {"low": 0.002, "medium": 0.006, "high": 0.012}
+_LIQUIDITY_TIER_PENALTY = {"high": 0.001, "medium": 0.004, "low": 0.009}
+_WRAPPER_TYPE_PENALTY = {"etf": 0.001, "fund": 0.004, "bond": 0.002, "cash_mgmt": 0.001, "other": 0.005}
 
 
 def _obj(value: Any) -> Any:
@@ -72,6 +75,15 @@ def _text(value: Any) -> str | None:
         return None
     normalized = str(getattr(value, "value", value)).strip()
     return normalized or None
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _bool(value: Any) -> bool:
@@ -1411,25 +1423,90 @@ def _build_audit_record(
     )
 
 
-def _build_execution_plan_summary(execution_plan: Any) -> dict[str, Any]:
+def _product_evidence_panel(execution_plan: Any) -> dict[str, Any]:
+    data = _as_dict(execution_plan)
+    items = list(data.get("items") or [])
+    panel_items: list[dict[str, Any]] = []
+    total_penalty = 0.0
+
+    for item in items:
+        entry = _as_dict(item)
+        primary_product = _as_dict(entry.get("primary_product"))
+        target_weight = float(entry.get("target_weight", 0.0) or 0.0)
+        fee_tier = _first_text(primary_product.get("fee_tier")) or "medium"
+        liquidity_tier = _first_text(primary_product.get("liquidity_tier")) or "medium"
+        wrapper_type = _first_text(primary_product.get("wrapper_type")) or "other"
+        risk_labels = list(primary_product.get("risk_labels") or [])
+        risk_penalty = 0.001 * min(len(risk_labels), 3)
+        overlay_penalty = target_weight * (
+            _FEE_TIER_PENALTY.get(fee_tier, 0.006)
+            + _LIQUIDITY_TIER_PENALTY.get(liquidity_tier, 0.004)
+            + _WRAPPER_TYPE_PENALTY.get(wrapper_type, 0.005)
+            + risk_penalty
+        )
+        total_penalty += overlay_penalty
+        panel_items.append(
+            {
+                "asset_bucket": entry.get("asset_bucket"),
+                "target_weight": round(target_weight, 4),
+                "primary_product_id": _first_text(entry.get("primary_product_id"), primary_product.get("product_id")),
+                "primary_product_name": _first_text(primary_product.get("product_name")),
+                "provider_symbol": _first_text(primary_product.get("provider_symbol")),
+                "wrapper_type": wrapper_type,
+                "fee_tier": fee_tier,
+                "liquidity_tier": liquidity_tier,
+                "risk_labels": risk_labels,
+                "overlay_penalty": round(overlay_penalty, 6),
+            }
+        )
+
+    return {
+        "items": panel_items,
+        "overlay_total_penalty": round(total_penalty, 6),
+    }
+
+
+def _build_execution_plan_summary(execution_plan: Any, goal_solver_output: Any | None = None) -> dict[str, Any]:
     if execution_plan is None:
         return {}
     if hasattr(execution_plan, "summary"):
-        return _as_dict(execution_plan.summary())
-    data = _as_dict(execution_plan)
-    items = list(data.get("items") or [])
-    return {
-        "plan_id": data.get("plan_id"),
-        "plan_version": data.get("plan_version"),
-        "source_run_id": data.get("source_run_id"),
-        "source_allocation_id": data.get("source_allocation_id"),
-        "status": data.get("status"),
-        "item_count": len(items),
-        "confirmation_required": bool(data.get("confirmation_required", True)),
-        "warning_count": len(list(data.get("warnings") or [])),
-        "approved_at": data.get("approved_at"),
-        "superseded_by_plan_id": data.get("superseded_by_plan_id"),
-    }
+        summary = _as_dict(execution_plan.summary())
+    else:
+        data = _as_dict(execution_plan)
+        items = list(data.get("items") or [])
+        summary = {
+            "plan_id": data.get("plan_id"),
+            "plan_version": data.get("plan_version"),
+            "source_run_id": data.get("source_run_id"),
+            "source_allocation_id": data.get("source_allocation_id"),
+            "status": data.get("status"),
+            "item_count": len(items),
+            "confirmation_required": bool(data.get("confirmation_required", True)),
+            "warning_count": len(list(data.get("warnings") or [])),
+            "approved_at": data.get("approved_at"),
+            "superseded_by_plan_id": data.get("superseded_by_plan_id"),
+        }
+    goal_output = _as_dict(goal_solver_output)
+    recommended_result = _as_dict(goal_output.get("recommended_result"))
+    bucket_success_probability = _float_or_none(
+        recommended_result.get("bucket_success_probability", recommended_result.get("success_probability"))
+    )
+    product_panel = _product_evidence_panel(execution_plan)
+    overlay_total_penalty = float(product_panel.get("overlay_total_penalty", 0.0) or 0.0)
+    product_adjusted_success_probability = None
+    product_probability_delta = None
+    if bucket_success_probability is not None:
+        product_adjusted_success_probability = max(0.0, min(1.0, bucket_success_probability - overlay_total_penalty))
+        product_probability_delta = round(product_adjusted_success_probability - bucket_success_probability, 6)
+    summary.update(
+        {
+            "bucket_success_probability": bucket_success_probability,
+            "product_adjusted_success_probability": product_adjusted_success_probability,
+            "product_probability_delta": product_probability_delta,
+            "product_evidence_panel": product_panel,
+        }
+    )
+    return summary
 
 
 def _execution_plan_item_index_from_payload(payload: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
@@ -1605,7 +1682,7 @@ def _build_persistence_plan(
     control_flags: dict[str, Any],
 ) -> OrchestratorPersistencePlan:
     execution_plan_payload = _payload(execution_plan)
-    execution_plan_summary = _build_execution_plan_summary(execution_plan)
+    execution_plan_summary = _build_execution_plan_summary(execution_plan, goal_solver_output)
     return OrchestratorPersistencePlan(
         run_record={
             "run_id": run_id,
@@ -1891,13 +1968,13 @@ def run_orchestrator(
     control_directives = _unique_items(control_directives)
 
     # Prefer pending plan summary (if present) when monthly has no new plan
-    execution_plan_summary = _build_execution_plan_summary(execution_plan)
+    execution_plan_summary = _build_execution_plan_summary(execution_plan, goal_solver_output)
     if (
         not execution_plan_summary
         and effective_trigger.workflow_type == WorkflowType.MONTHLY
         and plan_context.get("pending")
     ):
-        execution_plan_summary = _build_execution_plan_summary(plan_context.get("pending"))
+        execution_plan_summary = _build_execution_plan_summary(plan_context.get("pending"), goal_solver_output)
     card_build_input = _build_card_input(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,

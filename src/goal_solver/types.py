@@ -132,6 +132,12 @@ class GoalSolverParams:
     market_assumptions: MarketAssumptions
     shrinkage_factor: float = 0.85
     ranking_mode_default: RankingMode = RankingMode.SUFFICIENCY_FIRST
+    simulation_mode_requested: str = "static_gaussian"
+    simulation_frequency: str = "monthly"
+    regime_sensitive: bool = False
+    jump_overlay_enabled: bool = False
+    distribution_model_state: dict[str, Any] | None = None
+    simulation_mode_auto_selected: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -192,9 +198,15 @@ class SuccessProbabilityResult:
     expected_terminal_value: float
     risk_summary: RiskSummary
     is_feasible: bool
+    bucket_success_probability: float | None = None
+    product_adjusted_success_probability: float | None = None
+    implied_required_annual_return: float | None = None
     display_name: str = ""
     summary: str = ""
     complexity_label: str = ""
+    simulation_mode_requested: str = "static_gaussian"
+    simulation_mode_used: str = "static_gaussian"
+    product_overlay_notes: list[str] = field(default_factory=list)
     infeasibility_reasons: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -215,6 +227,9 @@ class GoalSolverOutput:
     risk_budget: RiskBudget
     solver_notes: list[str] = field(default_factory=list)
     params_version: str = ""
+    simulation_mode_requested: str = "static_gaussian"
+    simulation_mode_used: str = "static_gaussian"
+    simulation_mode_auto_selected: bool = False
     candidate_menu: list[dict[str, Any]] = field(default_factory=list)
     fallback_suggestions: list[dict[str, Any]] = field(default_factory=list)
     disclaimer: str = "以下为模型模拟结果，不是历史回测收益承诺。"

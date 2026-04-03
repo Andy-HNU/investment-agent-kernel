@@ -488,6 +488,103 @@ def test_run_calibration_uses_historical_dataset_metadata_for_market_assumptions
 
 
 @pytest.mark.contract
+def test_run_calibration_builds_distribution_model_state_for_garch_t_with_verified_history(
+    goal_solver_input_base,
+    live_portfolio_base,
+    calibration_result_base,
+):
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw={
+            **_market_raw(goal_solver_input_base),
+            "historical_dataset": {
+                "source_name": "akshare",
+                "source_ref": "akshare:eq-bond-gold",
+                "version_id": "akshare:verified-2520",
+                "as_of": "2026-03-29",
+                "frequency": "daily",
+                "lookback_days": 2520,
+                "lookback_months": 120,
+                "series_dates": [f"2016-01-{(idx % 28) + 1:02d}" for idx in range(2520)],
+                "return_series": {
+                    "equity_cn": [0.03] * 840 + [-0.04] * 840 + [0.028] * 840,
+                    "bond_cn": [0.0003] * 2520,
+                    "gold": [0.01] * 630 + [-0.015] * 630 + [0.009] * 1260,
+                    "satellite": [0.05] * 700 + [-0.06] * 700 + [0.042] * 1120,
+                },
+            },
+        },
+        account_raw=_account_raw(goal_solver_input_base, live_portfolio_base),
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=calibration_result_base["behavior_state"],
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+    )
+
+    result = run_calibration(
+        bundle,
+        prior_calibration=None,
+        default_goal_solver_params={"simulation_mode_requested": "garch_t"},
+    )
+
+    assert result.goal_solver_params.simulation_mode_requested == "garch_t"
+    assert result.goal_solver_params.simulation_mode_auto_selected is False
+    assert result.goal_solver_params.distribution_model_state is not None
+    assert result.goal_solver_params.distribution_model_state["available_modes"] == ["garch_t", "garch_t_dcc"]
+    assert result.goal_solver_params.distribution_model_state["model_family"] == "garch_t_dcc"
+    assert any("distribution_model_state requested=garch_t selected=garch_t" in note for note in result.notes)
+
+
+@pytest.mark.contract
+def test_run_calibration_marks_mode_auto_selected_when_verified_distribution_state_unavailable(
+    goal_solver_input_base,
+    live_portfolio_base,
+    calibration_result_base,
+):
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw={
+            **_market_raw(goal_solver_input_base),
+            "historical_dataset": {
+                "source_name": "akshare",
+                "source_ref": "akshare:short-window",
+                "version_id": "akshare:short-window",
+                "as_of": "2026-03-29",
+                "frequency": "daily",
+                "lookback_days": 120,
+                "lookback_months": 6,
+                "series_dates": [f"2025-09-{(idx % 28) + 1:02d}" for idx in range(120)],
+                "return_series": {
+                    "equity_cn": [0.001 if idx % 2 == 0 else -0.0008 for idx in range(120)],
+                },
+            },
+        },
+        account_raw=_account_raw(goal_solver_input_base, live_portfolio_base),
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=calibration_result_base["behavior_state"],
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+    )
+
+    result = run_calibration(
+        bundle,
+        prior_calibration=None,
+        default_goal_solver_params={"simulation_mode_requested": "garch_t_dcc_jump"},
+    )
+
+    assert result.goal_solver_params.simulation_mode_requested == "garch_t_dcc_jump"
+    assert result.goal_solver_params.simulation_mode_auto_selected is True
+    assert result.goal_solver_params.distribution_model_state is None
+    assert any(
+        "distribution_model_state requested=garch_t_dcc_jump selected=static_gaussian auto_selected=true"
+        in note
+        for note in result.notes
+    )
+
+
+@pytest.mark.contract
 def test_run_calibration_policy_news_signal_surfaces_manual_review_and_market_notes(
     goal_solver_input_base,
     live_portfolio_base,

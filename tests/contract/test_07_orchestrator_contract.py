@@ -210,6 +210,13 @@ def test_run_orchestrator_onboarding_persistence_plan_includes_execution_plan_ar
     assert execution_plan["payload"]["plan_id"] == result.execution_plan.plan_id
     assert result.card_build_input.execution_plan_summary["plan_id"] == result.execution_plan.plan_id
     assert result.decision_card["execution_plan_summary"]["plan_id"] == result.execution_plan.plan_id
+    assert result.decision_card["execution_plan_summary"]["product_adjusted_success_probability"] <= (
+        result.decision_card["execution_plan_summary"]["bucket_success_probability"]
+    )
+    assert result.decision_card["product_evidence_panel"]["items"]
+    assert result.decision_card["probability_explanation"]["recommended_allocation_name"] == (
+        result.goal_solver_output.recommended_result.allocation_name
+    )
 
 
 @pytest.mark.contract

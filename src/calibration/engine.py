@@ -9,7 +9,11 @@ from calibration.types import (
     BehaviorState,
     CalibrationResult,
     ConstraintState,
+    DccState,
+    DistributionModelState,
     EVParams,
+    GarchState,
+    JumpOverlayState,
     MarketState,
     ParamVersionMeta,
     RuntimeOptimizerParams,
@@ -63,6 +67,18 @@ def _quality_text(value: Any) -> str:
     if value is None:
         return "full"
     return str(getattr(value, "value", value))
+
+
+_SIMULATION_MODE_ORDER = {
+    "static_gaussian": 0,
+    "garch_t": 1,
+    "garch_t_dcc": 2,
+    "garch_t_dcc_jump": 3,
+}
+
+
+def _mode_rank(mode: str) -> int:
+    return _SIMULATION_MODE_ORDER.get(str(mode or "static_gaussian").strip().lower(), 0)
 
 
 def _severity_domains(bundle_data: dict[str, Any], severity: str) -> list[str]:
@@ -532,6 +548,214 @@ def _normalize_weight_vector(weights: dict[str, float]) -> dict[str, float]:
     return {key: max(float(value), 0.0) / total for key, value in weights.items()}
 
 
+def _fit_window_bounds(series_dates: list[str]) -> tuple[str, str]:
+    if not series_dates:
+        return "", ""
+    return str(series_dates[0]), str(series_dates[-1])
+
+
+def _regime_override_payload(market_state: MarketState) -> dict[str, Any]:
+    risk_multiplier = 1.0
+    if market_state.risk_environment == "high":
+        risk_multiplier = 1.20
+    elif market_state.risk_environment == "low":
+        risk_multiplier = 0.90
+
+    corr_multiplier = 1.0
+    if market_state.correlation_spike_alert or market_state.volatility_regime == "high":
+        corr_multiplier = 1.20
+    elif market_state.volatility_regime == "low":
+        corr_multiplier = 0.95
+
+    jump_multiplier = 1.0
+    if market_state.sentiment_stress == "high" or market_state.liquidity_stress == "high":
+        jump_multiplier = 1.35
+
+    return {
+        "risk_multiplier": risk_multiplier,
+        "correlation_multiplier": corr_multiplier,
+        "jump_intensity_multiplier": jump_multiplier,
+        "policy_regime": market_state.policy_regime,
+        "macro_uncertainty": market_state.macro_uncertainty,
+        "sentiment_stress": market_state.sentiment_stress,
+        "liquidity_stress": market_state.liquidity_stress,
+    }
+
+
+def _derive_available_distribution_modes(historical_dataset: Any | None) -> tuple[list[str], str | None]:
+    if historical_dataset is None:
+        return [], "historical_dataset_missing"
+    lookback_days = int(historical_dataset.lookback_days or 0)
+    coverage_status = str(historical_dataset.coverage_status or "").strip().lower()
+    cycle_reasons = list(historical_dataset.cycle_reasons or [])
+    series_count = sum(1 for series in historical_dataset.return_series.values() if series)
+
+    if lookback_days < 126:
+        return [], "insufficient_history_days"
+    if lookback_days < 504:
+        return [], "history_too_short_for_garch"
+
+    available_modes = ["garch_t"]
+    if lookback_days >= 2520 and coverage_status == "verified" and not cycle_reasons and series_count >= 2:
+        available_modes.append("garch_t_dcc")
+    return available_modes, None if available_modes else "distribution_model_unavailable"
+
+
+def _strongest_available_mode(requested_mode: str, available_modes: list[str]) -> str:
+    request_rank = _mode_rank(requested_mode)
+    compatible = [mode for mode in available_modes if _mode_rank(mode) <= request_rank]
+    if compatible:
+        return max(compatible, key=_mode_rank)
+    return "static_gaussian"
+
+
+def _build_jump_overlay_state(historical_dataset: Any, bucket_order: list[str]) -> JumpOverlayState | None:
+    bucket_jump_models: dict[str, dict[str, float]] = {}
+    systemic_hits = 0
+    systemic_total = 0
+    min_len = min((len(historical_dataset.return_series.get(bucket) or []) for bucket in bucket_order), default=0)
+    for idx in range(min_len):
+        cross_bucket_extremes = 0
+        for bucket in bucket_order:
+            series = [float(value) for value in list(historical_dataset.return_series.get(bucket) or [])]
+            if not series:
+                continue
+            mean_value = float(sum(series) / len(series))
+            variance = float(sum((value - mean_value) ** 2 for value in series) / max(len(series), 1))
+            std_value = float(max(variance, 0.0) ** 0.5)
+            if std_value <= 1e-9:
+                continue
+            if abs(series[idx] - mean_value) >= 3.0 * std_value:
+                cross_bucket_extremes += 1
+        if cross_bucket_extremes >= 2:
+            systemic_hits += 1
+        systemic_total += 1
+
+    for bucket in bucket_order:
+        series = [float(value) for value in list(historical_dataset.return_series.get(bucket) or [])]
+        if len(series) < 30:
+            continue
+        mean_value = float(sum(series) / len(series))
+        variance = float(sum((value - mean_value) ** 2 for value in series) / len(series))
+        std_value = float(max(variance, 0.0) ** 0.5)
+        if std_value <= 1e-9:
+            continue
+        extremes = [value for value in series if abs(value - mean_value) >= 3.0 * std_value]
+        if not extremes:
+            continue
+        bucket_jump_models[bucket] = {
+            "jump_intensity": float(len(extremes) / len(series)),
+            "jump_mean": float(sum(extremes) / len(extremes)),
+            "jump_vol": float((sum((value - (sum(extremes) / len(extremes))) ** 2 for value in extremes) / len(extremes)) ** 0.5),
+            "positive_jump_share": float(sum(1 for value in extremes if value > 0.0) / len(extremes)),
+        }
+
+    if not bucket_jump_models:
+        return None
+
+    systemic_jump = {
+        "enabled": systemic_hits > 0,
+        "intensity": float(systemic_hits / max(systemic_total, 1)),
+        "loading": {bucket: (-1.0 if "bond" not in bucket and bucket not in {"gold", "cash", "money_market"} else 0.3) for bucket in bucket_order},
+        "jump_size_dist": {"family": "student_t", "df": 6, "scale": 0.05},
+    }
+    return JumpOverlayState(bucket_jump_models=bucket_jump_models, systemic_jump=systemic_jump)
+
+
+def _build_distribution_model_state(
+    *,
+    historical_dataset: Any | None,
+    market_assumptions: MarketAssumptions,
+    market_state: MarketState,
+    requested_mode: str,
+    calibration_version: str,
+) -> tuple[DistributionModelState | None, str, bool, list[str]]:
+    available_modes, unavailable_reason = _derive_available_distribution_modes(historical_dataset)
+    if historical_dataset is None or not available_modes:
+        selected_mode = "static_gaussian"
+        auto_selected = requested_mode != selected_mode
+        notes = [
+            "distribution_model_state "
+            f"requested={requested_mode} selected={selected_mode} auto_selected={'true' if auto_selected else 'false'} "
+            f"reason={unavailable_reason or 'historical_dataset_missing'}"
+        ]
+        return None, selected_mode, auto_selected, notes
+
+    bucket_order = [bucket for bucket in sorted(market_assumptions.expected_returns) if historical_dataset.return_series.get(bucket)]
+    fit_window_start, fit_window_end = _fit_window_bounds(list(historical_dataset.series_dates or []))
+    garch_states: list[GarchState] = []
+    for bucket in bucket_order:
+        series = [float(value) for value in list(historical_dataset.return_series.get(bucket) or [])]
+        if not series:
+            continue
+        mean_value = float(sum(series) / len(series))
+        variance = float(sum((value - mean_value) ** 2 for value in series) / len(series))
+        last_value = float(series[-1] - mean_value) if series else 0.0
+        garch_states.append(
+            GarchState(
+                bucket_id=bucket,
+                model_family="garch11",
+                innovation_dist="student_t",
+                mu=mean_value,
+                omega=max(variance * 0.05, 1e-8),
+                alpha=0.08,
+                beta=0.90,
+                nu=7.0,
+                last_sigma2=max(variance, 1e-8),
+                last_residual=last_value,
+                fit_window_start=fit_window_start,
+                fit_window_end=fit_window_end,
+            )
+        )
+
+    dcc_state: DccState | None = None
+    if "garch_t_dcc" in available_modes:
+        long_run_corr = {
+            bucket: {
+                peer: float(market_assumptions.correlation_matrix.get(bucket, {}).get(peer, 1.0 if bucket == peer else 0.0))
+                for peer in bucket_order
+            }
+            for bucket in bucket_order
+        }
+        dcc_state = DccState(
+            bucket_order=bucket_order,
+            model_family="dcc11",
+            a=0.03,
+            b=0.94,
+            long_run_corr=long_run_corr,
+            last_q=long_run_corr,
+            last_corr=long_run_corr,
+            fit_window_start=fit_window_start,
+            fit_window_end=fit_window_end,
+        )
+
+    jump_state = _build_jump_overlay_state(historical_dataset, bucket_order)
+    if jump_state is not None and "garch_t_dcc" in available_modes and int(historical_dataset.lookback_days or 0) >= 2520:
+        available_modes = [*available_modes, "garch_t_dcc_jump"]
+
+    selected_mode = requested_mode if requested_mode == "static_gaussian" else _strongest_available_mode(requested_mode, available_modes)
+    auto_selected = selected_mode != requested_mode
+    state = DistributionModelState(
+        model_family=max(available_modes, key=_mode_rank),
+        frequency=str(historical_dataset.frequency or "daily"),
+        bucket_order=bucket_order,
+        garch_states=garch_states,
+        dcc_state=dcc_state,
+        jump_state=jump_state if "garch_t_dcc_jump" in available_modes else None,
+        regime_overrides=_regime_override_payload(market_state),
+        source_dataset_version=str(historical_dataset.version_id or ""),
+        calibration_version=calibration_version,
+        available_modes=available_modes,
+        selected_mode=selected_mode,
+    )
+    notes = [
+        "distribution_model_state "
+        f"requested={requested_mode} selected={selected_mode} auto_selected={'true' if auto_selected else 'false'} "
+        f"available_modes={','.join(available_modes)} dataset_version={historical_dataset.version_id}"
+    ]
+    return state, selected_mode, auto_selected, notes
+
+
 def _param_meta_from_prior(prior_calibration: CalibrationResult | dict[str, Any] | None) -> dict[str, Any]:
     return _obj(_obj(prior_calibration or {}).get("param_version_meta", {}))
 
@@ -540,10 +764,18 @@ def update_goal_solver_params(
     market_assumptions: MarketAssumptions,
     prior_params: GoalSolverParams | dict[str, Any] | None,
     created_at: Any,
+    distribution_model_state: DistributionModelState | dict[str, Any] | None = None,
+    simulation_mode_auto_selected: bool = False,
 ) -> GoalSolverParams:
     params = _coerce_goal_solver_params(prior_params, market_assumptions)
     params.version = _version_id("goal_solver_params", created_at)
     params.market_assumptions = market_assumptions
+    params.distribution_model_state = _obj(distribution_model_state) if distribution_model_state is not None else None
+    if params.distribution_model_state:
+        params.simulation_frequency = str(params.distribution_model_state.get("frequency") or params.simulation_frequency or "daily")
+        params.regime_sensitive = bool(params.distribution_model_state.get("regime_overrides"))
+        params.jump_overlay_enabled = bool(params.distribution_model_state.get("jump_state"))
+    params.simulation_mode_auto_selected = bool(simulation_mode_auto_selected)
     return params
 
 
@@ -700,6 +932,12 @@ def _coerce_goal_solver_params(
         market_assumptions=market_assumptions,
         shrinkage_factor=float(data.get("shrinkage_factor", 0.85) or 0.85),
         ranking_mode_default=RankingMode(data.get("ranking_mode_default", "sufficiency_first")),
+        simulation_mode_requested=str(data.get("simulation_mode_requested", "static_gaussian") or "static_gaussian"),
+        simulation_frequency=str(data.get("simulation_frequency", "monthly") or "monthly"),
+        regime_sensitive=bool(data.get("regime_sensitive", False)),
+        jump_overlay_enabled=bool(data.get("jump_overlay_enabled", False)),
+        distribution_model_state=_obj(data.get("distribution_model_state")),
+        simulation_mode_auto_selected=bool(data.get("simulation_mode_auto_selected", False)),
     )
 
 
@@ -781,11 +1019,35 @@ def run_calibration(
     ):
         notes.append("market assumptions reused from prior due degraded market input")
 
+    requested_simulation_mode = str(
+        _obj(default_goal_solver_params or prior_data.get("goal_solver_params") or {}).get(
+            "simulation_mode_requested",
+            "static_gaussian",
+        )
+        or "static_gaussian"
+    )
+    historical_dataset = build_historical_dataset_snapshot(
+        _obj(bundle_data.get("historical_dataset_metadata") or bundle_data.get("market", {}).get("historical_dataset"))
+    )
+    distribution_model_state, selected_simulation_mode, simulation_mode_auto_selected, distribution_notes = (
+        _build_distribution_model_state(
+            historical_dataset=historical_dataset,
+            market_assumptions=market_assumptions,
+            market_state=market_state,
+            requested_mode=requested_simulation_mode,
+            calibration_version=_version_id("calibration", created_at),
+        )
+    )
+    notes.extend(distribution_notes)
+
     goal_solver_params = update_goal_solver_params(
         market_assumptions,
         default_goal_solver_params or prior_data.get("goal_solver_params"),
         created_at=created_at,
+        distribution_model_state=distribution_model_state.to_dict() if distribution_model_state is not None else None,
+        simulation_mode_auto_selected=simulation_mode_auto_selected,
     )
+    goal_solver_params.simulation_mode_requested = requested_simulation_mode
     runtime_optimizer_params = update_runtime_optimizer_params(
         market_state,
         constraint_state,
@@ -863,6 +1125,11 @@ def run_calibration(
             f"inference_method={market_assumptions.inference_method or 'none'} "
             f"cycle_reasons={','.join(market_assumptions.cycle_reasons) or 'none'}"
         )
+    notes.append(
+        "simulation_mode "
+        f"requested={requested_simulation_mode} used={selected_simulation_mode} "
+        f"auto_selected={'true' if simulation_mode_auto_selected else 'false'}"
+    )
 
     reason = _derive_updated_reason(
         calibration_quality,
@@ -899,6 +1166,7 @@ def run_calibration(
         goal_solver_params=goal_solver_params,
         runtime_optimizer_params=runtime_optimizer_params,
         ev_params=ev_params,
+        distribution_model_state=distribution_model_state.to_dict() if distribution_model_state is not None else None,
         calibration_quality=calibration_quality,
         degraded_domains=degraded_domains,
         notes=notes,
