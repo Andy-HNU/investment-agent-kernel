@@ -143,6 +143,7 @@ class GoalSolverParams:
     shrinkage_factor: float = 0.85
     ranking_mode_default: RankingMode = RankingMode.SUFFICIENCY_FIRST
     simulation_mode: SimulationMode = SimulationMode.STATIC_GAUSSIAN
+    auto_select_simulation_mode: bool = True
     distribution_input: DistributionInput | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -229,7 +230,9 @@ class GoalSolverOutput:
     ranking_mode_used: RankingMode
     structure_budget: StructureBudget
     risk_budget: RiskBudget
+    simulation_mode_requested: SimulationMode = SimulationMode.STATIC_GAUSSIAN
     simulation_mode_used: SimulationMode = SimulationMode.STATIC_GAUSSIAN
+    simulation_mode_auto_selected: bool = False
     highest_probability_result: SuccessProbabilityResult | None = None
     solver_notes: list[str] = field(default_factory=list)
     params_version: str = ""
@@ -244,6 +247,7 @@ class GoalSolverOutput:
         data["all_results"] = [item.to_dict() for item in self.all_results]
         data["structure_budget"] = self.structure_budget.to_dict()
         data["risk_budget"] = self.risk_budget.to_dict()
+        data["simulation_mode_requested"] = self.simulation_mode_requested.value
         data["ranking_mode_used"] = self.ranking_mode_used.value
         data["simulation_mode_used"] = self.simulation_mode_used.value
         data["highest_probability_result"] = (

@@ -358,7 +358,9 @@ def test_run_goal_solver_exposes_simulation_mode_highest_probability_and_implied
 
     result = run_goal_solver(solver_input)
 
+    assert result.simulation_mode_requested == SimulationMode.GARCH_T_DCC_JUMP
     assert result.simulation_mode_used == SimulationMode.GARCH_T_DCC
+    assert result.simulation_mode_auto_selected is False
     assert result.recommended_allocation.name == "defensive"
     assert result.highest_probability_result is not None
     assert result.highest_probability_result.allocation_name == "growth"
@@ -366,12 +368,12 @@ def test_run_goal_solver_exposes_simulation_mode_highest_probability_and_implied
     assert result.recommended_result.implied_required_annual_return == pytest.approx(0.1111111111111111, rel=1e-6)
     assert any(
         note
-        == "simulation_mode requested=garch_t_dcc_jump used=garch_t_dcc downgrade=true missing=jump_state"
+        == "simulation_mode requested=garch_t_dcc_jump used=garch_t_dcc auto_selected=false change=downgrade downgrade=true missing=jump_state"
         for note in result.solver_notes
     )
     assert any(
         note
-        == "probability_model method=conditional_monte_carlo distribution=garch_t_dcc requested_mode=garch_t_dcc_jump historical_backtest_used=false"
+        == "probability_model method=conditional_monte_carlo distribution=garch_t_dcc requested_mode=garch_t_dcc_jump auto_selected=false historical_backtest_used=false"
         for note in result.solver_notes
     )
     assert any(
@@ -396,7 +398,7 @@ def test_run_goal_solver_downgrades_when_distribution_input_shape_is_only_partia
     assert result.simulation_mode_used == SimulationMode.STATIC_GAUSSIAN
     assert any(
         note
-        == "simulation_mode requested=garch_t_dcc used=static_gaussian downgrade=true missing=garch_t_state,dcc_state"
+        == "simulation_mode requested=garch_t_dcc used=static_gaussian auto_selected=false change=downgrade downgrade=true missing=garch_t_state,dcc_state"
         for note in result.solver_notes
     )
 
@@ -433,7 +435,9 @@ def test_run_goal_solver_fallback_path_preserves_resolved_advanced_mode(goal_sol
 
     result = run_goal_solver(solver_input)
 
+    assert result.simulation_mode_requested == SimulationMode.GARCH_T_DCC_JUMP
     assert result.simulation_mode_used == SimulationMode.GARCH_T_DCC_JUMP
+    assert result.simulation_mode_auto_selected is False
     assert captured["mode"] == SimulationMode.GARCH_T_DCC_JUMP
     assert captured["distribution_input"] is not None
 

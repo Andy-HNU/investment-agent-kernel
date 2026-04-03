@@ -1,0 +1,10 @@
+我是 claw_demo，目前有12万资产，每月投入6000，想在3年内达到45万，风险偏好中等，当前持仓55%沪深300 30%债券 15%黄金
+show status for user claw_demo
+show user for user claw_demo
+monthly follow-up for user claw_demo
+quarterly review for user claw_demo
+event review for user claw_demo after drawdown do not rebalance yet
+confirm plan for user claw_demo
+用户 claw_demo 暂不执行，备注：继续观察
+explain why probability changed for user claw_demo
+explain why replace plan for user claw_demo

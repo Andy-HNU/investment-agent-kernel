@@ -754,13 +754,6 @@ def update_goal_solver_params(
     params.version = _version_id("goal_solver_params", created_at)
     params.market_assumptions = market_assumptions
     params.distribution_input = _distribution_input_from_model_state(distribution_model_state)
-    if params.simulation_mode == SimulationMode.STATIC_GAUSSIAN:
-        if params.distribution_input.jump_state:
-            params.simulation_mode = SimulationMode.GARCH_T_DCC_JUMP
-        elif params.distribution_input.dcc_state:
-            params.simulation_mode = SimulationMode.GARCH_T_DCC
-        elif params.distribution_input.garch_t_state:
-            params.simulation_mode = SimulationMode.GARCH_T
     return params
 
 
@@ -926,6 +919,7 @@ def _coerce_goal_solver_params(
         shrinkage_factor=float(data.get("shrinkage_factor", 0.85) or 0.85),
         ranking_mode_default=RankingMode(str(getattr(ranking_mode_default, "value", ranking_mode_default))),
         simulation_mode=SimulationMode(str(getattr(simulation_mode, "value", simulation_mode))),
+        auto_select_simulation_mode=bool(data.get("auto_select_simulation_mode", True)),
         distribution_input=distribution_input,
     )
 

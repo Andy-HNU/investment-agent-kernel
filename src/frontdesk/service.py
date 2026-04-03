@@ -370,6 +370,12 @@ def _build_refresh_summary(
     }
     domain_details: list[dict[str, Any]] = []
     externally_fetched_items = list((input_provenance or {}).get("externally_fetched", []))
+    system_inferred_items = list((input_provenance or {}).get("system_inferred", []))
+    reused_baseline_market_context = any(
+        str(item.get("field")) in {"baseline.market_context", "market_raw"}
+        and "baseline" in str(item.get("value") or "") or "baseline" in str(item.get("note") or "")
+        for item in system_inferred_items
+    )
     for key in ("market_raw", "account_raw", "behavior_raw", "live_portfolio"):
         domain_meta = _as_dict((meta.get("domains") or {}).get(key))
         domain_source = "externally_fetched" if any(str(item.get("field")) == key for item in externally_fetched_items) else None
@@ -405,7 +411,7 @@ def _build_refresh_summary(
         freshness = "degraded"
     elif "fallback" in external_domain_states and freshness != "degraded":
         freshness = "fallback"
-    return {
+    summary = {
         "workflow_type": workflow_type,
         "as_of": as_of or None,
         "source_ref": source_ref or None,
@@ -423,6 +429,18 @@ def _build_refresh_summary(
         "next_action_label": next_action_label,
         "error": external_snapshot_error,
     }
+    if reused_baseline_market_context and int(counts.get("externally_fetched", 0)) <= 0 and not fallback_active:
+        summary["next_action"] = (
+            "refresh_before_next_runtime_decision"
+            if workflow_type in {"monthly", "event"}
+            else "refresh_before_next_review"
+        )
+        summary["next_action_label"] = (
+            "当前沿用上一版已落账的市场上下文，下一次运行时决策前建议刷新 provider"
+            if workflow_type in {"monthly", "event"}
+            else "当前沿用上一版已落账的市场上下文，下一次复盘前建议刷新 provider"
+        )
+    return summary
 
 
 def _merge_external_provenance(
@@ -942,10 +960,60 @@ def _quarterly_raw_inputs(
     profile: dict[str, Any],
     as_of: str,
     baseline_run_id: str | None,
+    baseline_goal_solver_input: dict[str, Any] | None = None,
+    baseline_result_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     bundle = build_user_onboarding_inputs(_profile_model(profile), as_of=as_of)
     raw_inputs = deepcopy(bundle.raw_inputs)
     raw_inputs["live_portfolio"] = deepcopy(bundle.live_portfolio)
+    baseline_goal_solver_input = deepcopy(baseline_goal_solver_input or {})
+    baseline_result_payload = deepcopy(baseline_result_payload or {})
+    baseline_snapshot_bundle = dict(baseline_result_payload.get("snapshot_bundle") or {})
+    baseline_market_raw = dict(baseline_snapshot_bundle.get("market") or {})
+    for field_name in (
+        "historical_return_panel",
+        "regime_feature_snapshot",
+        "jump_event_history",
+        "bucket_proxy_mapping",
+    ):
+        if field_name not in baseline_market_raw and baseline_snapshot_bundle.get(field_name) is not None:
+            baseline_market_raw[field_name] = deepcopy(baseline_snapshot_bundle[field_name])
+    if baseline_market_raw:
+        raw_inputs["market_raw"] = baseline_market_raw
+        default_assumed_items = list((raw_inputs.get("input_provenance") or {}).get("default_assumed", []))
+        raw_inputs["input_provenance"]["default_assumed"] = [
+            item for item in default_assumed_items if str(item.get("field")) != "market_raw"
+        ]
+        raw_inputs.setdefault("input_provenance", {}).setdefault("system_inferred", []).append(
+            {
+                "field": "market_raw",
+                "label": "市场输入",
+                "value": "reused_latest_baseline_snapshot_bundle",
+                "note": "季度复盘沿用上一版基线的市场上下文，而不是重新回退到默认市场快照。",
+            }
+        )
+    baseline_goal_solver_input_data = dict(baseline_goal_solver_input)
+    if baseline_goal_solver_input_data:
+        merged_goal_solver_input = deepcopy(baseline_goal_solver_input_data)
+        current_goal_solver_input = dict(raw_inputs.get("goal_solver_input") or {})
+        for field_name in (
+            "account_profile_id",
+            "snapshot_id",
+            "goal",
+            "cashflow_plan",
+            "current_portfolio_value",
+            "candidate_allocations",
+            "constraints",
+            "ranking_mode_override",
+            "goal_semantics",
+            "profile_dimensions",
+        ):
+            if field_name in current_goal_solver_input:
+                merged_goal_solver_input[field_name] = deepcopy(current_goal_solver_input[field_name])
+        raw_inputs["goal_solver_input"] = merged_goal_solver_input
+    baseline_policy_news_signals = list(baseline_snapshot_bundle.get("policy_news_signals") or [])
+    if baseline_policy_news_signals:
+        raw_inputs["policy_news_signals"] = deepcopy(baseline_policy_news_signals)
     raw_inputs.setdefault("input_provenance", {}).setdefault("system_inferred", []).append(
         {
             "field": "baseline.run_id",
@@ -954,6 +1022,15 @@ def _quarterly_raw_inputs(
             "note": "季度复盘会基于最新画像重新生成基线",
         }
     )
+    if baseline_market_raw:
+        raw_inputs.setdefault("input_provenance", {}).setdefault("system_inferred", []).append(
+            {
+                "field": "baseline.market_context",
+                "label": "沿用历史市场上下文",
+                "value": "reused_latest_baseline_snapshot_bundle",
+                "note": "未提供新的外部市场快照时，季度复盘会沿用最近基线的历史收益、regime 和 jump 上下文，避免静默退回 static_gaussian。",
+            }
+        )
     return raw_inputs
 
 
@@ -1330,6 +1407,8 @@ def run_frontdesk_followup(
             profile=active_profile,
             as_of=as_of,
             baseline_run_id=baseline["run_id"],
+            baseline_goal_solver_input=goal_solver_input,
+            baseline_result_payload=baseline.get("result_payload") or {},
         )
         if workflow_type == "quarterly"
         else _workflow_raw_inputs(

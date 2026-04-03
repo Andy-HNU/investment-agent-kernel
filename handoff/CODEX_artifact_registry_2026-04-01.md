@@ -51,6 +51,19 @@
 
 ### v1 阶段结论与验收
 
+- `handoff/CODEX_v1.1_phase_reports_2026-04-03.md`
+  - `v1.1` 六条主线的正式汇总报告
+  - 面向非技术读者说明“做成了什么、没做什么、为什么”
+
+- `handoff/CODEX_v1.1_system_test_report_2026-04-03.md`
+  - `v1.1` 的统一测试与验证证据入口
+
+- `handoff/CODEX_v1.1_year_acceptance_dialogue_2026-04-03.md`
+  - `v1.1` 的 1 年逻辑验收对话报告
+
+- `handoff/CODEX_v1.1_claw_natural_language_acceptance_2026-04-03.md`
+  - `v1.1` 的真实 OpenClaw 自然语言输入/输出与 bridge JSONL 验收
+
 - `handoff/CODEX_v1_phase_reports_2026-04-02.md`
   - roadmap 五个阶段的正式汇总报告
   - 面向非技术读者说明“做成了什么、没做什么、为什么”
@@ -166,6 +179,8 @@
 
 - 看模块语义：先看 `system/`
 - 看当前开发顺序：先看 `CODEX_v1.1_task_map_2026-04-02.md`
+- 看 `v1.1` 正式结论：看 `CODEX_v1.1_phase_reports_2026-04-03.md`
+- 看 `v1.1` 测试与自然语言验收：看 `CODEX_v1.1_system_test_report_2026-04-03.md`、`CODEX_v1.1_year_acceptance_dialogue_2026-04-03.md`、`CODEX_v1.1_claw_natural_language_acceptance_2026-04-03.md`
 - 看 `v1` 历史路线：再看 `CODEX_kernel_first_roadmap_2026-04-01.md`
 - 看 v1 阶段结论：看 `CODEX_v1_phase_reports_2026-04-02.md`
 - 看验证证据：看 `CODEX_v1_system_test_report_2026-04-02.md`

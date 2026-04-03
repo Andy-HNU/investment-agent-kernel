@@ -78,6 +78,26 @@ def test_bridge_routes_feedback_even_when_run_id_contains_monthly_and_colons(tmp
     assert feedback["result"]["execution_feedback"]["feedback_status"] == "executed"
 
 
+def test_bridge_routes_feedback_to_latest_run_when_run_id_is_omitted(tmp_path):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    onboarding = handle_task(
+        "onboard user bridge_feedback_latest assets 50000 monthly 5000 goal 200000 in 36 months risk moderate",
+        db_path=str(db),
+    )
+    run_id = onboarding["result"]["run_id"]
+
+    feedback = handle_task(
+        "用户 bridge_feedback_latest 暂不执行，actual_action: hold 备注：继续观察",
+        db_path=str(db),
+    )
+
+    assert feedback["intent"]["name"] == "feedback"
+    assert feedback["result"]["execution_feedback"]["source_run_id"] == run_id
+    assert feedback["result"]["execution_feedback"]["feedback_status"] == "skipped"
+
+
 def test_bridge_can_approve_single_pending_plan_without_explicit_plan_id(tmp_path):
     from integration.openclaw.bridge import handle_task
 
@@ -91,6 +111,24 @@ def test_bridge_can_approve_single_pending_plan_without_explicit_plan_id(tmp_pat
     assert pending
 
     approved = handle_task("confirm plan for user bridge_approve", db_path=str(db))
+
+    assert approved["intent"]["name"] == "approve_plan"
+    assert approved["result"]["status"] == "approved"
+    assert approved["result"]["approved_execution_plan"]["plan_id"] == pending["plan_id"]
+
+
+def test_bridge_can_approve_pending_plan_with_version_only_phrase(tmp_path):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    onboarding = handle_task(
+        "onboard user bridge_approve_v assets 50000 monthly 5000 goal 200000 in 36 months risk moderate",
+        db_path=str(db),
+    )
+    pending = onboarding["result"]["user_state"]["pending_execution_plan"]
+    assert pending
+
+    approved = handle_task("confirm plan v2 for user bridge_approve_v", db_path=str(db))
 
     assert approved["intent"]["name"] == "approve_plan"
     assert approved["result"]["status"] == "approved"

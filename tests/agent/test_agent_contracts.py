@@ -33,6 +33,10 @@ def test_agent_tool_contracts_and_routing_exist_with_required_keys(repo_root: Pa
         assert isinstance(tools[name].get('inputs'), list)
         assert isinstance(tools[name].get('outputs'), list)
 
+    assert tools['frontdesk.followup.monthly'].get('nl_bridge_inputs') == ['account_profile_id']
+    assert tools['frontdesk.followup.quarterly'].get('nl_bridge_inputs') == ['account_profile_id']
+    assert tools['frontdesk.followup.event'].get('nl_bridge_inputs') == ['account_profile_id', 'event_context']
+
     # Skill routing
     routing_path = repo_root / 'agent' / 'routing' / 'skill_routing.json'
     assert routing_path.exists(), f"missing {routing_path}"
@@ -67,3 +71,29 @@ def test_openclaw_docs_exist(repo_root: Path = Path('.').resolve()):
     assert (base / 'contracts' / 'bridge_contract.md').exists()
     assert (base / 'config' / 'schema.json').exists()
     assert (base / 'acceptance.md').exists()
+    assert (base / 'examples' / 'tasks.txt').exists()
+
+
+def test_openclaw_docs_cover_runtime_intents(repo_root: Path = Path('.').resolve()):
+    bridge_doc = (repo_root / 'integration' / 'openclaw' / 'contracts' / 'bridge_contract.md').read_text(encoding='utf-8')
+    acceptance_doc = (repo_root / 'integration' / 'openclaw' / 'acceptance.md').read_text(encoding='utf-8')
+
+    for intent in (
+        'onboarding',
+        'show_user',
+        'status',
+        'monthly',
+        'quarterly',
+        'event',
+        'feedback',
+        'approve_plan',
+        'explain_probability',
+        'explain_plan_change',
+    ):
+        assert intent in bridge_doc, f"bridge contract missing intent: {intent}"
+
+    assert 'integration/openclaw/examples/tasks.txt' in acceptance_doc
+    assert 'profile_json' in bridge_doc
+    assert 'not yet parsed from the v1.1 NL bridge' in bridge_doc
+    for intent in ('show_user', 'approve_plan', 'feedback'):
+        assert intent in acceptance_doc

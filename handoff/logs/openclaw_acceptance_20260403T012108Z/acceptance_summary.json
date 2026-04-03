@@ -1,0 +1,26 @@
+{
+  "artifact_dir": "/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/v1.1-delivery/handoff/logs/openclaw_acceptance_20260403T012108Z",
+  "bridge_tasks_file": "integration/openclaw/examples/tasks.txt",
+  "bridge_log": "/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/v1.1-delivery/handoff/logs/openclaw_acceptance_20260403T012108Z/openclaw-bridge-20260403-104922.jsonl",
+  "nl_logs": [
+    "/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/v1.1-delivery/handoff/logs/openclaw_acceptance_20260403T012108Z/openclaw_onboarding_nl_2026-04-03.log",
+    "/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/v1.1-delivery/handoff/logs/openclaw_acceptance_20260403T012108Z/openclaw_probability_nl_2026-04-03.log",
+    "/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/v1.1-delivery/handoff/logs/openclaw_acceptance_20260403T012108Z/openclaw_plan_change_nl_2026-04-03.log"
+  ],
+  "covered_bridge_intents": [
+    "onboarding",
+    "status",
+    "show_user",
+    "monthly",
+    "quarterly",
+    "event",
+    "approve_plan",
+    "feedback",
+    "explain_probability",
+    "explain_plan_change"
+  ],
+  "notes": [
+    "bridge batch acceptance re-run after v1.1 fixes",
+    "real openclaw agent NL explanation turns captured separately"
+  ]
+}

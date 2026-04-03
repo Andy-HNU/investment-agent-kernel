@@ -189,9 +189,21 @@ def _supports_simulation_mode(
 def _resolve_simulation_mode(
     params: GoalSolverParams,
     notes: list[str] | None = None,
-) -> tuple[SimulationMode, SimulationMode]:
+) -> tuple[SimulationMode, SimulationMode, bool]:
     requested_mode = params.simulation_mode
-    if _supports_simulation_mode(requested_mode, params.distribution_input):
+    auto_selected = False
+    if (
+        requested_mode == SimulationMode.STATIC_GAUSSIAN
+        and params.auto_select_simulation_mode
+        and params.distribution_input is not None
+    ):
+        used_mode = SimulationMode.STATIC_GAUSSIAN
+        for mode in reversed(_SIMULATION_MODE_ORDER[1:]):
+            if _supports_simulation_mode(mode, params.distribution_input):
+                used_mode = mode
+                auto_selected = True
+                break
+    elif _supports_simulation_mode(requested_mode, params.distribution_input):
         used_mode = requested_mode
     else:
         requested_index = _SIMULATION_MODE_ORDER.index(requested_mode)
@@ -205,14 +217,23 @@ def _resolve_simulation_mode(
         missing = [
             key for key in _SIMULATION_MODE_REQUIREMENTS[requested_mode] if not availability.get(key, False)
         ]
+        requested_index = _SIMULATION_MODE_ORDER.index(requested_mode)
+        used_index = _SIMULATION_MODE_ORDER.index(used_mode)
+        change = "unchanged"
+        if used_index > requested_index:
+            change = "upgrade"
+        elif used_index < requested_index:
+            change = "downgrade"
         notes.append(
             "simulation_mode "
             f"requested={requested_mode.value} "
             f"used={used_mode.value} "
-            f"downgrade={'true' if used_mode != requested_mode else 'false'} "
+            f"auto_selected={'true' if auto_selected else 'false'} "
+            f"change={change} "
+            f"downgrade={'true' if change == 'downgrade' else 'false'} "
             f"missing={','.join(missing) if missing else 'none'}"
         )
-    return requested_mode, used_mode
+    return requested_mode, used_mode, auto_selected
 
 
 def _build_cashflow_schedule(plan: CashFlowPlan, horizon_months: int) -> list[float]:
@@ -1020,6 +1041,7 @@ def _append_model_honesty_notes(
     shrinkage_factor_note_value: str,
     requested_mode: SimulationMode,
     used_mode: SimulationMode,
+    auto_selected: bool,
 ) -> None:
     historical_backtest_used = bool(inp.solver_params.market_assumptions.historical_backtest_used)
     distribution_input = inp.solver_params.distribution_input or DistributionInput()
@@ -1038,6 +1060,7 @@ def _append_model_honesty_notes(
             "method=conditional_monte_carlo "
             f"distribution={used_mode.value} "
             f"requested_mode={requested_mode.value} "
+            f"auto_selected={'true' if auto_selected else 'false'} "
             f"historical_backtest_used={'true' if historical_backtest_used else 'false'}"
         )
         notes.append(
@@ -1079,7 +1102,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
     cashflow_schedule = _build_cashflow_schedule(inp.cashflow_plan, inp.goal.horizon_months)
     notes: list[str] = []
     ranking_mode = _resolve_ranking_mode(inp, notes)
-    requested_mode, used_mode = _resolve_simulation_mode(params, notes)
+    requested_mode, used_mode, auto_selected = _resolve_simulation_mode(params, notes)
     simulation_market_state = _mode_adjusted_market_assumptions(
         params.market_assumptions,
         used_mode,
@@ -1210,6 +1233,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
         shrinkage_factor_note_value,
         requested_mode,
         used_mode,
+        auto_selected,
     )
     return GoalSolverOutput(
         input_snapshot_id=inp.snapshot_id,
@@ -1220,7 +1244,9 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
         ranking_mode_used=ranking_mode,
         structure_budget=structure_budget,
         risk_budget=risk_budget,
+        simulation_mode_requested=requested_mode,
         simulation_mode_used=used_mode,
+        simulation_mode_auto_selected=auto_selected,
         highest_probability_result=highest_probability_result,
         solver_notes=notes,
         params_version=params.version,
@@ -1233,7 +1259,7 @@ def run_goal_solver_lightweight(
     baseline_inp: GoalSolverInput | dict[str, Any],
 ) -> tuple[float, RiskSummary]:
     baseline_inp = _goal_solver_input_from_any(baseline_inp)
-    _requested_mode, used_mode = _resolve_simulation_mode(baseline_inp.solver_params)
+    _requested_mode, used_mode, _auto_selected = _resolve_simulation_mode(baseline_inp.solver_params)
     cashflow_schedule = _build_cashflow_schedule(
         baseline_inp.cashflow_plan,
         baseline_inp.goal.horizon_months,

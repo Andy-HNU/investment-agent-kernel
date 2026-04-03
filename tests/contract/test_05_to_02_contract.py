@@ -292,15 +292,17 @@ def test_calibration_to_goal_solver_preserves_requested_simulation_mode_and_dist
         calibration_result.goal_solver_params.distribution_input.garch_t_state["equity_cn"]["nu"]
         != calibration_result.goal_solver_params.distribution_input.garch_t_state["bond_cn"]["nu"]
     )
+    assert solver_output.simulation_mode_requested == SimulationMode.GARCH_T_DCC_JUMP
     assert solver_output.simulation_mode_used == SimulationMode.GARCH_T_DCC_JUMP
+    assert solver_output.simulation_mode_auto_selected is False
     assert any(
         note
-        == "simulation_mode requested=garch_t_dcc_jump used=garch_t_dcc_jump downgrade=false missing=none"
+        == "simulation_mode requested=garch_t_dcc_jump used=garch_t_dcc_jump auto_selected=false change=unchanged downgrade=false missing=none"
         for note in solver_output.solver_notes
     )
     assert any(
         note
-        == "probability_model method=conditional_monte_carlo distribution=garch_t_dcc_jump requested_mode=garch_t_dcc_jump historical_backtest_used=true"
+        == "probability_model method=conditional_monte_carlo distribution=garch_t_dcc_jump requested_mode=garch_t_dcc_jump auto_selected=false historical_backtest_used=true"
         for note in solver_output.solver_notes
     )
 
@@ -335,11 +337,14 @@ def test_calibration_promotes_default_static_mode_when_distribution_inputs_are_a
 
     solver_output = run_goal_solver(updated_solver_input)
 
-    assert calibration_result.goal_solver_params.simulation_mode == SimulationMode.GARCH_T_DCC_JUMP
+    assert calibration_result.goal_solver_params.simulation_mode == SimulationMode.STATIC_GAUSSIAN
+    assert calibration_result.goal_solver_params.auto_select_simulation_mode is True
+    assert solver_output.simulation_mode_requested == SimulationMode.STATIC_GAUSSIAN
     assert solver_output.simulation_mode_used == SimulationMode.GARCH_T_DCC_JUMP
+    assert solver_output.simulation_mode_auto_selected is True
     assert any(
         note
-        == "simulation_mode requested=garch_t_dcc_jump used=garch_t_dcc_jump downgrade=false missing=none"
+        == "simulation_mode requested=static_gaussian used=garch_t_dcc_jump auto_selected=true change=upgrade downgrade=false missing=none"
         for note in solver_output.solver_notes
     )
 
@@ -382,9 +387,11 @@ def test_calibration_to_goal_solver_downgrades_when_historical_and_jump_inputs_a
     assert calibration_result.goal_solver_params.distribution_input.garch_t_state == {}
     assert calibration_result.goal_solver_params.distribution_input.dcc_state == {}
     assert calibration_result.goal_solver_params.distribution_input.jump_state == {}
+    assert solver_output.simulation_mode_requested == SimulationMode.GARCH_T_DCC_JUMP
     assert solver_output.simulation_mode_used == SimulationMode.STATIC_GAUSSIAN
+    assert solver_output.simulation_mode_auto_selected is False
     assert any(
         note
-        == "simulation_mode requested=garch_t_dcc_jump used=static_gaussian downgrade=true missing=garch_t_state,dcc_state,jump_state"
+        == "simulation_mode requested=garch_t_dcc_jump used=static_gaussian auto_selected=false change=downgrade downgrade=true missing=garch_t_state,dcc_state,jump_state"
         for note in solver_output.solver_notes
     )

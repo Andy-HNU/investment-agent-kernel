@@ -1,0 +1,4 @@
+PYTHONPATH=src:. python3 scripts/accept_openclaw_bridge.py --file integration/openclaw/examples/tasks.txt --db handoff/logs/openclaw_acceptance_20260403T012108Z/frontdesk.sqlite --artifacts handoff/logs/openclaw_acceptance_20260403T012108Z
+openclaw agent --agent main --message <onboarding prompt> --json > handoff/logs/openclaw_acceptance_20260403T012108Z/openclaw_onboarding_nl_2026-04-03.log
+openclaw agent --agent main --message <probability prompt> --json > handoff/logs/openclaw_acceptance_20260403T012108Z/openclaw_probability_nl_2026-04-03.log
+openclaw agent --agent main --message <plan-change prompt> --json > handoff/logs/openclaw_acceptance_20260403T012108Z/openclaw_plan_change_nl_2026-04-03.log

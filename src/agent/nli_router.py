@@ -196,7 +196,7 @@ def route(text: str) -> Intent:
         return Intent(name="show_user", confidence=0.9)
     if re.search(r"(季度|季检|季度复查|\bquarterly\b|\bquarter review\b|\bquarterly review\b)", t):
         return Intent(name="quarterly", confidence=0.88)
-    if re.search(r"(executed|skipped|i did|took action|已执行|跳过|没执行|未执行)", t):
+    if re.search(r"(executed|skipped|i did|took action|已执行|跳过|没执行|未执行|暂不执行)", t):
         return Intent(name="feedback", confidence=0.86)
     if re.search(r"(\bshow status\b|\bstatus\b|\bhow am i doing\b|\bcheck user\b|状态查询|查看状态|近况)", t):
         return Intent(name="status", confidence=0.84)
@@ -291,17 +291,17 @@ def parse_status(text: str) -> dict[str, Any]:
 
 def parse_approve_plan(text: str) -> dict[str, Any]:
     account = parse_status(text)
-    plan_id = (
-        _extract_first(r"(?:plan(?:[_ ]?id)?|方案)\s*[:=：]?\s*([^\s,，]+)", text)
-        or _extract_first(r"(?:approve plan|confirm plan|promote|批准方案|确认方案|采用方案)\s+([^\s,，]+)", text)
-    )
-    if plan_id in {"for", "user", "账户", "用户"}:
-        plan_id = None
     version = (
         _extract_number(r"(?:version|版本)\s*[:=：]?\s*([0-9]+)", text)
         or _extract_number(r"\bv([0-9]+)\b", text)
         or 1
     )
+    plan_id = (
+        _extract_first(r"(?:plan(?:[_ ]?id)?|方案)\s*[:=：]?\s*([^\s,，]+)", text)
+        or _extract_first(r"(?:approve plan|confirm plan|promote|批准方案|确认方案|采用方案)\s+([^\s,，]+)", text)
+    )
+    if plan_id in {"for", "user", "账户", "用户"} or re.fullmatch(r"v?\d+", str(plan_id or ""), flags=re.I):
+        plan_id = None
     return {**account, "plan_id": plan_id, "plan_version": int(version)}
 
 

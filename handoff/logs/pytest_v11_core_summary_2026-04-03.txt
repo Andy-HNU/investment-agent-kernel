@@ -1,0 +1,3 @@
+command=PYTHONPATH=src:. python3 -m pytest -q --ignore=tests/smoke/test_18_live_timeseries_provider_smoke.py
+exit_code=0
+summary=core regression suite passed; live external provider smoke split into separate summary artifact

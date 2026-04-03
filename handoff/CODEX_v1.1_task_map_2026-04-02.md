@@ -19,12 +19,15 @@
 ## 当前执行进度
 
 - 已交付：
-  - `主线 1 / Wave M1`：建模 raw contract 与 `simulation_mode` 诚实披露骨架
+  - `主线 1`：建模 raw contract、`simulation_mode` 诚实披露、conditional simulation mode、baseline distribution context 保持、概率解释升级
   - `主线 2`：真实公开源 provider 架构、历史数据缓存、real-source smoke 第一版
-  - `主线 3`：`satellite / qdii / overseas` 产品映射第一版、execution plan `coverage_ratio / blocked / degraded` 闭环、frontdesk/orchestrator/CLI 持久化与展示收口
-- 当前未完成：
-  - `主线 1 / Wave M2-M4`：真正的 `GARCH / DCC / Jump` 校准与概率解释升级
-  - `主线 4-6`：Claw shell 闭环、年度验收 defect 全清、概率 UX 升级
+  - `主线 3`：`satellite / qdii / overseas` 产品映射、execution plan `coverage_ratio / blocked / degraded` 闭环、frontdesk/orchestrator/CLI 持久化与展示收口
+  - `主线 4`：Claw shell v1.1 bridge 闭环，覆盖 `quarterly / event / show_user / approve_plan / feedback / explain_*`
+  - `主线 5`：1 年逻辑验收 defect 收口与正式验收脚本
+  - `主线 6`：概率 UX / explanation 升级
+- 当前状态：
+  - `v1.1` 已完成第一次正式交付
+  - 仍保留边界：真实券商 API、memory/cron 自动绑定、长期 provider health monitoring
 
 ## 协作约定
 

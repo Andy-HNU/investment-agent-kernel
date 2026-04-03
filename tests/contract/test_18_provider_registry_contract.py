@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from frontdesk.service import run_frontdesk_onboarding
+from frontdesk.service import run_frontdesk_followup, run_frontdesk_onboarding
 from shared.onboarding import UserOnboardingProfile
 from shared.datasets.types import VersionPin
 from snapshot_ingestion.adapters import market_history_adapter
@@ -252,3 +252,114 @@ def test_frontdesk_onboarding_accepts_market_history_provider_fixture(tmp_path, 
     assert summary["simulation_mode_used"] == "garch_t_dcc"
     market_domain = next(item for item in summary["refresh_summary"]["domain_details"] if item["domain"] == "market_raw")
     assert market_domain["freshness_state"] == "fresh"
+
+
+@pytest.mark.contract
+def test_frontdesk_quarterly_and_event_preserve_baseline_distribution_context_without_new_provider(
+    tmp_path,
+    monkeypatch,
+):
+    rows_by_symbol = {
+        "000300": [
+            {"date": "2025-01-31", "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1000.0},
+            {"date": "2025-02-28", "open": 110.0, "high": 110.0, "low": 110.0, "close": 110.0, "volume": 1000.0},
+            {"date": "2025-03-31", "open": 121.0, "high": 121.0, "low": 121.0, "close": 121.0, "volume": 1000.0},
+        ],
+        "511010": [
+            {"date": "2025-01-31", "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1000.0},
+            {"date": "2025-02-28", "open": 101.0, "high": 101.0, "low": 101.0, "close": 101.0, "volume": 1000.0},
+            {"date": "2025-03-31", "open": 102.0, "high": 102.0, "low": 102.0, "close": 102.0, "volume": 1000.0},
+        ],
+        "Au99.99": [
+            {"date": "2025-01-31", "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1000.0},
+            {"date": "2025-02-28", "open": 98.0, "high": 98.0, "low": 98.0, "close": 98.0, "volume": 1000.0},
+            {"date": "2025-03-31", "open": 99.0, "high": 99.0, "low": 99.0, "close": 99.0, "volume": 1000.0},
+        ],
+        "399006": [
+            {"date": "2025-01-31", "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1000.0},
+            {"date": "2025-02-28", "open": 115.0, "high": 115.0, "low": 115.0, "close": 115.0, "volume": 1000.0},
+            {"date": "2025-03-31", "open": 120.0, "high": 120.0, "low": 120.0, "close": 120.0, "volume": 1000.0},
+        ],
+    }
+
+    def _fake_fetch_timeseries(spec, *, pin, cache, allow_fallback=False, return_used_pin=False):
+        del cache, allow_fallback
+        rows = rows_by_symbol[str(spec.symbol)]
+        return (rows, pin) if return_used_pin else rows
+
+    monkeypatch.setattr(market_history_adapter, "fetch_timeseries", _fake_fetch_timeseries)
+
+    db_path = tmp_path / "frontdesk.sqlite"
+    account_profile_id = "market_history_followup_user"
+    provider_config = {
+        "adapter": "market_history",
+        "provider_name": "market_history_akshare_tx",
+        "dataset_id": "cn_core_history",
+        "dataset_cache_dir": str(tmp_path / "dataset-cache"),
+        "historical_cache_dir": str(tmp_path / "historical-cache"),
+        "bucket_series": {
+            "equity_cn": {
+                "provider": "akshare",
+                "kind": "cn_index_daily",
+                "dataset_id": "cn_index_000300",
+                "symbol": "000300",
+                "version_id": "tx-csi300:v1",
+                "source_ref": "akshare://stock_zh_index_daily_tx?series_type=cn_index_daily_tx",
+            },
+            "bond_cn": {
+                "provider": "akshare",
+                "kind": "cn_bond_daily",
+                "dataset_id": "cn_bond_511010",
+                "symbol": "511010",
+                "version_id": "bond-511010:v1",
+                "source_ref": "akshare://bond_zh_hs_daily?series_type=cn_bond_daily",
+            },
+            "gold": {
+                "provider": "akshare",
+                "kind": "cn_gold_spot",
+                "dataset_id": "cn_gold_au9999",
+                "symbol": "Au99.99",
+                "version_id": "gold-au9999:v1",
+                "source_ref": "akshare://spot_hist_sge?series_type=cn_gold_spot",
+            },
+            "satellite": {
+                "provider": "akshare",
+                "kind": "cn_index_daily",
+                "dataset_id": "cn_index_399006",
+                "symbol": "399006",
+                "version_id": "tx-cyb:v1",
+                "source_ref": "akshare://stock_zh_index_daily_tx?series_type=cn_index_daily_tx",
+            },
+        },
+        "coverage_expectation": ["equity_cn", "bond_cn", "gold", "satellite"],
+    }
+
+    onboarding = run_frontdesk_onboarding(
+        _profile(account_profile_id=account_profile_id),
+        db_path=db_path,
+        external_data_config=provider_config,
+    )
+    quarterly = run_frontdesk_followup(
+        account_profile_id=account_profile_id,
+        workflow_type="quarterly",
+        db_path=db_path,
+    )
+    event = run_frontdesk_followup(
+        account_profile_id=account_profile_id,
+        workflow_type="event",
+        event_request=True,
+        event_context={"requested_action": "rebalance_full"},
+        db_path=db_path,
+    )
+
+    assert onboarding["simulation_mode_used"] == "garch_t_dcc"
+    assert quarterly["status"] != "blocked"
+    assert quarterly["simulation_mode_used"] == "garch_t_dcc"
+    quarterly_market_domain = next(
+        item for item in quarterly["refresh_summary"]["domain_details"] if item["domain"] == "market_raw"
+    )
+    assert quarterly_market_domain["source_type"] == "system_inferred"
+    assert quarterly_market_domain["freshness_state"] == "fresh"
+    assert quarterly["refresh_summary"]["next_action"] != "configure_or_enable_provider"
+    assert event["status"] != "blocked"
+    assert event["simulation_mode_used"] == "garch_t_dcc"

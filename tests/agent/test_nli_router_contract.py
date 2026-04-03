@@ -56,6 +56,15 @@ def test_parse_approve_plan_without_explicit_plan_id_keeps_user_context_only():
 
 
 @pytest.mark.contract
+def test_parse_approve_plan_version_only_phrase_uses_version_not_plan_id():
+    parsed = parse_approve_plan("confirm plan v2 for user demo_user")
+
+    assert parsed["account_profile_id"] == "demo_user"
+    assert parsed["plan_id"] is None
+    assert parsed["plan_version"] == 2
+
+
+@pytest.mark.contract
 def test_parse_feedback_allows_colon_run_id_and_chinese_execution_language():
     parsed = parse_feedback("用户 demo_user 已执行，run_id: frontdesk:monthly:001 actual_action: rebalance_partial 备注：已处理")
 
@@ -85,6 +94,7 @@ def test_parse_event_context_respects_negated_rebalance_requests():
         ("show-user for user demo_user", "show_user"),
         ("show status for user demo_user after drawdown", "status"),
         ("用户 demo_user 已执行，run_id: frontdesk:monthly:001 actual_action: rebalance_partial 备注：已处理", "feedback"),
+        ("用户 demo_user 暂不执行，备注：继续观察", "feedback"),
         ("promote for user demo_user", "approve_plan"),
         ("check user demo_user", "status"),
         ("why did the probability change for user demo_user", "explain_probability"),

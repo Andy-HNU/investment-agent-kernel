@@ -119,6 +119,25 @@ def handle_task(task: str, *, db_path: str | Path = DEFAULT_DB_PATH, now: Option
         result = dict(summary)
     elif intent.name == "feedback":
         args = parse_feedback(task)
+        if not args.get("run_id"):
+            snapshot = load_frontdesk_snapshot(args["account_profile_id"], db_path=db_path) or {}
+            latest_run = dict(snapshot.get("latest_run") or {})
+            latest_run_id = latest_run.get("run_id")
+            if latest_run_id:
+                args["run_id"] = latest_run_id
+            else:
+                invocation = {"tool": "frontdesk.feedback", **args}
+                result = {
+                    "workflow": "feedback",
+                    "status": "needs_context",
+                    "note": "no latest run found; explicit run_id is required",
+                }
+                return {
+                    "intent": asdict(intent),
+                    "invocation": invocation,
+                    "result": result,
+                    "at": when,
+                }
         summary = record_frontdesk_execution_feedback(
             account_profile_id=args["account_profile_id"],
             source_run_id=args["run_id"],
