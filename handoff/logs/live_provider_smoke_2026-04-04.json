@@ -1,0 +1,19 @@
+login success!
+logout success!
+{
+  "akshare": {
+    "rows": 56,
+    "first_date": "2026-01-05",
+    "last_date": "2026-03-31",
+    "source_ref": "akshare://stock_zh_a_hist_tx?start_date=20260105&end_date=20260331&adjust=qfq"
+  },
+  "baostock": {
+    "rows": 56,
+    "first_date": "2026-01-05",
+    "last_date": "2026-03-31",
+    "source_ref": "baostock://query_history_k_data_plus?start_date=2026-01-05&end_date=2026-03-31&frequency=d&adjustflag=2"
+  },
+  "yfinance": {
+    "error": "YFRateLimitError: Too Many Requests. Rate limited. Try after a while."
+  }
+}

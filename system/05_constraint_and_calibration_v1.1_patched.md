@@ -1044,3 +1044,87 @@ class DistributionModelState:
 - 是否启用 DCC
 - 是否启用 jump overlay
 - 若降级，降级原因是什么
+
+---
+
+## 附录 C：v1.2 真实源优先、产品修正与默认降级补充
+
+### C.1 正式路径默认请求最强模式
+
+`v1.2` 开始，05 在没有显式覆盖时，默认请求：
+
+- `simulation_mode_requested = garch_t_dcc_jump`
+
+05 的职责不是保证一定命中最高模式，而是：
+
+- 在真实历史可用时，优先请求最强模式
+- 再根据：
+  - `lookback_days`
+  - `coverage_status`
+  - `cycle_reasons`
+  - jump 可用性
+  自动降级到最强可用模式
+
+### C.2 降级不是失败，静默才是失败
+
+正式降级链：
+
+- `garch_t_dcc_jump`
+- `garch_t_dcc`
+- `garch_t`
+- `static_gaussian`
+
+要求：
+
+- 降级必须带原因
+- 原因必须写入 `CalibrationResult.notes`
+- `GoalSolverParams.simulation_mode_auto_selected` 必须正确反映本次是否降级
+
+### C.3 周期覆盖与模式上限
+
+`v1.2` 下，分布模式上限至少受以下条件约束：
+
+- 历史长度不足：不得进入高阶模式
+- 周期覆盖不足：不得进入 `dcc` 与 `jump` 的完整口径
+- 推算历史占比过高：允许进入模型，但要保守降权并反映到可用模式/notes
+
+典型含义：
+
+- 历史足够但周期不足：可落到 `garch_t`
+- 历史足够且周期覆盖充分：可进一步进入 `garch_t_dcc`
+- 再满足 jump 条件：才进入 `garch_t_dcc_jump`
+
+### C.4 产品修正口径的校准职责
+
+05 不直接计算 `product_adjusted_success_probability`，但要为产品修正提供校准基础：
+
+- 产品/包装层的风险标签
+- 推算历史权重
+- regime 下的风险乘数
+- 当前数据质量与可解释性标记
+
+这些信息进入下游后，用于把桶级成功率修正成产品级成功率。
+
+### C.5 正式 notes 最小集合
+
+`CalibrationResult.notes` 在 `v1.2` 至少应覆盖：
+
+- `requested_mode`
+- `selected_mode`
+- `available_modes`
+- `dataset_version`
+- `historical_coverage_status`
+- `observed_history_days`
+- `inferred_history_days`
+- `policy_signal` 是否参与
+- `regime_override` 是否参与
+
+### C.6 前瞻验证支持
+
+05 必须支持“锚点前建模、锚点后回放”的前瞻验证：
+
+- 任一 calibration run 都必须可回答：
+  - 当前只用了哪些锚点前数据
+  - 数据版本是什么
+  - 当前模式是什么
+- 不允许 calibration 在 forward validation 中泄露未来数据

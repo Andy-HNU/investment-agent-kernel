@@ -932,7 +932,9 @@ def _coerce_goal_solver_params(
         market_assumptions=market_assumptions,
         shrinkage_factor=float(data.get("shrinkage_factor", 0.85) or 0.85),
         ranking_mode_default=RankingMode(data.get("ranking_mode_default", "sufficiency_first")),
-        simulation_mode_requested=str(data.get("simulation_mode_requested", "static_gaussian") or "static_gaussian"),
+        simulation_mode_requested=str(
+            data.get("simulation_mode_requested", "garch_t_dcc_jump") or "garch_t_dcc_jump"
+        ),
         simulation_frequency=str(data.get("simulation_frequency", "monthly") or "monthly"),
         regime_sensitive=bool(data.get("regime_sensitive", False)),
         jump_overlay_enabled=bool(data.get("jump_overlay_enabled", False)),
@@ -1022,9 +1024,9 @@ def run_calibration(
     requested_simulation_mode = str(
         _obj(default_goal_solver_params or prior_data.get("goal_solver_params") or {}).get(
             "simulation_mode_requested",
-            "static_gaussian",
+            "garch_t_dcc_jump",
         )
-        or "static_gaussian"
+        or "garch_t_dcc_jump"
     )
     historical_dataset = build_historical_dataset_snapshot(
         _obj(bundle_data.get("historical_dataset_metadata") or bundle_data.get("market", {}).get("historical_dataset"))

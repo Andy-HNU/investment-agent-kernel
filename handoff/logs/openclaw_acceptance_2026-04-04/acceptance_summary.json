@@ -1,0 +1,18 @@
+{
+  "task_count": 12,
+  "workflows": [
+    "onboard",
+    "explain_probability",
+    "explain_data_basis",
+    "show_user",
+    "sync_observed_portfolio",
+    "quarterly",
+    "event",
+    "daily_monitor",
+    "explain_plan_change",
+    "explain_execution_policy",
+    "approve_plan",
+    "status"
+  ],
+  "jsonl_path": "/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/v1-2-delivery/handoff/logs/openclaw_acceptance_2026-04-04/openclaw-bridge-v12.jsonl"
+}

@@ -1,0 +1,58 @@
+{
+  "anchor_count": 3,
+  "hit_rate": 0.3333333333333333,
+  "avg_predicted_success_probability": 0.47413333333333335,
+  "avg_product_adjusted_success_probability": 0.47413333333333335,
+  "avg_brier_score_bucket": 0.4599056266666666,
+  "avg_brier_score_product_adjusted": 0.4599056266666666,
+  "results": [
+    {
+      "anchor_date": "2021-01-01",
+      "horizon_months": 36,
+      "goal_amount": 245000.0,
+      "simulation_mode_used": "garch_t",
+      "predicted_success_probability": 0.7352,
+      "predicted_product_adjusted_success_probability": 0.7352,
+      "realized_terminal_value": 185836.63898390403,
+      "goal_achieved": false,
+      "future_observed_days": 726,
+      "historical_dataset_version": "real_source_market_history:20210101",
+      "future_dataset_version": "real_source_market_history:20240101",
+      "recommended_allocation_name": "satellite_light__moderate__04",
+      "brier_score_bucket": 0.54051904,
+      "brier_score_product_adjusted": 0.54051904
+    },
+    {
+      "anchor_date": "2022-01-03",
+      "horizon_months": 36,
+      "goal_amount": 245000.0,
+      "simulation_mode_used": "garch_t",
+      "predicted_success_probability": 0.4722,
+      "predicted_product_adjusted_success_probability": 0.4722,
+      "realized_terminal_value": 227472.67169693118,
+      "goal_achieved": false,
+      "future_observed_days": 728,
+      "historical_dataset_version": "real_source_market_history:20220103",
+      "future_dataset_version": "real_source_market_history:20250103",
+      "recommended_allocation_name": "liquidity_buffered__moderate__03",
+      "brier_score_bucket": 0.22297284,
+      "brier_score_product_adjusted": 0.22297284
+    },
+    {
+      "anchor_date": "2023-01-03",
+      "horizon_months": 36,
+      "goal_amount": 245000.0,
+      "simulation_mode_used": "garch_t",
+      "predicted_success_probability": 0.215,
+      "predicted_product_adjusted_success_probability": 0.215,
+      "realized_terminal_value": 264891.6720426765,
+      "goal_achieved": true,
+      "future_observed_days": 726,
+      "historical_dataset_version": "real_source_market_history:20230103",
+      "future_dataset_version": "real_source_market_history:20260103",
+      "recommended_allocation_name": "liquidity_buffered__moderate__03",
+      "brier_score_bucket": 0.616225,
+      "brier_score_product_adjusted": 0.616225
+    }
+  ]
+}

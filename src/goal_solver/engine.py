@@ -512,141 +512,142 @@ def _run_monte_carlo(
         )
     else:
         ordered_buckets = [bucket for bucket in sorted(weights) if float(weights.get(bucket, 0.0)) > 0.0]
-        bucket_weights = np.array([float(weights[bucket]) for bucket in ordered_buckets], dtype=float)
-        garch_state_map = _distribution_garch_state_map(distribution_model_state)
-        dcc_state = _distribution_dcc_state(distribution_model_state)
-        jump_state = _distribution_jump_state(distribution_model_state)
-        risk_multiplier = _regime_sigma_multiplier(distribution_model_state)
-        corr_multiplier = _regime_corr_multiplier(distribution_model_state)
-        jump_multiplier = _regime_jump_multiplier(distribution_model_state)
+        monthly_returns = np.zeros((paths, horizon), dtype=float)
+        if ordered_buckets:
+            bucket_weights = np.array([float(weights[bucket]) for bucket in ordered_buckets], dtype=float)
+            garch_state_map = _distribution_garch_state_map(distribution_model_state)
+            dcc_state = _distribution_dcc_state(distribution_model_state)
+            jump_state = _distribution_jump_state(distribution_model_state)
+            risk_multiplier = _regime_sigma_multiplier(distribution_model_state)
+            corr_multiplier = _regime_corr_multiplier(distribution_model_state)
+            jump_multiplier = _regime_jump_multiplier(distribution_model_state)
 
-        mu_vec = np.array(
-            [
-                ((1.0 + _bucket_expected_return(bucket, market_state)) ** (1.0 / 12.0) - 1.0)
-                if _bucket_expected_return(bucket, market_state) > -0.999
-                else -0.99
-                for bucket in ordered_buckets
-            ],
-            dtype=float,
-        )
-        sigma2_vec = np.array(
-            [
-                max(
-                    float(_obj(garch_state_map.get(bucket, {})).get("last_sigma2", (_bucket_volatility(bucket, market_state) / math.sqrt(12.0)) ** 2)),
-                    1e-8,
-                )
-                * risk_multiplier
-                for bucket in ordered_buckets
-            ],
-            dtype=float,
-        )
-        corr_base = np.array(
-            [
+            mu_vec = np.array(
                 [
-                    float(_bucket_correlation(bucket, peer, market_state))
-                    for peer in ordered_buckets
-                ]
-                for bucket in ordered_buckets
-            ],
-            dtype=float,
-        )
-        if dcc_state:
+                    ((1.0 + _bucket_expected_return(bucket, market_state)) ** (1.0 / 12.0) - 1.0)
+                    if _bucket_expected_return(bucket, market_state) > -0.999
+                    else -0.99
+                    for bucket in ordered_buckets
+                ],
+                dtype=float,
+            )
+            sigma2_vec = np.array(
+                [
+                    max(
+                        float(_obj(garch_state_map.get(bucket, {})).get("last_sigma2", (_bucket_volatility(bucket, market_state) / math.sqrt(12.0)) ** 2)),
+                        1e-8,
+                    )
+                    * risk_multiplier
+                    for bucket in ordered_buckets
+                ],
+                dtype=float,
+            )
             corr_base = np.array(
                 [
                     [
-                        float(_obj(dcc_state.get("last_corr", {})).get(bucket, {}).get(peer, corr_base[row_idx, col_idx]))
+                        float(_bucket_correlation(bucket, peer, market_state))
+                        for peer in ordered_buckets
+                    ]
+                    for bucket in ordered_buckets
+                ],
+                dtype=float,
+            )
+            if dcc_state:
+                corr_base = np.array(
+                    [
+                        [
+                            float(_obj(dcc_state.get("last_corr", {})).get(bucket, {}).get(peer, corr_base[row_idx, col_idx]))
+                            for col_idx, peer in enumerate(ordered_buckets)
+                        ]
+                        for row_idx, bucket in enumerate(ordered_buckets)
+                    ],
+                    dtype=float,
+                )
+            np.fill_diagonal(corr_base, 1.0)
+            q_bar = np.array(
+                [
+                    [
+                        float(_obj(dcc_state.get("long_run_corr", {})).get(bucket, {}).get(peer, corr_base[row_idx, col_idx]))
                         for col_idx, peer in enumerate(ordered_buckets)
                     ]
                     for row_idx, bucket in enumerate(ordered_buckets)
                 ],
                 dtype=float,
-            )
-        np.fill_diagonal(corr_base, 1.0)
-        q_bar = np.array(
-            [
+            ) if dcc_state else corr_base.copy()
+            q_current = np.array(
                 [
-                    float(_obj(dcc_state.get("long_run_corr", {})).get(bucket, {}).get(peer, corr_base[row_idx, col_idx]))
-                    for col_idx, peer in enumerate(ordered_buckets)
-                ]
-                for row_idx, bucket in enumerate(ordered_buckets)
-            ],
-            dtype=float,
-        ) if dcc_state else corr_base.copy()
-        q_current = np.array(
-            [
-                [
-                    float(_obj(dcc_state.get("last_q", {})).get(bucket, {}).get(peer, corr_base[row_idx, col_idx]))
-                    for col_idx, peer in enumerate(ordered_buckets)
-                ]
-                for row_idx, bucket in enumerate(ordered_buckets)
-            ],
-            dtype=float,
-        ) if dcc_state else corr_base.copy()
-        dcc_a = float(dcc_state.get("a", 0.03) or 0.03) if dcc_state else 0.03
-        dcc_b = float(dcc_state.get("b", 0.94) or 0.94) if dcc_state else 0.94
-        monthly_returns = np.zeros((paths, horizon), dtype=float)
-        prev_std_shocks = np.zeros((paths, len(ordered_buckets)), dtype=float)
-        t_df = float(
-            min(
-                max(
                     [
-                        float(_obj(garch_state_map.get(bucket, {})).get("nu", 7.0) or 7.0)
-                        for bucket in ordered_buckets
+                        float(_obj(dcc_state.get("last_q", {})).get(bucket, {}).get(peer, corr_base[row_idx, col_idx]))
+                        for col_idx, peer in enumerate(ordered_buckets)
                     ]
-                    or [7.0]
-                ),
-                30.0,
+                    for row_idx, bucket in enumerate(ordered_buckets)
+                ],
+                dtype=float,
+            ) if dcc_state else corr_base.copy()
+            dcc_a = float(dcc_state.get("a", 0.03) or 0.03) if dcc_state else 0.03
+            dcc_b = float(dcc_state.get("b", 0.94) or 0.94) if dcc_state else 0.94
+            prev_std_shocks = np.zeros((paths, len(ordered_buckets)), dtype=float)
+            t_df = float(
+                min(
+                    max(
+                        [
+                            float(_obj(garch_state_map.get(bucket, {})).get("nu", 7.0) or 7.0)
+                            for bucket in ordered_buckets
+                        ]
+                        or [7.0]
+                    ),
+                    30.0,
+                )
             )
-        )
-        t_df = max(t_df, 4.0)
+            t_df = max(t_df, 4.0)
 
-        for month in range(horizon):
-            if simulation_mode in {"garch_t_dcc", "garch_t_dcc_jump"}:
-                if month > 0:
-                    sample_cov = (prev_std_shocks.T @ prev_std_shocks) / max(paths, 1)
-                    q_current = (1.0 - dcc_a - dcc_b) * q_bar + dcc_a * sample_cov + dcc_b * q_current
-                diag = np.sqrt(np.maximum(np.diag(q_current), 1e-8))
-                corr_matrix = q_current / np.outer(diag, diag)
-            else:
-                corr_matrix = corr_base
-            corr_matrix = np.clip(corr_matrix * corr_multiplier, -0.95, 0.95)
-            np.fill_diagonal(corr_matrix, 1.0)
-            normals = _multivariate_normal_with_corr(rng, corr_matrix, (paths,))
-            t_scale = np.sqrt(t_df / rng.chisquare(t_df, size=paths))[:, None] * _t_scale(t_df)
-            std_shocks = normals * t_scale
-            sigma_vec = np.sqrt(np.maximum(sigma2_vec, 1e-8))
-            bucket_returns = mu_vec + std_shocks * sigma_vec
+            for month in range(horizon):
+                if simulation_mode in {"garch_t_dcc", "garch_t_dcc_jump"}:
+                    if month > 0:
+                        sample_cov = (prev_std_shocks.T @ prev_std_shocks) / max(paths, 1)
+                        q_current = (1.0 - dcc_a - dcc_b) * q_bar + dcc_a * sample_cov + dcc_b * q_current
+                    diag = np.sqrt(np.maximum(np.diag(q_current), 1e-8))
+                    corr_matrix = q_current / np.outer(diag, diag)
+                else:
+                    corr_matrix = corr_base
+                corr_matrix = np.clip(corr_matrix * corr_multiplier, -0.95, 0.95)
+                np.fill_diagonal(corr_matrix, 1.0)
+                normals = _multivariate_normal_with_corr(rng, corr_matrix, (paths,))
+                t_scale = np.sqrt(t_df / rng.chisquare(t_df, size=paths))[:, None] * _t_scale(t_df)
+                std_shocks = normals * t_scale
+                sigma_vec = np.sqrt(np.maximum(sigma2_vec, 1e-8))
+                bucket_returns = mu_vec + std_shocks * sigma_vec
 
-            if simulation_mode == "garch_t_dcc_jump" and jump_state:
-                systemic = _obj(jump_state.get("systemic_jump", {}))
-                systemic_intensity = float(systemic.get("intensity", 0.0) or 0.0) * jump_multiplier
-                systemic_flags = rng.random(paths) < systemic_intensity
-                scale = float(_obj(systemic.get("jump_size_dist", {})).get("scale", 0.05) or 0.05)
-                systemic_sizes = rng.normal(loc=-abs(scale), scale=max(scale / 2.0, 1e-6), size=paths)
-                loadings = _obj(systemic.get("loading", {}))
+                if simulation_mode == "garch_t_dcc_jump" and jump_state:
+                    systemic = _obj(jump_state.get("systemic_jump", {}))
+                    systemic_intensity = float(systemic.get("intensity", 0.0) or 0.0) * jump_multiplier
+                    systemic_flags = rng.random(paths) < systemic_intensity
+                    scale = float(_obj(systemic.get("jump_size_dist", {})).get("scale", 0.05) or 0.05)
+                    systemic_sizes = rng.normal(loc=-abs(scale), scale=max(scale / 2.0, 1e-6), size=paths)
+                    loadings = _obj(systemic.get("loading", {}))
+                    for bucket_idx, bucket in enumerate(ordered_buckets):
+                        loading = float(loadings.get(bucket, -1.0 if _is_equity_like(bucket) or bucket == "satellite" else 0.25))
+                        bucket_returns[:, bucket_idx] += systemic_flags * systemic_sizes * loading
+                    for bucket_idx, bucket in enumerate(ordered_buckets):
+                        bucket_jump_model = _obj(_obj(jump_state.get("bucket_jump_models", {})).get(bucket, {}))
+                        if not bucket_jump_model:
+                            continue
+                        jump_intensity = float(bucket_jump_model.get("jump_intensity", 0.0) or 0.0) * jump_multiplier
+                        jump_flags = rng.random(paths) < jump_intensity
+                        jump_mean = float(bucket_jump_model.get("jump_mean", 0.0) or 0.0)
+                        jump_vol = float(bucket_jump_model.get("jump_vol", 0.01) or 0.01)
+                        bucket_returns[:, bucket_idx] += jump_flags * rng.normal(jump_mean, max(jump_vol, 1e-6), size=paths)
+
+                monthly_returns[:, month] = bucket_returns @ bucket_weights
+
                 for bucket_idx, bucket in enumerate(ordered_buckets):
-                    loading = float(loadings.get(bucket, -1.0 if _is_equity_like(bucket) or bucket == "satellite" else 0.25))
-                    bucket_returns[:, bucket_idx] += systemic_flags * systemic_sizes * loading
-                for bucket_idx, bucket in enumerate(ordered_buckets):
-                    bucket_jump_model = _obj(_obj(jump_state.get("bucket_jump_models", {})).get(bucket, {}))
-                    if not bucket_jump_model:
-                        continue
-                    jump_intensity = float(bucket_jump_model.get("jump_intensity", 0.0) or 0.0) * jump_multiplier
-                    jump_flags = rng.random(paths) < jump_intensity
-                    jump_mean = float(bucket_jump_model.get("jump_mean", 0.0) or 0.0)
-                    jump_vol = float(bucket_jump_model.get("jump_vol", 0.01) or 0.01)
-                    bucket_returns[:, bucket_idx] += jump_flags * rng.normal(jump_mean, max(jump_vol, 1e-6), size=paths)
-
-            monthly_returns[:, month] = bucket_returns @ bucket_weights
-
-            for bucket_idx, bucket in enumerate(ordered_buckets):
-                state = _obj(garch_state_map.get(bucket, {}))
-                alpha = float(state.get("alpha", 0.08) or 0.08)
-                beta = float(state.get("beta", 0.90) or 0.90)
-                omega = float(state.get("omega", 1e-6) or 1e-6)
-                residual_sq = float(np.mean((bucket_returns[:, bucket_idx] - mu_vec[bucket_idx]) ** 2))
-                sigma2_vec[bucket_idx] = max(omega + alpha * residual_sq + beta * sigma2_vec[bucket_idx], 1e-8)
-            prev_std_shocks = std_shocks
+                    state = _obj(garch_state_map.get(bucket, {}))
+                    alpha = float(state.get("alpha", 0.08) or 0.08)
+                    beta = float(state.get("beta", 0.90) or 0.90)
+                    omega = float(state.get("omega", 1e-6) or 1e-6)
+                    residual_sq = float(np.mean((bucket_returns[:, bucket_idx] - mu_vec[bucket_idx]) ** 2))
+                    sigma2_vec[bucket_idx] = max(omega + alpha * residual_sq + beta * sigma2_vec[bucket_idx], 1e-8)
+                prev_std_shocks = std_shocks
 
     monthly_returns = np.clip(monthly_returns, -0.99, None)
 

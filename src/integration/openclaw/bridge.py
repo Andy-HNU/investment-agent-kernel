@@ -72,14 +72,14 @@ def handle_task(task: str, *, db_path: str | Path = DEFAULT_DB_PATH, now: Option
             account_profile_id=args["account_profile_id"], workflow_type="monthly", db_path=db_path
         )
         invocation = {"tool": "frontdesk.followup.monthly", **args}
-        result = dict(summary)
+        result = {"workflow": "monthly", **dict(summary)}
     elif intent.name == "quarterly":
         args = parse_followup(task)
         summary = run_frontdesk_followup(
             account_profile_id=args["account_profile_id"], workflow_type="quarterly", db_path=db_path
         )
         invocation = {"tool": "frontdesk.followup.quarterly", **args}
-        result = dict(summary)
+        result = {"workflow": "quarterly", **dict(summary)}
     elif intent.name == "event":
         args = parse_followup(task)
         summary = run_frontdesk_followup(
@@ -90,11 +90,11 @@ def handle_task(task: str, *, db_path: str | Path = DEFAULT_DB_PATH, now: Option
             event_context={"source": "openclaw_bridge", "raw_task": task},
         )
         invocation = {"tool": "frontdesk.followup.event", **args}
-        result = dict(summary)
+        result = {"workflow": "event", **dict(summary)}
     elif intent.name == "approve_plan":
         # approve plan <plan_id> v<version> for user <id>
         plan_id = _extract(r"plan\s+([a-zA-Z0-9_\-:]+)", task) or "plan_0"
-        plan_version = int(_extract(r"v(\d+)", task) or 1)
+        plan_version = int(_extract(r"(?:^|\s)v(\d+)(?=\s|$)", task) or 1)
         args = parse_status(task)
         summary = approve_frontdesk_execution_plan(
             account_profile_id=args["account_profile_id"], plan_id=plan_id, plan_version=plan_version, db_path=db_path

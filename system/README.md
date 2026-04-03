@@ -6,11 +6,13 @@
 
 - `00` 到 `10`：当前主链冻结规格，内部保留各模块原始版本号（如 `v2`、`v2.1`、`v1.2 patched`）
 - `11` 到 `14`：围绕产品映射、provider、多源 sidecar 与开源级发布准备的 `v2` 补充规格
+- `15` 到 `18`：`v1.2` 的真实数据建模、产品维护、账户同步与 Claw 顾问壳补充规格
 
 阅读建议：
 
 - 先读 `00-10` 主链，理解 kernel 核心模块
 - 再读 `v2` 补充规格，理解产品化、数据源矩阵、policy/news sidecar 与开源级门槛
+- 再读 `v1.2` 补充规格，理解真实源建模、前瞻验证、产品维护、账户同步与 adviser shell
 
 阅读优先级建议：
 1. `00_system_topology_and_main_flow.md`
@@ -25,6 +27,12 @@
 2. `12_provider_capability_matrix_v2.md`
 3. `13_policy_news_structured_signal_contract_v2.md`
 4. `14_open_source_release_readiness_v2.md`
+
+新增 `v1.2` 补充规格：
+1. `15_distribution_modeling_and_forward_validation_v1.2.md`
+2. `16_product_selection_and_maintenance_v1.2.md`
+3. `17_observed_portfolio_sync_and_reconciliation_v1.2.md`
+4. `18_claw_adviser_shell_v1.2.md`
 
 注意：
 - patched / 附录收口优先于正文旧口径

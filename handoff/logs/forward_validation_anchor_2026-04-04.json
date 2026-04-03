@@ -1,0 +1,16 @@
+{
+  "anchor_date": "2021-01-01",
+  "horizon_months": 60,
+  "goal_amount": 450000.0,
+  "simulation_mode_used": "garch_t",
+  "predicted_success_probability": 0.4636,
+  "predicted_product_adjusted_success_probability": 0.4636,
+  "realized_terminal_value": 425767.8836781119,
+  "goal_achieved": false,
+  "future_observed_days": 1211,
+  "historical_dataset_version": "real_source_market_history:20210101",
+  "future_dataset_version": "real_source_market_history:20260101",
+  "recommended_allocation_name": "liquidity_buffered__moderate__04",
+  "brier_score_bucket": 0.21492496,
+  "brier_score_product_adjusted": 0.21492496
+}

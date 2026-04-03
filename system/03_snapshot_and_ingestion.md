@@ -700,3 +700,114 @@ class BucketProxyMappingRaw:
 - real-source provider
 
 真实公开源未通过验收前，不得把 `verified_status` 写成 `verified`。
+
+---
+
+## 附录 B：v1.2 真实历史、推算历史与账户观测补充
+
+### B.1 正式历史数据来源
+
+`v1.2` 开始，03 层的正式历史数据对象必须来自真实外部源：
+
+- `akshare`
+- `baostock`
+- `yfinance`
+- 后续可追加 cross-check provider
+
+03 的职责不是每次运行都重新联网抓取，而是：
+
+- 从真实源抓取
+- 落到版本化缓存
+- 为后续 run 提供可 replay 的历史数据集
+
+### B.2 日频与双窗口规则
+
+03 的正式历史输入以日频为主。
+
+默认窗口：
+
+- 长期结构窗口：`10 年日频`
+- 短期 regime 窗口：`1-2 年日频`
+
+03 不直接解释这些窗口，只负责：
+
+- 记录 `lookback_days`
+- 记录 `observed_history_days`
+- 记录 `inferred_history_days`
+- 记录 `coverage_status`
+- 记录 `cycle_reasons`
+
+### B.3 产品历史段落化结构
+
+针对具体产品，03 需要支持段落化历史：
+
+```python
+@dataclass
+class ProductHistorySegment:
+    start_date: str
+    end_date: str
+    source_kind: Literal["observed", "inferred"]
+    source_ref: str
+    confidence: float
+    return_series: list[float]
+
+
+@dataclass
+class ProductHistoryProfile:
+    product_id: str
+    observed_history_days: int
+    inferred_history_days: int
+    inference_method: str | None
+    inference_weight: float
+    segments: list[ProductHistorySegment]
+```
+
+默认规则：
+
+- 产品真实历史不足 `10` 年时，不强行补齐
+- 基金类允许推算历史，但必须：
+  - 明确标为 `inferred`
+  - 带 `inference_method`
+  - 带 `inference_weight`
+- 其他不能可靠推算的品类，不得硬补
+
+### B.4 推算历史允许范围
+
+仅基金/联接基金/ETF 类允许推算历史，典型依据包括：
+
+- 跟踪指数
+- 联接 ETF
+- 主要持仓/重仓股
+- 所属板块/风格指数
+
+推算历史可以进入正式模型，但必须降权，且不得伪装成真实观测历史。
+
+### B.5 observed_portfolio 作为账户真相源
+
+对没有官方个人资产 API 的平台，03 需要接收来自前台/Claw 的观测持仓输入：
+
+- 手工录入
+- 账单/交易记录导入
+- 截图/OCR 识别
+
+这些输入进入 03 时必须与 `target_plan / planned_actions` 分离。
+
+03 只负责冻结：
+
+- 当前真实持仓是什么
+- 来源是什么
+- 置信度如何
+- 是否需要后续对账
+
+### B.6 新增质量标记
+
+`v1.2` 在原有基础上新增以下质量标记：
+
+- `CYCLE_COVERAGE_INSUFFICIENT`
+- `SHORT_OBSERVED_HISTORY`
+- `INFERRED_HISTORY_ATTACHED`
+- `REAL_SOURCE_PROVIDER_UNVERIFIED`
+- `OBSERVED_PORTFOLIO_PARTIAL`
+- `OBSERVED_PORTFOLIO_OCR_IMPORTED`
+
+这些标记默认不在 03 直接拍板阻断，但必须进入 05 和前台解释链。

@@ -1013,3 +1013,103 @@ class DistributionModelInput:
 - 若 `DistributionModelState` 缺失，必须回退到 `static_gaussian`
 - 回退必须显式披露，不允许静默降级
 - `run_goal_solver_lightweight(...)` 在 `v1.1` 仍可保留轻量路径，但必须沿用 baseline 的 `simulation_mode`
+
+---
+
+## 附录 B：v1.2 产品级概率与前瞻验证补充
+
+### B.1 正式数据边界
+
+`v1.2` 开始，Goal Solver 的正式路径只允许消费两类历史数据：
+
+- 真实外部源实时抓取得到的数据
+- 真实外部源抓取后版本化缓存的数据
+
+以下数据只允许保留在 demo / fixture / 兼容测试路径，不得作为正式用户建议的概率输入：
+
+- `product_default_market_snapshot`
+- `inline_snapshot`
+- synthetic 历史序列
+- 任意系统自造历史数据
+
+### B.2 双层成功率口径
+
+`v1.2` 正式区分两层成功率：
+
+1. `bucket_success_probability`
+   - 由 02 直接计算
+   - 回答：战略配置本身是否合理
+
+2. `product_adjusted_success_probability`
+   - 由 Orchestrator 在产品选择完成后，对 `bucket_success_probability` 做产品层修正
+   - 修正项至少纳入：
+     - 费率拖累
+     - 流动性层级
+     - wrapper type 风险
+     - 产品风险标签
+   - 回答：按这份具体执行计划去做，成功率应如何折减
+
+约束：
+
+- 02 直接产出 `bucket_success_probability`
+- 02 允许先把 `product_adjusted_success_probability` 置成与 bucket 相同的兼容值
+- 正式展示给用户时，前台与决策卡优先展示 `product_adjusted_success_probability`
+- 若二者不同，必须能解释差异来自哪些产品 overlay 证据
+
+### B.3 simulation mode 的正式默认值
+
+`v1.2` 正式路径不再默认请求 `static_gaussian`。
+
+默认请求策略改为：
+
+- `simulation_mode_requested = garch_t_dcc_jump`
+- `05` 根据真实历史长度、周期覆盖与 jump 可用性，自动降级到最强可用模式
+
+降级顺序：
+
+1. `garch_t_dcc_jump`
+2. `garch_t_dcc`
+3. `garch_t`
+4. `static_gaussian`
+
+要求：
+
+- `simulation_mode_requested`
+- `simulation_mode_used`
+- `simulation_mode_auto_selected`
+
+这三个字段必须在日志、快照与前台解释中同时可见。
+
+### B.4 用户解释义务
+
+`v1.2` 前台对概率至少要能解释：
+
+1. 这是终值达标概率，不是平均年化收益率
+2. 用的是哪个 `simulation_mode`
+3. 用了多长历史数据、多少是真实历史、多少是推算历史
+4. 当前推荐方案和最高概率方案是否不同
+5. 隐含所需年化是多少
+6. 当前市场状态如何影响分布
+
+### B.5 前瞻验证（forward validation）门禁
+
+`v1.2` 新增正式前瞻验证门：
+
+- 设定锚点日期 `T0`
+- 只允许使用 `T0` 之前的真实历史数据做校准与求解
+- 用 `T0` 之后的真实价格/收益序列做未来回放
+- 比较：
+  - `bucket_success_probability`
+  - `product_adjusted_success_probability`
+  - `realized_terminal_value`
+  - `goal_achieved`
+  - Brier 风格误差
+
+验证至少支持两种形态：
+
+1. 固定锚点验证
+   - 例如 `2021-01-01`
+2. 滚动锚点验证
+   - 例如年度或季度锚点组
+
+前瞻验证不得泄露未来数据到建模输入。

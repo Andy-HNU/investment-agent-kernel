@@ -45,6 +45,24 @@
   - 当前 `v1.2` 唯一正式执行地图
   - 覆盖真实源历史数据、产品选择/维护、观察持仓同步与 Claw 顾问壳升级
 
+### v1.2 结论与验收
+
+- `handoff/CODEX_v1.2_phase_reports_2026-04-04.md`
+  - `v1.2` 六条主线的正式汇总报告
+  - 面向产品/owner/验收说明“做成了什么、没做什么、为什么”
+
+- `handoff/CODEX_v1.2_system_test_report_2026-04-04.md`
+  - `v1.2` 的统一系统测试结论
+  - 覆盖 targeted regression、前瞻验证、真实 provider smoke 与 Claw 自然语言验收
+
+- `handoff/CODEX_v1.2_forward_validation_report_2026-04-04.md`
+  - `v1.2` 的前瞻验证专项报告
+  - 重点回答目标达成率能否被真实未来检验
+
+- `handoff/CODEX_v1.2_claw_natural_language_acceptance_2026-04-04.md`
+  - `v1.2` 的 Claw/bridge 自然语言验收入口
+  - 覆盖 bridge JSONL 与真实 `openclaw agent` 说明性日志
+
 - `handoff/CODEX_v1.1_task_map_2026-04-02.md`
   - `v1.1` 阶段正式执行地图
   - 当前保留作上一版本历史执行参考

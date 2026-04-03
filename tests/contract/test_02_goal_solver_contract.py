@@ -384,3 +384,26 @@ def test_run_monte_carlo_preserves_basic_monotonicity(goal_solver_input_base):
     assert high_extra["expected_terminal_value"] >= low_extra["expected_terminal_value"]
     assert high_prob >= low_prob
     assert harder_goal_prob <= high_prob
+
+
+@pytest.mark.contract
+def test_run_monte_carlo_handles_empty_weight_set_in_advanced_mode(goal_solver_input_base):
+    normalized = goal_solver_engine._goal_solver_input_from_any(goal_solver_input_base)
+    market_state = normalized.solver_params.market_assumptions
+    schedule = [5_000.0] * 12
+
+    probability, extra, risk = goal_solver_engine._run_monte_carlo(
+        {},
+        schedule,
+        35_000.0,
+        100_000.0,
+        market_state,
+        256,
+        42,
+        simulation_mode="garch_t",
+        distribution_model_state=None,
+    )
+
+    assert probability == 0.0
+    assert extra["expected_terminal_value"] == pytest.approx(35_000.0 + sum(schedule))
+    assert risk.max_drawdown_90pct == pytest.approx(0.0)

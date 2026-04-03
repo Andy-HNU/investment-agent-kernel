@@ -57,10 +57,10 @@ def route(text: str) -> Intent:
         ("monthly", [r"\bmonthly\b", r"follow-?up", r"月度(复核|复盘|检查|回顾)", r"下个月"], 0.85),
         ("event", [r"\bevent\b", r"事件(复核|检查|触发)", r"突发", r"大跌"], 0.82),
         ("daily_monitor", [r"监控", r"止盈止损", r"\bmonitor\b"], 0.88),
-        ("explain_data_basis", [r"历史数据", r"推算历史", r"数据依据", r"数据基础"], 0.94),
-        ("explain_execution_policy", [r"执行策略", r"季度执行策略", r"止盈止损规则"], 0.92),
+        ("explain_data_basis", [r"历史数据", r"推算历史", r"数据依据", r"数据基础", r"explain\s+data\s+basis", r"data\s+basis", r"historical\s+data"], 0.94),
+        ("explain_execution_policy", [r"执行策略", r"季度执行策略", r"止盈止损规则", r"explain\s+execution\s+policy", r"execution\s+policy"], 0.92),
         ("explain_plan_change", [r"计划变化", r"为什么.*替换.*计划", r"plan change", r"replace.*plan"], 0.9),
-        ("explain_probability", [r"目标达成率", r"成功率", r"概率.*怎么", r"why.*probability"], 0.92),
+        ("explain_probability", [r"目标达成率", r"成功率", r"概率.*怎么", r"why.*probability", r"explain\s+probability", r"success\s+probability"], 0.92),
         ("feedback", [r"已执行", r"已跳过", r"\bexecuted\b", r"\bskipped\b", r"\bi did\b", r"执行反馈"], 0.8),
     ]
     for name, patterns, confidence in rules:

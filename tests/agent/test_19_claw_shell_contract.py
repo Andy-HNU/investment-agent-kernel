@@ -7,6 +7,8 @@ def test_route_intent_supports_explain_data_basis():
     from agent.nli_router import route_intent
 
     assert route_intent("请解释你用了哪些历史数据、哪些是推算历史") == "explain_data_basis"
+    assert route_intent("explain data basis for user shell_user") == "explain_data_basis"
+    assert route_intent("explain probability for user shell_user") == "explain_probability"
 
 
 def test_route_intent_supports_daily_monitor_and_sync_commands():
@@ -16,6 +18,7 @@ def test_route_intent_supports_daily_monitor_and_sync_commands():
     assert route_intent("请为用户 shell_user 手工同步持仓") == "sync_portfolio_manual"
     assert route_intent("请用OCR识别并同步这个账户持仓") == "sync_portfolio_ocr"
     assert route_intent("请解释当前季度执行策略") == "explain_execution_policy"
+    assert route_intent("explain execution policy for user shell_user") == "explain_execution_policy"
 
 
 def test_bridge_handles_explainability_and_daily_monitor(tmp_path):
@@ -71,3 +74,25 @@ def test_bridge_handles_manual_sync_and_execution_policy_explanation(tmp_path):
     assert policy_result["intent"]["name"] == "explain_execution_policy"
     assert policy_result["result"]["workflow"] == "explain_execution_policy"
     assert "trigger_rules" in policy_result["result"]["execution_policy"]
+
+
+def test_bridge_approve_plan_ignores_version_like_user_id_tokens(tmp_path):
+    from integration.openclaw.bridge import handle_task
+    from frontdesk.service import load_user_state
+
+    db = tmp_path / "frontdesk.sqlite"
+    handle_task(
+        "onboard user v12_bridge_user assets 50000 monthly 5000 goal 200000 in 36 months risk moderate",
+        db_path=str(db),
+    )
+    state = load_user_state("v12_bridge_user", db_path=str(db))
+    pending = state["pending_execution_plan"]
+
+    result = handle_task(
+        f"approve plan {pending['plan_id']} v{pending['plan_version']} for user v12_bridge_user",
+        db_path=str(db),
+    )
+
+    assert result["intent"]["name"] == "approve_plan"
+    assert result["result"]["workflow"] == "approve_plan"
+    assert result["invocation"]["plan_version"] == pending["plan_version"]
