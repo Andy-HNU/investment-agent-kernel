@@ -182,8 +182,16 @@ def _adapter_name(config_source: str | Path | dict[str, Any] | None) -> str | No
 
 def _validate_formal_external_adapter(config_source: str | Path | dict[str, Any] | None) -> None:
     adapter_name = _adapter_name(config_source)
-    if adapter_name in {"inline_snapshot", "local_json"}:
+    if adapter_name in {"inline_snapshot", "local_json", "file_json"}:
         raise ValueError(f"formal frontdesk flow forbids debug adapter: {adapter_name}")
+
+
+def _validate_formal_external_snapshot_source(source: str | Path | None) -> None:
+    if source is None:
+        return
+    parsed = urlparse(str(source).strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("formal frontdesk flow requires remote http/https external_snapshot_source")
 
 
 def _deep_merge(base: Any, patch: Any) -> Any:
@@ -265,7 +273,11 @@ def _attach_real_source_market_history(
     historical_dataset = _as_dict(
         raw_inputs.get("historical_dataset_metadata") or existing_market.get("historical_dataset")
     )
-    if historical_dataset:
+    source_name = str(historical_dataset.get("source_name") or "").strip()
+    version_id = str(historical_dataset.get("version_id") or historical_dataset.get("dataset_version") or "").strip()
+    if historical_dataset and (
+        source_name == "real_source_market_history" or version_id.startswith("real_source_market_history:")
+    ):
         raw_inputs["historical_dataset_metadata"] = historical_dataset
         return raw_inputs, _strip_market_defaults_from_provenance(input_provenance)
 
@@ -1173,6 +1185,7 @@ def run_frontdesk_onboarding(
         external_data_config = external_snapshot_config
     if external_snapshot_source is not None and external_data_config is not None:
         raise ValueError("use either external_snapshot_source or external_snapshot_config, not both")
+    _validate_formal_external_snapshot_source(external_snapshot_source)
     if external_data_config is not None:
         _validate_formal_external_adapter(external_data_config)
     db_path = Path(db_path)
@@ -1289,6 +1302,7 @@ def run_frontdesk_followup(
         external_data_config = external_snapshot_config
     if external_snapshot_source is not None and external_data_config is not None:
         raise ValueError("use either external_snapshot_source or external_snapshot_config, not both")
+    _validate_formal_external_snapshot_source(external_snapshot_source)
     if external_data_config is not None:
         _validate_formal_external_adapter(external_data_config)
     db_path = Path(db_path)

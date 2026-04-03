@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -145,5 +146,29 @@ def test_formal_frontdesk_onboarding_rejects_local_json_provider_fixture(tmp_pat
                 "adapter": "local_json",
                 "snapshot_path": str(fixture_path),
                 "provider_name": "fixture_local_json",
+            },
+        )
+
+
+@pytest.mark.contract
+def test_formal_frontdesk_onboarding_rejects_file_json_provider_fixture(tmp_path):
+    fixture_path = tmp_path / "provider_snapshot_file.json"
+    fixture_path.write_text(
+        json.dumps(
+            {
+                "market_raw": {"expected_returns": {"equity_cn": 0.08}},
+                "provider_name": "fixture_file_json",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="formal frontdesk flow forbids debug adapter: file_json"):
+        run_frontdesk_onboarding(
+            _profile(account_profile_id="file_json_provider_user"),
+            db_path=tmp_path / "frontdesk.sqlite",
+            external_data_config={
+                "adapter": "file_json",
+                "file_path": str(fixture_path),
             },
         )

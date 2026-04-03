@@ -223,3 +223,77 @@ def test_formal_frontdesk_onboarding_rejects_inline_snapshot_provider_config(tmp
                 "payload": _snapshot(total_value=62_500.0),
             },
         )
+
+
+@pytest.mark.contract
+def test_formal_frontdesk_onboarding_rejects_file_json_provider_config(tmp_path):
+    profile = _profile(account_profile_id="frontdesk_provider_file_json")
+    payload_path = tmp_path / "snapshot.json"
+    payload_path.write_text(json.dumps(_snapshot(total_value=62_500.0), ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="formal frontdesk flow forbids debug adapter: file_json"):
+        run_frontdesk_onboarding(
+            profile,
+            db_path=tmp_path / "frontdesk.sqlite",
+            external_data_config={
+                "adapter": "file_json",
+                "file_path": str(payload_path),
+            },
+        )
+
+
+@pytest.mark.contract
+def test_formal_frontdesk_followup_rejects_file_json_provider_config(tmp_path):
+    profile = _profile(account_profile_id="frontdesk_provider_file_json_followup")
+    db_path = tmp_path / "frontdesk.sqlite"
+    onboarding_summary = run_frontdesk_onboarding(profile, db_path=db_path)
+    assert onboarding_summary["status"] in {"completed", "degraded"}
+
+    payload_path = tmp_path / "snapshot.json"
+    payload_path.write_text(json.dumps(_snapshot(total_value=65_500.0), ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="formal frontdesk flow forbids debug adapter: file_json"):
+        run_frontdesk_followup(
+            account_profile_id=profile.account_profile_id,
+            workflow_type="monthly",
+            db_path=db_path,
+            external_data_config={
+                "adapter": "file_json",
+                "file_path": str(payload_path),
+            },
+        )
+
+
+@pytest.mark.contract
+def test_formal_frontdesk_overrides_external_fake_historical_dataset_with_real_source_market_history(tmp_path):
+    profile = _profile(account_profile_id="frontdesk_fake_history_override")
+    db_path = tmp_path / "frontdesk.sqlite"
+    fake_snapshot = _snapshot(total_value=61_000.0)
+    fake_snapshot["market_raw"]["historical_dataset"] = {
+        "source_name": "fixture_fake_history",
+        "version_id": "fixture_fake_history:2026-03-30:v1",
+        "as_of": "2026-03-30T07:30:00Z",
+        "frequency": "daily",
+        "lookback_days": 252,
+        "lookback_months": 12,
+        "series_dates": ["2026-03-28", "2026-03-29"],
+        "return_series": {"equity_cn": [0.01, -0.02]},
+        "coverage_status": "verified",
+    }
+
+    with serve_json_routes({"/snapshot": (200, fake_snapshot)}) as base_url:
+        summary = run_frontdesk_onboarding(
+            profile,
+            db_path=db_path,
+            external_data_config={
+                "adapter": "http_json",
+                "snapshot_url": f"{base_url}/snapshot",
+            },
+        )
+
+    assert summary["status"] in {"completed", "degraded"}
+    snapshot = FrontdeskStore(db_path).get_frontdesk_snapshot(profile.account_profile_id)
+    assert snapshot is not None
+    market_assumptions = snapshot["latest_baseline"]["goal_solver_input"]["solver_params"]["market_assumptions"]
+    assert market_assumptions["source_name"] == "real_source_market_history"
+    assert market_assumptions["dataset_version"].startswith("real_source_market_history:")

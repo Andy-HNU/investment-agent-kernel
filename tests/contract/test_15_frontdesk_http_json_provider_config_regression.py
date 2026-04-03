@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from frontdesk.storage import FrontdeskStore
 from shared.onboarding import UserOnboardingProfile
-from tests.support.frontdesk_http_json_provider_config import (
-    fetch_provider_snapshot,
-    payload_from_snapshot,
-)
+from tests.support.frontdesk_http_json_provider_config import fetch_provider_snapshot
 from tests.support.http_snapshot_server import serve_json_routes
 
 
@@ -44,32 +40,11 @@ def _write_config(path: Path, payload: dict[str, object]) -> Path:
     return path
 
 
-def _patched_external_payload(monkeypatch, payload: dict[str, object]) -> None:
-    monkeypatch.setattr(
-        "frontdesk.service._external_snapshot_payload",
-        lambda source: deepcopy(payload),
-    )
-
-
 @pytest.mark.contract
-def test_frontdesk_onboarding_with_http_json_provider_config_path_persists_externally_fetched_provenance(
-    tmp_path,
-    monkeypatch,
-):
+def test_frontdesk_onboarding_with_http_json_provider_config_path_persists_externally_fetched_provenance(tmp_path):
     from frontdesk.service import run_frontdesk_onboarding
 
     profile = _profile(account_profile_id="provider_config_onboarding_path")
-    config_path = _write_config(
-        tmp_path / "provider_config.json",
-        {
-            "adapter": "http_json",
-            "snapshot_url": "http://snapshot.test/snapshot",
-            "query_params": {
-                "channel": "onboarding-path",
-            },
-            "fail_open": False,
-        },
-    )
 
     with serve_json_routes(
         {
@@ -114,7 +89,19 @@ def test_frontdesk_onboarding_with_http_json_provider_config_path_persists_exter
                 },
             )
         }
-    ):
+    ) as base_url:
+        config_path = _write_config(
+            tmp_path / "provider_config.json",
+            {
+                "adapter": "http_json",
+                "snapshot_url": f"{base_url}/snapshot",
+                "query_params": {
+                    "channel": "onboarding-path",
+                },
+                "fail_open": False,
+            },
+        )
+
         fetched = fetch_provider_snapshot(
             config_path,
             workflow_type="onboarding",
@@ -122,27 +109,24 @@ def test_frontdesk_onboarding_with_http_json_provider_config_path_persists_exter
             as_of=AS_OF,
         )
 
-    assert fetched is not None
-    assert fetched.raw_overrides["market_raw"]["raw_volatility"]["equity_cn"] == 0.20
-    assert fetched.raw_overrides["behavior_raw"]["recent_chase_risk"] == "low"
-    assert all("workflow_type=onboarding" in item["value"] for item in fetched.provenance_items)
-    assert all("channel=onboarding-path" in item["value"] for item in fetched.provenance_items)
+        assert fetched is not None
+        assert fetched.raw_overrides["market_raw"]["raw_volatility"]["equity_cn"] == 0.20
+        assert fetched.raw_overrides["behavior_raw"]["recent_chase_risk"] == "low"
+        assert all("workflow_type=onboarding" in item["value"] for item in fetched.provenance_items)
+        assert all("channel=onboarding-path" in item["value"] for item in fetched.provenance_items)
 
-    provider_payload = payload_from_snapshot(fetched)
-    _patched_external_payload(monkeypatch, provider_payload)
-
-    summary = run_frontdesk_onboarding(
-        profile,
-        db_path=tmp_path / "frontdesk.sqlite",
-        external_snapshot_source=str(config_path),
-    )
+        summary = run_frontdesk_onboarding(
+            profile,
+            db_path=tmp_path / "frontdesk.sqlite",
+            external_data_config=str(config_path),
+        )
 
     store = FrontdeskStore(tmp_path / "frontdesk.sqlite")
     user_state = store.load_user_state(profile.account_profile_id)
 
     assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fetched"
-    assert Path(summary["external_snapshot_source"]) == config_path
+    assert Path(summary["external_snapshot_config"]) == config_path
     assert user_state is not None
     assert user_state["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 2
     assert {
@@ -152,27 +136,12 @@ def test_frontdesk_onboarding_with_http_json_provider_config_path_persists_exter
 
 
 @pytest.mark.contract
-def test_frontdesk_monthly_followup_with_inline_http_json_provider_config_updates_state_and_provenance(
-    tmp_path,
-    monkeypatch,
-):
+def test_frontdesk_monthly_followup_with_inline_http_json_provider_config_updates_state_and_provenance(tmp_path):
     from frontdesk.service import run_frontdesk_followup, run_frontdesk_onboarding
 
     profile = _profile(account_profile_id="provider_config_followup_inline")
     db_path = tmp_path / "frontdesk.sqlite"
     run_frontdesk_onboarding(profile, db_path=db_path)
-
-    inline_config = json.dumps(
-        {
-            "adapter": "http_json",
-            "snapshot_url": "http://snapshot.test/snapshot",
-            "query_params": {
-                "channel": "followup-inline",
-            },
-            "fail_open": False,
-        },
-        ensure_ascii=False,
-    )
 
     with serve_json_routes(
         {
@@ -205,7 +174,18 @@ def test_frontdesk_monthly_followup_with_inline_http_json_provider_config_update
                 },
             )
         }
-    ):
+    ) as base_url:
+        inline_config = json.dumps(
+            {
+                "adapter": "http_json",
+                "snapshot_url": f"{base_url}/snapshot",
+                "query_params": {
+                    "channel": "followup-inline",
+                },
+                "fail_open": False,
+            },
+            ensure_ascii=False,
+        )
         fetched = fetch_provider_snapshot(
             inline_config,
             workflow_type="monthly",
@@ -213,27 +193,24 @@ def test_frontdesk_monthly_followup_with_inline_http_json_provider_config_update
             as_of=AS_OF,
         )
 
-    assert fetched is not None
-    assert fetched.raw_overrides["account_raw"]["total_value"] == 88_000.0
-    assert all("workflow_type=monthly" in item["value"] for item in fetched.provenance_items)
-    assert all("channel=followup-inline" in item["value"] for item in fetched.provenance_items)
+        assert fetched is not None
+        assert fetched.raw_overrides["account_raw"]["total_value"] == 88_000.0
+        assert all("workflow_type=monthly" in item["value"] for item in fetched.provenance_items)
+        assert all("channel=followup-inline" in item["value"] for item in fetched.provenance_items)
 
-    provider_payload = payload_from_snapshot(fetched)
-    _patched_external_payload(monkeypatch, provider_payload)
-
-    summary = run_frontdesk_followup(
-        account_profile_id=profile.account_profile_id,
-        workflow_type="monthly",
-        db_path=db_path,
-        external_snapshot_source=inline_config,
-    )
+        summary = run_frontdesk_followup(
+            account_profile_id=profile.account_profile_id,
+            workflow_type="monthly",
+            db_path=db_path,
+            external_data_config=inline_config,
+        )
 
     store = FrontdeskStore(db_path)
     user_state = store.load_user_state(profile.account_profile_id)
 
     assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fetched"
-    assert json.loads(summary["external_snapshot_source"])["query_params"]["channel"] == "followup-inline"
+    assert json.loads(summary["external_snapshot_config"])["query_params"]["channel"] == "followup-inline"
     assert summary["input_provenance"]["counts"]["externally_fetched"] >= 2
     assert user_state is not None
     assert user_state["profile"]["current_total_assets"] == 88_000.0
@@ -242,26 +219,23 @@ def test_frontdesk_monthly_followup_with_inline_http_json_provider_config_update
 
 
 @pytest.mark.contract
-def test_frontdesk_onboarding_http_json_provider_config_fail_open_falls_back_without_external_provenance(
-    tmp_path,
-    monkeypatch,
-):
+def test_frontdesk_onboarding_http_json_provider_config_fail_open_falls_back_without_external_provenance(tmp_path):
     from frontdesk.service import run_frontdesk_onboarding
 
     profile = _profile(account_profile_id="provider_config_fail_open")
-    config_path = _write_config(
-        tmp_path / "provider_config.json",
-        {
-            "adapter": "http_json",
-            "snapshot_url": "http://snapshot.test/snapshot",
-            "query_params": {
-                "channel": "fail-open",
-            },
-            "fail_open": True,
-        },
-    )
 
-    with serve_json_routes({"/snapshot": (500, {"error": "boom"})}):
+    with serve_json_routes({"/snapshot": (500, {"error": "boom"})}) as base_url:
+        config_path = _write_config(
+            tmp_path / "provider_config.json",
+            {
+                "adapter": "http_json",
+                "snapshot_url": f"{base_url}/snapshot",
+                "query_params": {
+                    "channel": "fail-open",
+                },
+                "fail_open": True,
+            },
+        )
         fetched = fetch_provider_snapshot(
             config_path,
             workflow_type="onboarding",
@@ -269,25 +243,23 @@ def test_frontdesk_onboarding_http_json_provider_config_fail_open_falls_back_wit
             as_of=AS_OF,
         )
 
-    assert fetched is not None
-    assert fetched.raw_overrides == {}
-    assert fetched.provenance_items == []
-    assert fetched.warnings
+        assert fetched is not None
+        assert fetched.raw_overrides == {}
+        assert fetched.provenance_items == []
+        assert fetched.warnings
 
-    _patched_external_payload(monkeypatch, payload_from_snapshot(fetched))
-
-    summary = run_frontdesk_onboarding(
-        profile,
-        db_path=tmp_path / "frontdesk.sqlite",
-        external_snapshot_source=str(config_path),
-    )
+        summary = run_frontdesk_onboarding(
+            profile,
+            db_path=tmp_path / "frontdesk.sqlite",
+            external_data_config=str(config_path),
+        )
 
     store = FrontdeskStore(tmp_path / "frontdesk.sqlite")
     user_state = store.load_user_state(profile.account_profile_id)
 
     assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fallback"
-    assert summary.get("external_snapshot_error") is None
+    assert summary.get("external_snapshot_error") is not None
     assert user_state is not None
     assert user_state["decision_card"]["input_provenance"]["counts"]["externally_fetched"] >= 1
     assert any(

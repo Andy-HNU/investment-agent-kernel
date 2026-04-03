@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from frontdesk.service import load_user_state
 from shared.onboarding import UserOnboardingProfile
-from tests.support.frontdesk_http_json_provider_config import (
-    fetch_provider_snapshot,
-    payload_from_snapshot,
-)
+from tests.support.frontdesk_http_json_provider_config import fetch_provider_snapshot
 from tests.support.http_snapshot_server import serve_json_routes
 
 
@@ -48,24 +44,12 @@ def _write_config(path: Path, payload: dict[str, object]) -> Path:
 def test_frontdesk_cli_onboard_with_http_json_provider_config_path_fetches_external_provenance(
     tmp_path,
     capsys,
-    monkeypatch,
 ):
     from frontdesk.cli import main
 
     profile = _profile(account_profile_id="provider_config_smoke_onboarding")
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    config_path = _write_config(
-        tmp_path / "provider_config.json",
-        {
-            "adapter": "http_json",
-            "snapshot_url": "http://snapshot.test/snapshot",
-            "query_params": {
-                "channel": "smoke-onboarding",
-            },
-            "fail_open": False,
-        },
-    )
 
     with serve_json_routes(
         {
@@ -110,47 +94,52 @@ def test_frontdesk_cli_onboard_with_http_json_provider_config_path_fetches_exter
                 },
             )
         }
-    ):
+    ) as base_url:
+        config_path = _write_config(
+            tmp_path / "provider_config.json",
+            {
+                "adapter": "http_json",
+                "snapshot_url": f"{base_url}/snapshot",
+                "query_params": {
+                    "channel": "smoke-onboarding",
+                },
+                "fail_open": False,
+            },
+        )
+
         fetched = fetch_provider_snapshot(
             config_path,
             workflow_type="onboarding",
             account_profile_id=profile.account_profile_id,
             as_of=AS_OF,
         )
+        assert fetched is not None
 
-    assert fetched is not None
-    provider_payload = payload_from_snapshot(fetched)
-    monkeypatch.setattr(
-        "frontdesk.service._external_snapshot_payload",
-        lambda source: deepcopy(provider_payload),
-    )
-
-    exit_code = main(
-        [
-            "onboard",
-            "--db",
-            str(tmp_path / "frontdesk.sqlite"),
-            "--profile-json",
-            str(profile_path),
-            "--external-snapshot-source",
-            str(config_path),
-            "--non-interactive",
-            "--json",
-        ]
-    )
+        exit_code = main(
+            [
+                "onboard",
+                "--db",
+                str(tmp_path / "frontdesk.sqlite"),
+                "--profile-json",
+                str(profile_path),
+                "--external-data-config",
+                str(config_path),
+                "--non-interactive",
+                "--json",
+            ]
+        )
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
     assert payload["external_snapshot_status"] == "fetched"
     assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 2
-    assert Path(payload["external_snapshot_source"]) == config_path
+    assert Path(payload["external_snapshot_config"]) == config_path
 
 
 @pytest.mark.smoke
 def test_frontdesk_cli_monthly_with_inline_http_json_provider_config_updates_state(
     tmp_path,
     capsys,
-    monkeypatch,
 ):
     from frontdesk.cli import main
 
@@ -172,18 +161,6 @@ def test_frontdesk_cli_monthly_with_inline_http_json_provider_config_updates_sta
     )
     capsys.readouterr()
     assert onboarding_exit_code == 0
-
-    inline_config = json.dumps(
-        {
-            "adapter": "http_json",
-            "snapshot_url": "http://snapshot.test/snapshot",
-            "query_params": {
-                "channel": "smoke-followup-inline",
-            },
-            "fail_open": False,
-        },
-        ensure_ascii=False,
-    )
 
     with serve_json_routes(
         {
@@ -216,40 +193,45 @@ def test_frontdesk_cli_monthly_with_inline_http_json_provider_config_updates_sta
                 },
             )
         }
-    ):
+    ) as base_url:
+        inline_config = json.dumps(
+            {
+                "adapter": "http_json",
+                "snapshot_url": f"{base_url}/snapshot",
+                "query_params": {
+                    "channel": "smoke-followup-inline",
+                },
+                "fail_open": False,
+            },
+            ensure_ascii=False,
+        )
         fetched = fetch_provider_snapshot(
             inline_config,
             workflow_type="monthly",
             account_profile_id=profile.account_profile_id,
             as_of=AS_OF,
         )
+        assert fetched is not None
 
-    assert fetched is not None
-    provider_payload = payload_from_snapshot(fetched)
-    monkeypatch.setattr(
-        "frontdesk.service._external_snapshot_payload",
-        lambda source: deepcopy(provider_payload),
-    )
-
-    exit_code = main(
-        [
-            "monthly",
-            "--db",
-            str(db_path),
-            "--account-profile-id",
-            profile.account_profile_id,
-            "--external-snapshot-source",
-            inline_config,
-            "--json",
-        ]
-    )
+        exit_code = main(
+            [
+                "monthly",
+                "--db",
+                str(db_path),
+                "--account-profile-id",
+                profile.account_profile_id,
+                "--external-data-config",
+                inline_config,
+                "--json",
+            ]
+        )
     payload = json.loads(capsys.readouterr().out)
     user_state = load_user_state(profile.account_profile_id, db_path=db_path)
 
     assert exit_code == 0
     assert payload["external_snapshot_status"] == "fetched"
     assert payload["input_provenance"]["counts"]["externally_fetched"] >= 2
-    assert json.loads(payload["external_snapshot_source"])["query_params"]["channel"] == "smoke-followup-inline"
+    assert json.loads(payload["external_snapshot_config"])["query_params"]["channel"] == "smoke-followup-inline"
     assert user_state is not None
     assert user_state["profile"]["current_total_assets"] == 88_000.0
 
@@ -258,26 +240,25 @@ def test_frontdesk_cli_monthly_with_inline_http_json_provider_config_updates_sta
 def test_frontdesk_cli_onboard_http_json_provider_config_fail_open_falls_back(
     tmp_path,
     capsys,
-    monkeypatch,
 ):
     from frontdesk.cli import main
 
     profile = _profile(account_profile_id="provider_config_smoke_fail_open")
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    config_path = _write_config(
-        tmp_path / "provider_config.json",
-        {
-            "adapter": "http_json",
-            "snapshot_url": "http://snapshot.test/snapshot",
-            "query_params": {
-                "channel": "smoke-fail-open",
-            },
-            "fail_open": True,
-        },
-    )
 
-    with serve_json_routes({"/snapshot": (500, {"error": "boom"})}):
+    with serve_json_routes({"/snapshot": (500, {"error": "boom"})}) as base_url:
+        config_path = _write_config(
+            tmp_path / "provider_config.json",
+            {
+                "adapter": "http_json",
+                "snapshot_url": f"{base_url}/snapshot",
+                "query_params": {
+                    "channel": "smoke-fail-open",
+                },
+                "fail_open": True,
+            },
+        )
         fetched = fetch_provider_snapshot(
             config_path,
             workflow_type="onboarding",
@@ -285,29 +266,24 @@ def test_frontdesk_cli_onboard_http_json_provider_config_fail_open_falls_back(
             as_of=AS_OF,
         )
 
-    assert fetched is not None
-    assert fetched.raw_overrides == {}
-    assert fetched.provenance_items == []
-    assert fetched.warnings
+        assert fetched is not None
+        assert fetched.raw_overrides == {}
+        assert fetched.provenance_items == []
+        assert fetched.warnings
 
-    monkeypatch.setattr(
-        "frontdesk.service._external_snapshot_payload",
-        lambda source: {},
-    )
-
-    exit_code = main(
-        [
-            "onboard",
-            "--db",
-            str(tmp_path / "frontdesk.sqlite"),
-            "--profile-json",
-            str(profile_path),
-            "--external-snapshot-source",
-            str(config_path),
-            "--non-interactive",
-            "--json",
-        ]
-    )
+        exit_code = main(
+            [
+                "onboard",
+                "--db",
+                str(tmp_path / "frontdesk.sqlite"),
+                "--profile-json",
+                str(profile_path),
+                "--external-data-config",
+                str(config_path),
+                "--non-interactive",
+                "--json",
+            ]
+        )
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
