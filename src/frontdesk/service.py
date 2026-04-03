@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from frontdesk.external_data import (
     merge_external_input_provenance,
     profile_patch_from_external_snapshot,
 )
+from frontdesk.observed_portfolio import normalize_observed_holdings, reconcile_observed_portfolio
 from frontdesk.storage import FrontdeskStore
 
 
@@ -1624,3 +1626,134 @@ def approve_frontdesk_execution_plan(
         "refresh_summary": (snapshot or {}).get("refresh_summary"),
         "user_state": user_state,
     }
+
+
+def _target_plan_payload_for_reconciliation(store: FrontdeskStore, account_profile_id: str) -> dict[str, Any] | None:
+    target = store.get_latest_active_execution_plan(account_profile_id)
+    if target is None:
+        target = store.get_latest_pending_execution_plan(account_profile_id)
+    if target is None:
+        return None
+    payload = dict(target.payload or {})
+    payload.setdefault("plan_id", target.plan_id)
+    payload.setdefault("plan_version", target.plan_version)
+    payload.setdefault("status", target.status)
+    return payload
+
+
+def _sync_observed_portfolio(
+    *,
+    account_profile_id: str,
+    holdings: list[dict[str, Any]],
+    observed_at: str,
+    account_source: str,
+    source_kind: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    db_path = Path(db_path)
+    store = FrontdeskStore(db_path)
+    store.init_schema()
+    latest_record = store.get_latest_observed_portfolio(account_profile_id)
+    portfolio_version = 1 if latest_record is None else latest_record.portfolio_version + 1
+    normalized = normalize_observed_holdings(holdings)
+    target_plan_payload = _target_plan_payload_for_reconciliation(store, account_profile_id)
+    reconciliation_state = reconcile_observed_portfolio(
+        observed_portfolio=normalized,
+        target_plan_payload=target_plan_payload,
+    )
+    recorded_at = _now_iso()
+    payload = {
+        **normalized,
+        "source_kind": source_kind,
+        "account_source": account_source,
+        "observed_at": observed_at,
+        "reconciliation_state": reconciliation_state,
+    }
+    store.save_observed_portfolio_record(
+        account_profile_id=account_profile_id,
+        portfolio_version=portfolio_version,
+        source_kind=source_kind,
+        account_source=account_source,
+        observed_at=observed_at,
+        payload=payload,
+        created_at=recorded_at,
+        updated_at=recorded_at,
+    )
+    user_state = store.load_user_state(account_profile_id)
+    snapshot = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
+    return {
+        "workflow": "sync_observed_portfolio",
+        "status": "recorded",
+        "account_profile_id": account_profile_id,
+        "db_path": str(db_path),
+        "recorded_at": recorded_at,
+        "observed_portfolio": (snapshot or {}).get("observed_portfolio"),
+        "reconciliation_state": (snapshot or {}).get("reconciliation_state"),
+        "user_state": user_state,
+    }
+
+
+def sync_observed_portfolio_manual(
+    *,
+    account_profile_id: str,
+    holdings: list[dict[str, Any]],
+    observed_at: str,
+    account_source: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    return _sync_observed_portfolio(
+        account_profile_id=account_profile_id,
+        holdings=holdings,
+        observed_at=observed_at,
+        account_source=account_source,
+        source_kind="manual",
+        db_path=db_path,
+    )
+
+
+def sync_observed_portfolio_import(
+    *,
+    account_profile_id: str,
+    import_path: str | Path,
+    observed_at: str,
+    account_source: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    with Path(import_path).open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            rows.append(
+                {
+                    "product_id": row.get("product_id"),
+                    "product_name": row.get("product_name"),
+                    "market_value": row.get("market_value"),
+                    "cost_basis": row.get("cost_basis"),
+                }
+            )
+    return _sync_observed_portfolio(
+        account_profile_id=account_profile_id,
+        holdings=rows,
+        observed_at=observed_at,
+        account_source=account_source,
+        source_kind="statement_import",
+        db_path=db_path,
+    )
+
+
+def sync_observed_portfolio_ocr(
+    *,
+    account_profile_id: str,
+    holdings: list[dict[str, Any]],
+    observed_at: str,
+    account_source: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    return _sync_observed_portfolio(
+        account_profile_id=account_profile_id,
+        holdings=holdings,
+        observed_at=observed_at,
+        account_source=account_source,
+        source_kind="ocr",
+        db_path=db_path,
+    )

@@ -5,6 +5,9 @@ from .service import (
     load_frontdesk_snapshot,
     load_user_state,
     record_frontdesk_execution_feedback,
+    sync_observed_portfolio_import,
+    sync_observed_portfolio_manual,
+    sync_observed_portfolio_ocr,
     run_frontdesk_followup,
     run_frontdesk_onboarding,
 )
@@ -19,6 +22,9 @@ __all__ = [
     "load_frontdesk_snapshot",
     "load_user_state",
     "record_frontdesk_execution_feedback",
+    "sync_observed_portfolio_import",
+    "sync_observed_portfolio_manual",
+    "sync_observed_portfolio_ocr",
     "run_frontdesk_followup",
     "run_frontdesk_onboarding",
 ]

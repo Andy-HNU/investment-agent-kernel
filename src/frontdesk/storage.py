@@ -173,6 +173,18 @@ class FrontdeskExecutionPlanRecord:
     updated_at: str
 
 
+@dataclass
+class FrontdeskObservedPortfolioRecord:
+    account_profile_id: str
+    portfolio_version: int
+    source_kind: str
+    account_source: str
+    observed_at: str
+    payload: dict[str, Any]
+    created_at: str
+    updated_at: str
+
+
 def _bool_from_db(value: Any) -> bool | None:
     if value is None:
         return None
@@ -263,6 +275,35 @@ def _execution_plan_record_from_row(row: sqlite3.Row | None) -> FrontdeskExecuti
         payload=_json_loads(row["payload_json"]) or {},
         approved_at=row["approved_at"],
         superseded_by_plan_id=row["superseded_by_plan_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _observed_portfolio_record_summary(
+    record: FrontdeskObservedPortfolioRecord | None,
+) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    return {
+        "portfolio_version": record.portfolio_version,
+        "source_kind": record.source_kind,
+        "account_source": record.account_source,
+        "observed_at": record.observed_at,
+        **dict(record.payload or {}),
+    }
+
+
+def _observed_portfolio_record_from_row(row: sqlite3.Row | None) -> FrontdeskObservedPortfolioRecord | None:
+    if row is None:
+        return None
+    return FrontdeskObservedPortfolioRecord(
+        account_profile_id=row["account_profile_id"],
+        portfolio_version=int(row["portfolio_version"]),
+        source_kind=row["source_kind"],
+        account_source=row["account_source"],
+        observed_at=row["observed_at"],
+        payload=_json_loads(row["payload_json"]) or {},
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -598,6 +639,18 @@ class FrontdeskStore:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS observed_portfolio_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_profile_id TEXT NOT NULL,
+                    portfolio_version INTEGER NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    account_source TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_frontdesk_baselines_account_created
                 ON frontdesk_baselines(account_profile_id, created_at DESC);
 
@@ -612,6 +665,9 @@ class FrontdeskStore:
 
                 CREATE INDEX IF NOT EXISTS idx_execution_feedback_records_account_updated
                 ON execution_feedback_records(account_profile_id, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_observed_portfolio_records_account_observed
+                ON observed_portfolio_records(account_profile_id, observed_at DESC, updated_at DESC);
                 """
             )
 
@@ -927,6 +983,55 @@ class FrontdeskStore:
             feedback_status=payload["feedback_status"],
             feedback_source=feedback_source,
             payload=payload,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+    def save_observed_portfolio_record(
+        self,
+        *,
+        account_profile_id: str,
+        portfolio_version: int,
+        source_kind: str,
+        account_source: str,
+        observed_at: str,
+        payload: dict[str, Any],
+        created_at: str,
+        updated_at: str,
+    ) -> FrontdeskObservedPortfolioRecord:
+        payload_data = dict(payload or {})
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO observed_portfolio_records(
+                    account_profile_id,
+                    portfolio_version,
+                    source_kind,
+                    account_source,
+                    observed_at,
+                    payload_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    account_profile_id,
+                    int(portfolio_version),
+                    source_kind,
+                    account_source,
+                    observed_at,
+                    _json_dumps(payload_data),
+                    created_at,
+                    updated_at,
+                ),
+            )
+        return FrontdeskObservedPortfolioRecord(
+            account_profile_id=account_profile_id,
+            portfolio_version=int(portfolio_version),
+            source_kind=source_kind,
+            account_source=account_source,
+            observed_at=observed_at,
+            payload=payload_data,
             created_at=created_at,
             updated_at=updated_at,
         )
@@ -1262,6 +1367,23 @@ class FrontdeskStore:
             "history": feedback_records,
         }
 
+    def get_latest_observed_portfolio(
+        self,
+        account_profile_id: str,
+    ) -> FrontdeskObservedPortfolioRecord | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM observed_portfolio_records
+                WHERE account_profile_id = ?
+                ORDER BY observed_at DESC, updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (account_profile_id,),
+            ).fetchone()
+        return _observed_portfolio_record_from_row(row)
+
     def load_user_state(self, account_profile_id: str) -> dict[str, Any] | None:
         snapshot = self.get_frontdesk_snapshot(account_profile_id)
         if snapshot is None:
@@ -1286,6 +1408,8 @@ class FrontdeskStore:
             "execution_plan_comparison": snapshot.get("execution_plan_comparison"),
             "execution_feedback": snapshot.get("execution_feedback"),
             "execution_feedback_summary": snapshot.get("execution_feedback_summary"),
+            "observed_portfolio": snapshot.get("observed_portfolio"),
+            "reconciliation_state": snapshot.get("reconciliation_state"),
         }
 
     def get_user_profile(self, account_profile_id: str) -> dict[str, Any] | None:
@@ -1506,6 +1630,8 @@ class FrontdeskStore:
         active_execution_plan = self.get_latest_active_execution_plan(account_profile_id)
         pending_execution_plan = self.get_latest_pending_execution_plan(account_profile_id)
         execution_feedback_summary = self.get_execution_feedback_summary(account_profile_id)
+        observed_portfolio = self.get_latest_observed_portfolio(account_profile_id)
+        observed_payload = _observed_portfolio_record_summary(observed_portfolio)
         return {
             "profile": profile,
             "latest_baseline": None if baseline is None else {
@@ -1524,4 +1650,6 @@ class FrontdeskStore:
             "execution_plan_comparison": _compare_execution_plans(active_execution_plan, pending_execution_plan),
             "execution_feedback": execution_feedback_summary["latest_feedback"],
             "execution_feedback_summary": execution_feedback_summary,
+            "observed_portfolio": observed_payload,
+            "reconciliation_state": None if observed_payload is None else observed_payload.get("reconciliation_state"),
         }
