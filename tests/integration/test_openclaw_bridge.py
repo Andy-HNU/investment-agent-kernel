@@ -31,6 +31,32 @@ def test_bridge_handles_status_query(tmp_path):
     assert result['result']['user_state']['profile']['account_profile_id'] == 'status_user'
 
 
+def test_bridge_handles_quarterly_event_show_user_and_explanations(tmp_path):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / 'frontdesk.sqlite'
+    handle_task("onboard user bridge_wave4 assets 50000 monthly 5000 goal 200000 in 36 months risk moderate", db_path=str(db))
+
+    quarterly = handle_task("run quarterly review for user bridge_wave4", db_path=str(db))
+    show_user = handle_task("show-user for user bridge_wave4", db_path=str(db))
+    event = handle_task("event review for user bridge_wave4 after drawdown and rebalance", db_path=str(db))
+    explain_probability = handle_task("why did the probability change for user bridge_wave4", db_path=str(db))
+    explain_plan = handle_task("why replace active plan for user bridge_wave4", db_path=str(db))
+
+    assert quarterly["intent"]["name"] == "quarterly"
+    assert quarterly["result"]["workflow_type"] == "quarterly"
+    assert show_user["intent"]["name"] == "show_user"
+    assert show_user["result"]["snapshot"]["profile"]["account_profile_id"] == "bridge_wave4"
+    assert event["intent"]["name"] == "event"
+    assert event["result"]["workflow_type"] == "event"
+    assert explain_probability["intent"]["name"] == "explain_probability"
+    assert explain_probability["result"]["status"] == "explained"
+    assert explain_probability["result"]["explanation"]
+    assert explain_plan["intent"]["name"] == "explain_plan_change"
+    assert explain_plan["result"]["status"] == "explained"
+    assert explain_plan["result"]["explanation"]
+
+
 def test_acceptance_cli_writes_logs(tmp_path, capsys):
     # Smoke test the CLI wrapper to ensure it writes a log file
     import sys

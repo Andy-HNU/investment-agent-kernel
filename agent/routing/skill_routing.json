@@ -2,10 +2,14 @@
   "version": 1,
   "intents": [
     {"name": "onboarding", "patterns": ["onboard", "onboarding", "create profile"], "tool": "frontdesk.onboarding"},
+    {"name": "show_user", "patterns": ["show-user", "show user", "show profile", "展示用户", "用户全貌"], "tool": "frontdesk.show_user"},
     {"name": "status", "patterns": ["status", "show status", "how am i doing", "check user"], "tool": "frontdesk.status"},
     {"name": "monthly", "patterns": ["monthly", "next month", "run monthly", "follow-up"], "tool": "frontdesk.followup.monthly"},
+    {"name": "quarterly", "patterns": ["quarterly", "quarter review", "季度复查", "季检"], "tool": "frontdesk.followup.quarterly"},
+    {"name": "event", "patterns": ["event", "drawdown", "selloff", "回撤", "大跌", "突发"], "tool": "frontdesk.followup.event"},
     {"name": "feedback", "patterns": ["executed", "skipped", "i did", "took action"], "tool": "frontdesk.feedback"},
-    {"name": "approve_plan", "patterns": ["approve plan", "confirm plan", "promote"], "tool": "frontdesk.approve_plan"}
+    {"name": "approve_plan", "patterns": ["approve plan", "confirm plan", "promote", "确认方案", "批准方案"], "tool": "frontdesk.approve_plan"},
+    {"name": "explain_probability", "patterns": ["why probability changed", "为什么概率变了", "为什么达成率变了"], "tool": "frontdesk.explain.probability"},
+    {"name": "explain_plan_change", "patterns": ["why replace active plan", "为什么建议替换方案", "为什么建议替换active plan"], "tool": "frontdesk.explain.plan_change"}
   ]
 }
-

@@ -20,9 +20,14 @@ def test_agent_tool_contracts_and_routing_exist_with_required_keys(repo_root: Pa
     for name in (
         'frontdesk.onboarding',
         'frontdesk.followup.monthly',
+        'frontdesk.followup.quarterly',
+        'frontdesk.followup.event',
         'frontdesk.status',
+        'frontdesk.show_user',
         'frontdesk.feedback',
         'frontdesk.approve_plan',
+        'frontdesk.explain.probability',
+        'frontdesk.explain.plan_change',
     ):
         assert name in tools, f"missing tool contract: {name}"
         assert isinstance(tools[name].get('inputs'), list)
@@ -35,6 +40,11 @@ def test_agent_tool_contracts_and_routing_exist_with_required_keys(repo_root: Pa
     intents = routing.get('intents') or []
     assert any(i.get('tool') == 'frontdesk.onboarding' for i in intents)
     assert any(i.get('tool') == 'frontdesk.followup.monthly' for i in intents)
+    assert any(i.get('tool') == 'frontdesk.followup.quarterly' for i in intents)
+    assert any(i.get('tool') == 'frontdesk.followup.event' for i in intents)
+    assert any(i.get('tool') == 'frontdesk.show_user' for i in intents)
+    assert any(i.get('tool') == 'frontdesk.explain.probability' for i in intents)
+    assert any(i.get('tool') == 'frontdesk.explain.plan_change' for i in intents)
 
     # Source map and policies
     source_map_path = repo_root / 'agent' / 'source_map.json'
@@ -57,4 +67,3 @@ def test_openclaw_docs_exist(repo_root: Path = Path('.').resolve()):
     assert (base / 'contracts' / 'bridge_contract.md').exists()
     assert (base / 'config' / 'schema.json').exists()
     assert (base / 'acceptance.md').exists()
-

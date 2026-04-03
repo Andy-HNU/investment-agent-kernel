@@ -25,10 +25,28 @@
       "outputs": ["workflow", "status", "run_id", "decision_card"]
     },
     {
+      "name": "frontdesk.followup.quarterly",
+      "summary": "Run quarterly full review using saved baseline and optional profile refresh.",
+      "inputs": ["account_profile_id", "profile_json", "external_snapshot_source", "external_data_config"],
+      "outputs": ["workflow", "status", "run_id", "decision_card", "pending_execution_plan"]
+    },
+    {
+      "name": "frontdesk.followup.event",
+      "summary": "Run event-driven review with explicit event_context and runtime risk controls.",
+      "inputs": ["account_profile_id", "event_context", "profile_json", "external_snapshot_source", "external_data_config"],
+      "outputs": ["workflow", "status", "run_id", "decision_card"]
+    },
+    {
       "name": "frontdesk.status",
       "summary": "Return persisted user_state snapshot for a profile.",
       "inputs": ["account_profile_id"],
       "outputs": ["user_state"]
+    },
+    {
+      "name": "frontdesk.show_user",
+      "summary": "Return the richer frontdesk snapshot, including latest run, baseline, plans, and feedback.",
+      "inputs": ["account_profile_id"],
+      "outputs": ["snapshot"]
     },
     {
       "name": "frontdesk.feedback",
@@ -41,7 +59,18 @@
       "summary": "Approve a pending execution plan and promote it to active.",
       "inputs": ["account_profile_id", "plan_id", "plan_version", "approved_at"],
       "outputs": ["status", "approved_execution_plan", "active_execution_plan"]
+    },
+    {
+      "name": "frontdesk.explain.probability",
+      "summary": "Explain current success probability using decision card, simulation mode, and market state context.",
+      "inputs": ["account_profile_id"],
+      "outputs": ["status", "explanation", "metrics"]
+    },
+    {
+      "name": "frontdesk.explain.plan_change",
+      "summary": "Explain why the system suggests replacing or keeping the active execution plan.",
+      "inputs": ["account_profile_id"],
+      "outputs": ["status", "explanation", "comparison", "guidance"]
     }
   ]
 }
-
