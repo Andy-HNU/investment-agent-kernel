@@ -610,7 +610,17 @@ def _append_model_honesty_notes(
             "historical_dataset "
             f"source={inp.solver_params.market_assumptions.source_name or 'unknown'} "
             f"version={inp.solver_params.market_assumptions.dataset_version or 'unknown'} "
+            f"frequency={inp.solver_params.market_assumptions.frequency or 'unknown'} "
+            f"lookback_days={inp.solver_params.market_assumptions.lookback_days or 0} "
             f"lookback_months={inp.solver_params.market_assumptions.lookback_months or 0}"
+        )
+        notes.append(
+            "historical_dataset_cycle "
+            f"coverage_status={inp.solver_params.market_assumptions.coverage_status or 'unknown'} "
+            f"observed_history_days={inp.solver_params.market_assumptions.observed_history_days} "
+            f"inferred_history_days={inp.solver_params.market_assumptions.inferred_history_days} "
+            f"inference_method={inp.solver_params.market_assumptions.inference_method or 'none'} "
+            f"cycle_reasons={','.join(inp.solver_params.market_assumptions.cycle_reasons) or 'none'}"
         )
     else:
         notes.append(

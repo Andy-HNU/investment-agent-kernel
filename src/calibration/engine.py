@@ -210,6 +210,12 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
         volatility_regime = "high"
     if historical_metadata:
         quality_flags.append("historical_dataset_attached")
+    coverage_status = _first_text(historical_metadata.get("coverage_status"))
+    cycle_reasons = [str(item) for item in list(historical_metadata.get("cycle_reasons") or []) if str(item).strip()]
+    if coverage_status == "cycle_insufficient":
+        quality_flags.append("historical_dataset_cycle_insufficient")
+    if int(historical_metadata.get("inferred_history_days") or 0) > 0:
+        quality_flags.append("historical_dataset_inferred_history_attached")
     if str(policy_summary.get("liquidity_stress") or "").lower() == "high":
         quality_flags.append("policy_signal_liquidity_stress_high")
         for bucket in buckets:
@@ -248,6 +254,13 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
         policy_signal_ids=list(policy_summary.get("signal_ids") or []),
         historical_dataset_version=_first_text(historical_metadata.get("version_id"), historical_metadata.get("dataset_version")),
         historical_dataset_source=_first_text(historical_metadata.get("source_name"), historical_metadata.get("source_ref")),
+        historical_frequency=_first_text(historical_metadata.get("frequency")),
+        historical_coverage_status=coverage_status,
+        historical_cycle_reasons=cycle_reasons,
+        observed_history_days=int(historical_metadata.get("observed_history_days") or 0),
+        inferred_history_days=int(historical_metadata.get("inferred_history_days") or 0),
+        lookback_days=int(historical_metadata.get("lookback_days") or 0),
+        historical_inference_method=_first_text(historical_metadata.get("inference_method")),
     )
 
 
@@ -416,17 +429,20 @@ def calibrate_market_assumptions(
             buckets=buckets,
         )
         if dataset_returns and dataset_volatility:
+            coverage_status = historical_dataset.coverage_status
+            cycle_penalty = 1.0 if coverage_status == "verified" else 0.90
+            vol_penalty = 1.0 if coverage_status == "verified" else 1.10
             expected_returns = {
                 bucket: float(
                     max(
-                        min(dataset_returns.get(bucket, _default_expected_return(bucket)) * 0.95, 0.30),
+                        min(dataset_returns.get(bucket, _default_expected_return(bucket)) * 0.95 * cycle_penalty, 0.30),
                         -0.30,
                     )
                 )
                 for bucket in buckets
             }
             volatility = {
-                bucket: float(max(dataset_volatility.get(bucket, _default_volatility(bucket)), 0.03))
+                bucket: float(max(dataset_volatility.get(bucket, _default_volatility(bucket)) * vol_penalty, 0.03))
                 for bucket in buckets
             }
             correlation_matrix: dict[str, dict[str, float]] = {}
@@ -449,8 +465,15 @@ def calibrate_market_assumptions(
                 correlation_matrix=correlation_matrix,
                 source_name=historical_dataset.source_name,
                 dataset_version=historical_dataset.version_id,
+                frequency=historical_dataset.frequency,
                 lookback_months=historical_dataset.lookback_months or None,
+                lookback_days=historical_dataset.lookback_days or None,
                 historical_backtest_used=True,
+                coverage_status=historical_dataset.coverage_status,
+                cycle_reasons=list(historical_dataset.cycle_reasons),
+                observed_history_days=int(historical_dataset.observed_history_days or 0),
+                inferred_history_days=int(historical_dataset.inferred_history_days or 0),
+                inference_method=historical_dataset.inference_method,
             )
     if (bundle_quality == "degraded" or not raw_volatility) and prior_market_assumptions:
         return MarketAssumptions(**prior_market_assumptions)
@@ -490,8 +513,15 @@ def calibrate_market_assumptions(
         correlation_matrix=correlation_matrix,
         source_name=str(market_raw.get("provider_name") or "snapshot_market"),
         dataset_version=None,
+        frequency=None,
         lookback_months=None,
+        lookback_days=None,
         historical_backtest_used=False,
+        coverage_status=None,
+        cycle_reasons=[],
+        observed_history_days=0,
+        inferred_history_days=0,
+        inference_method=None,
     )
 
 
@@ -824,6 +854,14 @@ def run_calibration(
             f"source={market_assumptions.source_name or 'unknown'} "
             f"version={market_assumptions.dataset_version or 'unknown'} "
             f"lookback_months={market_assumptions.lookback_months or 0}"
+        )
+        notes.append(
+            "historical_dataset_cycle "
+            f"coverage_status={market_assumptions.coverage_status or 'unknown'} "
+            f"observed_history_days={market_assumptions.observed_history_days} "
+            f"inferred_history_days={market_assumptions.inferred_history_days} "
+            f"inference_method={market_assumptions.inference_method or 'none'} "
+            f"cycle_reasons={','.join(market_assumptions.cycle_reasons) or 'none'}"
         )
 
     reason = _derive_updated_reason(

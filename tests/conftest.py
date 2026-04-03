@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 import sys
 
@@ -12,6 +14,8 @@ if SRC.exists() and str(SRC) not in sys.path:
 
 
 import pytest
+from shared.datasets.cache import DatasetCache
+from shared.datasets.types import DatasetSpec, VersionPin
 
 from tests.fixtures.factories import (
     make_action,
@@ -89,3 +93,31 @@ def candidate_actions_base():
         make_action("freeze"),
         make_action("observe"),
     ]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def real_source_market_cache(tmp_path_factory):
+    cache_dir = tmp_path_factory.mktemp("real_source_market_cache")
+    fixture_dir = ROOT / "tests" / "fixtures" / "real_source"
+    cache = DatasetCache(base_dir=cache_dir)
+    for fixture_path in sorted(fixture_dir.glob("*.json")):
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        if not {"provider", "dataset_id", "symbol", "version_id", "source_ref", "rows"}.issubset(payload):
+            continue
+        spec = DatasetSpec(
+            kind="timeseries",
+            dataset_id=str(payload["dataset_id"]),
+            provider=str(payload["provider"]),
+            symbol=str(payload["symbol"]),
+        )
+        pin = VersionPin(version_id=str(payload["version_id"]), source_ref=str(payload["source_ref"]))
+        cache.write(spec, pin, list(payload["rows"]))
+    previous = os.environ.get("INVESTMENT_MARKET_HISTORY_CACHE_DIR")
+    os.environ["INVESTMENT_MARKET_HISTORY_CACHE_DIR"] = str(cache_dir)
+    try:
+        yield cache_dir
+    finally:
+        if previous is None:
+            os.environ.pop("INVESTMENT_MARKET_HISTORY_CACHE_DIR", None)
+        else:
+            os.environ["INVESTMENT_MARKET_HISTORY_CACHE_DIR"] = previous

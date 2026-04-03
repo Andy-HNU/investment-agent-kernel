@@ -34,6 +34,13 @@ class MarketState:
     policy_signal_ids: list[str] = field(default_factory=list)
     historical_dataset_version: str | None = None
     historical_dataset_source: str | None = None
+    historical_frequency: str | None = None
+    historical_coverage_status: str | None = None
+    historical_cycle_reasons: list[str] = field(default_factory=list)
+    observed_history_days: int = 0
+    inferred_history_days: int = 0
+    lookback_days: int = 0
+    historical_inference_method: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

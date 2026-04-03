@@ -233,7 +233,10 @@ def test_snapshot_bundle_and_calibration_absorb_history_and_policy_signals():
     assert bundle.policy_news_signals[0].policy_regime == "tightening"
     assert result.market_assumptions.historical_backtest_used is True
     assert result.market_assumptions.source_name == "akshare"
+    assert result.market_state.historical_coverage_status == "cycle_insufficient"
+    assert "missing_downcycle" in result.market_state.historical_cycle_reasons
     assert result.market_state.policy_regime == "tightening"
     assert result.market_state.manual_review_required is True
     assert any("policy_signal policy_regime=tightening" in note for note in result.notes)
     assert any("historical_dataset source=akshare" in note for note in result.notes)
+    assert any("historical_dataset_cycle coverage_status=cycle_insufficient" in note for note in result.notes)

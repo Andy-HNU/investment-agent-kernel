@@ -42,8 +42,15 @@ class MarketAssumptions:
     correlation_matrix: dict[str, dict[str, float]]
     source_name: str | None = None
     dataset_version: str | None = None
+    frequency: str | None = None
     lookback_months: int | None = None
+    lookback_days: int | None = None
     historical_backtest_used: bool = False
+    coverage_status: str | None = None
+    cycle_reasons: list[str] = field(default_factory=list)
+    observed_history_days: int = 0
+    inferred_history_days: int = 0
+    inference_method: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

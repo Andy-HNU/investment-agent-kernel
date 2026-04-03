@@ -16,7 +16,7 @@ def test_bridge_handles_onboarding_from_natural_language(tmp_path):
     result = handle_task(task, db_path=str(db))
     assert result['intent']['name'] == 'onboarding'
     assert result['invocation']['account_profile_id'] == 'demo_user'
-    assert result['result']['status'] in {'ok', 'success', 'completed'} or result['result']['status'] == 'onboarding_completed'
+    assert result['result']['status'] in {'ok', 'success', 'completed', 'degraded', 'onboarding_completed'}
     # Should persist state; follow-up monthly should now be allowed
 
 

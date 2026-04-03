@@ -7,10 +7,8 @@ from typing import Any
 from shared.product_defaults import (
     build_default_account_raw,
     build_default_allocation_input,
-    build_default_behavior_raw,
     build_default_constraint_raw,
     build_default_goal_raw,
-    build_default_market_raw,
     product_market_assumptions,
 )
 from shared.goal_semantics import build_goal_semantics
@@ -342,8 +340,6 @@ def build_user_onboarding_inputs(
             ),
         ],
         "default_assumed": [
-            _source_item("market_raw", "市场输入", "product_default_market_snapshot"),
-            _source_item("behavior_raw", "行为输入", "product_default_behavior_snapshot"),
             _source_item("constraint.qdii_cap", "QDII 上限", 0.20),
             _source_item("constraint.liquidity_reserve_min", "最低流动性储备", constraint_profile["liquidity_reserve_min"]),
             _source_item("solver.success_prob_threshold", "目标达成阈值", success_prob_threshold),
@@ -440,7 +436,7 @@ def build_user_onboarding_inputs(
     raw_inputs = {
         "account_profile_id": profile.account_profile_id,
         "as_of": as_of,
-        "market_raw": build_default_market_raw(goal_solver_input),
+        "market_raw": {},
         "account_raw": build_default_account_raw(goal_solver_input, live_portfolio),
         "goal_raw": build_default_goal_raw(goal_solver_input),
         "constraint_raw": build_default_constraint_raw(
@@ -448,7 +444,7 @@ def build_user_onboarding_inputs(
             parsed_profile=parsed_profile.to_dict(),
             profile_dimensions=profile_dimensions,
         ),
-        "behavior_raw": build_default_behavior_raw(),
+        "behavior_raw": None,
         "remaining_horizon_months": goal_horizon_months,
         "allocation_engine_input": build_default_allocation_input(
             goal_solver_input=goal_solver_input,

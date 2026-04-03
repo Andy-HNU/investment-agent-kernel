@@ -7,6 +7,7 @@ from .engine import (
     validate_goal_snapshot,
     validate_market_snapshot,
 )
+from .cycle_policy import CycleCoverageSummary, evaluate_cycle_coverage
 from .historical import (
     HistoricalDatasetCache,
     HistoricalDatasetSnapshot,
@@ -23,6 +24,7 @@ from .types import CompletenessLevel, PolicyNewsSignal, QualityFlag, SnapshotBun
 
 __all__ = [
     "CompletenessLevel",
+    "CycleCoverageSummary",
     "HistoricalDatasetCache",
     "HistoricalDatasetSnapshot",
     "PolicyNewsSignal",
@@ -31,6 +33,7 @@ __all__ = [
     "SnapshotBundle",
     "build_historical_dataset_snapshot",
     "build_snapshot_bundle",
+    "evaluate_cycle_coverage",
     "find_provider_coverage",
     "load_provider_capability_matrix",
     "provider_capability_matrix_dicts",

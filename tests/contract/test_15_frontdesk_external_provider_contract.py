@@ -5,6 +5,7 @@ import json
 import pytest
 
 from frontdesk.external_data import ExternalSnapshotAdapterError
+from frontdesk.storage import FrontdeskStore
 from frontdesk.service import load_user_state, run_frontdesk_followup, run_frontdesk_onboarding
 from shared.onboarding import UserOnboardingProfile
 from tests.support.http_snapshot_server import serve_json_routes
@@ -88,7 +89,7 @@ def test_frontdesk_onboarding_accepts_http_json_provider_config(tmp_path):
             },
         )
 
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fetched"
     assert summary["external_snapshot_source"].startswith(f"{base_url}/snapshot?")
     assert summary["input_provenance"]["counts"]["externally_fetched"] >= 1
@@ -100,6 +101,32 @@ def test_frontdesk_onboarding_accepts_http_json_provider_config(tmp_path):
         for item in summary["input_provenance"].get("default_assumed", [])
     )
     assert summary["user_state"]["profile"]["current_total_assets"] == 61_000.0
+
+
+@pytest.mark.contract
+def test_formal_frontdesk_onboarding_defaults_to_real_source_market_history(tmp_path):
+    profile = _profile(account_profile_id="frontdesk_real_source_default")
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    summary = run_frontdesk_onboarding(profile, db_path=db_path)
+
+    assert summary["status"] in {"completed", "degraded"}
+    assert summary["refresh_summary"]["provider_name"] == "real_source_market_history"
+    assert summary["refresh_summary"]["source_kind"] == "snapshot_source"
+    assert summary["input_provenance"]["counts"]["externally_fetched"] >= 1
+    assert any(
+        str(item.get("field")) == "market_raw"
+        for item in summary["input_provenance"].get("externally_fetched", [])
+    )
+    snapshot = FrontdeskStore(db_path).get_frontdesk_snapshot(profile.account_profile_id)
+    assert snapshot is not None
+    market_assumptions = snapshot["latest_baseline"]["goal_solver_input"]["solver_params"]["market_assumptions"]
+    assert market_assumptions["source_name"] == "real_source_market_history"
+    assert market_assumptions["historical_backtest_used"] is True
+    assert market_assumptions["frequency"] == "daily"
+    assert market_assumptions["lookback_days"] >= 252
+    assert market_assumptions["dataset_version"].startswith("real_source_market_history:")
+    assert market_assumptions["coverage_status"] in {"verified", "cycle_insufficient"}
 
 
 @pytest.mark.contract
@@ -117,11 +144,15 @@ def test_frontdesk_provider_config_fail_open_falls_back_without_blocking(tmp_pat
             },
         )
 
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fallback"
     assert summary["external_snapshot_error"] is not None
-    assert summary["input_provenance"]["counts"]["externally_fetched"] == 0
-    assert summary["input_provenance"]["counts"]["default_assumed"] >= 1
+    assert summary["input_provenance"]["counts"]["externally_fetched"] >= 1
+    assert summary["refresh_summary"]["provider_name"] == "real_source_market_history"
+    assert not any(
+        item.get("field") in {"market_raw", "behavior_raw"}
+        for item in summary["input_provenance"].get("default_assumed", [])
+    )
 
 
 @pytest.mark.contract
@@ -146,7 +177,7 @@ def test_frontdesk_monthly_accepts_provider_config_from_json_file(tmp_path):
     profile = _profile(account_profile_id="frontdesk_provider_monthly")
     db_path = tmp_path / "frontdesk.sqlite"
     onboarding_summary = run_frontdesk_onboarding(profile, db_path=db_path)
-    assert onboarding_summary["status"] == "completed"
+    assert onboarding_summary["status"] in {"completed", "degraded"}
 
     config_path = tmp_path / "provider_config.json"
     with serve_json_routes({"/snapshot": (200, _snapshot(total_value=64_000.0))}) as base_url:
@@ -170,7 +201,7 @@ def test_frontdesk_monthly_accepts_provider_config_from_json_file(tmp_path):
         )
 
     user_state = load_user_state(profile.account_profile_id, db_path=db_path)
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fetched"
     assert summary["input_provenance"]["counts"]["externally_fetched"] >= 1
     assert user_state is not None
@@ -178,22 +209,17 @@ def test_frontdesk_monthly_accepts_provider_config_from_json_file(tmp_path):
 
 
 @pytest.mark.contract
-def test_frontdesk_onboarding_accepts_inline_snapshot_provider_config(tmp_path):
+def test_formal_frontdesk_onboarding_rejects_inline_snapshot_provider_config(tmp_path):
     profile = _profile(account_profile_id="frontdesk_provider_inline")
-
-    summary = run_frontdesk_onboarding(
-        profile,
-        db_path=tmp_path / "frontdesk.sqlite",
-        external_data_config={
-            "adapter": "inline_snapshot",
-            "provider_name": "fixture_inline_provider",
-            "as_of": "2026-03-30T07:30:00Z",
-            "fetched_at": "2026-03-30T08:00:00Z",
-            "payload": _snapshot(total_value=62_500.0),
-        },
-    )
-
-    assert summary["status"] == "completed"
-    assert summary["external_snapshot_status"] == "fetched"
-    assert summary["refresh_summary"]["provider_name"] == "fixture_inline_provider"
-    assert summary["user_state"]["profile"]["current_total_assets"] == 62_500.0
+    with pytest.raises(ValueError, match="formal frontdesk flow forbids debug adapter: inline_snapshot"):
+        run_frontdesk_onboarding(
+            profile,
+            db_path=tmp_path / "frontdesk.sqlite",
+            external_data_config={
+                "adapter": "inline_snapshot",
+                "provider_name": "fixture_inline_provider",
+                "as_of": "2026-03-30T07:30:00Z",
+                "fetched_at": "2026-03-30T08:00:00Z",
+                "payload": _snapshot(total_value=62_500.0),
+            },
+        )

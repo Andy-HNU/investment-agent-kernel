@@ -140,7 +140,7 @@ def test_frontdesk_onboarding_with_http_json_provider_config_path_persists_exter
     store = FrontdeskStore(tmp_path / "frontdesk.sqlite")
     user_state = store.load_user_state(profile.account_profile_id)
 
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fetched"
     assert Path(summary["external_snapshot_source"]) == config_path
     assert user_state is not None
@@ -285,8 +285,12 @@ def test_frontdesk_onboarding_http_json_provider_config_fail_open_falls_back_wit
     store = FrontdeskStore(tmp_path / "frontdesk.sqlite")
     user_state = store.load_user_state(profile.account_profile_id)
 
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fallback"
     assert summary.get("external_snapshot_error") is None
     assert user_state is not None
-    assert user_state["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 0
+    assert user_state["decision_card"]["input_provenance"]["counts"]["externally_fetched"] >= 1
+    assert any(
+        item["field"] == "market_raw"
+        for item in user_state["decision_card"]["input_provenance"]["externally_fetched"]
+    )

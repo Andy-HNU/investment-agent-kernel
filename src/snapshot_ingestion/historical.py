@@ -7,6 +7,8 @@ from math import sqrt
 from pathlib import Path
 from typing import Any
 
+from snapshot_ingestion.cycle_policy import evaluate_cycle_coverage
+
 
 @dataclass(frozen=True)
 class HistoricalDatasetSnapshot:
@@ -17,7 +19,14 @@ class HistoricalDatasetSnapshot:
     source_ref: str
     lookback_months: int
     return_series: dict[str, list[float]]
+    frequency: str = "daily"
+    lookback_days: int = 0
+    series_dates: list[str] = field(default_factory=list)
     coverage_status: str = "verified"
+    cycle_reasons: list[str] = field(default_factory=list)
+    observed_history_days: int = 0
+    inferred_history_days: int = 0
+    inference_method: str | None = None
     cached_at: str | None = None
     notes: list[str] = field(default_factory=list)
 
@@ -32,12 +41,21 @@ class HistoricalDatasetSnapshot:
             as_of=str(payload.get("as_of") or ""),
             source_name=str(payload.get("source_name") or "unknown_source"),
             source_ref=str(payload.get("source_ref") or payload.get("source_name") or "unknown_source"),
+            frequency=str(payload.get("frequency") or "daily"),
             lookback_months=int(payload.get("lookback_months") or 0),
+            lookback_days=int(payload.get("lookback_days") or 0),
             return_series={
                 str(bucket): [float(value) for value in list(series or [])]
                 for bucket, series in dict(payload.get("return_series") or {}).items()
             },
+            series_dates=[str(item) for item in list(payload.get("series_dates") or []) if str(item).strip()],
             coverage_status=str(payload.get("coverage_status") or "verified"),
+            cycle_reasons=[str(item) for item in list(payload.get("cycle_reasons") or []) if str(item).strip()],
+            observed_history_days=int(payload.get("observed_history_days") or 0),
+            inferred_history_days=int(payload.get("inferred_history_days") or 0),
+            inference_method=(
+                str(payload.get("inference_method")).strip() if payload.get("inference_method") is not None else None
+            ),
             cached_at=payload.get("cached_at"),
             notes=[str(item) for item in list(payload.get("notes") or []) if str(item).strip()],
         )
@@ -65,6 +83,42 @@ def build_historical_dataset_snapshot(payload: dict[str, Any] | None) -> Histori
     data.setdefault("version_id", version_id)
     if "return_series" not in data:
         return None
+    series_map = {
+        str(bucket): [float(value) for value in list(series or [])]
+        for bucket, series in dict(data.get("return_series") or {}).items()
+        if list(series or [])
+    }
+    series_dates = [str(item) for item in list(data.get("series_dates") or []) if str(item).strip()]
+    observed_history_days = int(data.get("observed_history_days") or 0)
+    if observed_history_days <= 0:
+        observed_history_days = len(series_dates) if series_dates else max((len(series) for series in series_map.values()), default=0)
+        data["observed_history_days"] = observed_history_days
+    frequency = str(data.get("frequency") or "daily").strip().lower() or "daily"
+    data["frequency"] = frequency
+    inferred_history_days = int(data.get("inferred_history_days") or 0)
+    data["inferred_history_days"] = inferred_history_days
+    if int(data.get("lookback_days") or 0) <= 0:
+        data["lookback_days"] = observed_history_days + inferred_history_days
+
+    existing_cycle_reasons = [str(item) for item in list(data.get("cycle_reasons") or []) if str(item).strip()]
+    if existing_cycle_reasons:
+        data["cycle_reasons"] = existing_cycle_reasons
+        data["coverage_status"] = "cycle_insufficient"
+    else:
+        ordered_buckets = sorted(series_map)
+        if ordered_buckets:
+            min_len = min(len(series_map[bucket]) for bucket in ordered_buckets)
+            aggregate_returns = [
+                sum(series_map[bucket][idx] for bucket in ordered_buckets) / len(ordered_buckets)
+                for idx in range(min_len)
+            ]
+            effective_dates = series_dates[-min_len:] if len(series_dates) >= min_len else [str(idx) for idx in range(min_len)]
+            cycle_summary = evaluate_cycle_coverage(dates=effective_dates, returns=aggregate_returns, frequency=frequency)
+            data["cycle_reasons"] = cycle_summary.reasons
+            data["coverage_status"] = "verified" if cycle_summary.coverage_ok else "cycle_insufficient"
+        else:
+            data["cycle_reasons"] = ["missing_observed_history"]
+            data["coverage_status"] = "cycle_insufficient"
     return HistoricalDatasetSnapshot.from_mapping(data)
 
 
@@ -85,6 +139,13 @@ def summarize_historical_dataset(
     if not series_map:
         return {}, {}, {}
 
+    annualization_map = {
+        "daily": 252.0,
+        "weekly": 52.0,
+        "monthly": 12.0,
+    }
+    annualization_scale = annualization_map.get(str(dataset.frequency or "daily").strip().lower(), 252.0)
+
     def _mean(values: list[float]) -> float:
         return sum(values) / len(values)
 
@@ -99,8 +160,8 @@ def summarize_historical_dataset(
     for bucket, series in series_map.items():
         mean_value = _mean(series)
         mean_map[bucket] = mean_value
-        expected_returns[bucket] = float(mean_value * 12.0)
-        volatility[bucket] = float(max(sqrt(_variance(series, mean_value)) * sqrt(12.0), 0.03))
+        expected_returns[bucket] = float(mean_value * annualization_scale)
+        volatility[bucket] = float(max(sqrt(_variance(series, mean_value)) * sqrt(annualization_scale), 0.03))
 
     ordered = sorted(series_map)
     min_len = min(len(series_map[bucket]) for bucket in ordered)

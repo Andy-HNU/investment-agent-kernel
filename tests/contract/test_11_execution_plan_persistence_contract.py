@@ -7,6 +7,7 @@ import pytest
 
 from orchestrator.engine import run_orchestrator
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
+from snapshot_ingestion.real_source_market import build_real_source_market_snapshot
 
 
 def _build_profile() -> UserOnboardingProfile:
@@ -27,9 +28,13 @@ def _build_profile() -> UserOnboardingProfile:
 def _build_onboarding_result():
     profile = _build_profile()
     bundle = build_user_onboarding_inputs(profile, as_of="2026-03-30T00:00:00Z")
+    market_snapshot = build_real_source_market_snapshot(as_of="2026-03-30T00:00:00Z")
+    raw_inputs = dict(bundle.raw_inputs)
+    raw_inputs["market_raw"] = market_snapshot.market_raw
+    raw_inputs["historical_dataset_metadata"] = market_snapshot.historical_dataset_metadata
     result = run_orchestrator(
         trigger={"workflow_type": "onboarding", "run_id": "frontdesk_plan_persistence"},
-        raw_inputs=bundle.raw_inputs,
+        raw_inputs=raw_inputs,
     )
     return profile, bundle, result
 

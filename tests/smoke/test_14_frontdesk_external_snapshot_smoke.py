@@ -138,10 +138,14 @@ def test_frontdesk_cli_onboarding_fetch_failure_falls_back(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert payload["status"] == "completed"
+    assert payload["status"] in {"completed", "degraded"}
     assert payload["external_snapshot_status"] == "fallback"
     assert payload["external_snapshot_error"]
-    assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 0
+    assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["externally_fetched"] >= 1
+    assert any(
+        item["field"] == "market_raw"
+        for item in payload["user_state"]["decision_card"]["input_provenance"]["externally_fetched"]
+    )
 
 
 @pytest.mark.smoke

@@ -452,6 +452,12 @@ def test_run_calibration_uses_historical_dataset_metadata_for_market_assumptions
             "as_of": "2026-03-29",
             "lookback_months": 36,
             "version_id": "fixture_history:2026-03-29:v1",
+            "series_dates": ["2025-12-31", "2026-01-31", "2026-02-28", "2026-03-29"],
+            "observed_history_days": 2520,
+            "inferred_history_days": 365,
+            "inference_method": "index_proxy",
+            "coverage_status": "cycle_insufficient",
+            "cycle_reasons": ["missing_downcycle"],
             "return_series": {
                 "equity_cn": [0.01, 0.02, -0.01, 0.03],
                 "bond_cn": [0.002, 0.004, 0.001, 0.003],
@@ -467,7 +473,18 @@ def test_run_calibration_uses_historical_dataset_metadata_for_market_assumptions
     assert result.market_assumptions.dataset_version == "fixture_history:2026-03-29:v1"
     assert result.market_assumptions.lookback_months == 36
     assert result.market_assumptions.historical_backtest_used is True
+    assert result.market_assumptions.coverage_status == "cycle_insufficient"
+    assert result.market_assumptions.cycle_reasons == ["missing_downcycle"]
+    assert result.market_assumptions.observed_history_days == 2520
+    assert result.market_assumptions.inferred_history_days == 365
+    assert result.market_assumptions.inference_method == "index_proxy"
+    assert result.market_state.historical_coverage_status == "cycle_insufficient"
+    assert result.market_state.historical_cycle_reasons == ["missing_downcycle"]
+    assert result.market_state.observed_history_days == 2520
+    assert result.market_state.inferred_history_days == 365
+    assert result.market_state.historical_inference_method == "index_proxy"
     assert result.goal_solver_params.market_assumptions.dataset_version == "fixture_history:2026-03-29:v1"
+    assert any("historical_dataset_cycle coverage_status=cycle_insufficient" in note for note in result.notes)
 
 
 @pytest.mark.contract

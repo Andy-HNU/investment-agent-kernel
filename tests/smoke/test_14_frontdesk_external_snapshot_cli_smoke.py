@@ -86,7 +86,11 @@ def test_frontdesk_cli_onboarding_with_missing_external_snapshot_falls_back(tmp_
 
     assert exit_code == 0
     assert payload["external_snapshot_status"] == "fallback"
-    assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 0
+    assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["externally_fetched"] >= 1
+    assert any(
+        item["field"] == "market_raw"
+        for item in payload["user_state"]["decision_card"]["input_provenance"]["externally_fetched"]
+    )
 
 
 @pytest.mark.smoke

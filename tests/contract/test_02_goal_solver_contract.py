@@ -237,6 +237,53 @@ def test_run_goal_solver_emits_model_honesty_notes(goal_solver_input_base, monke
 
 
 @pytest.mark.contract
+def test_run_goal_solver_emits_historical_cycle_metadata_in_honesty_notes(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["solver_params"]["market_assumptions"].update(
+        {
+            "source_name": "baostock",
+            "dataset_version": "baostock:sh.600000:20260404",
+            "frequency": "daily",
+            "lookback_days": 2520,
+            "lookback_months": 120,
+            "historical_backtest_used": True,
+            "coverage_status": "cycle_insufficient",
+            "cycle_reasons": ["missing_downcycle", "missing_high_volatility"],
+            "observed_history_days": 2520,
+            "inferred_history_days": 365,
+            "inference_method": "index_proxy",
+        }
+    )
+
+    def _fake_run_monte_carlo(*_args, **_kwargs):
+        return (
+            0.68,
+            {"expected_terminal_value": 2_050_000.0},
+            RiskSummary(
+                max_drawdown_90pct=0.14,
+                terminal_value_tail_mean_95=1_550_000.0,
+                shortfall_probability=0.32,
+                terminal_shortfall_p5_vs_initial=0.08,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert any(
+        note
+        == "historical_dataset source=baostock version=baostock:sh.600000:20260404 frequency=daily lookback_days=2520 lookback_months=120"
+        for note in result.solver_notes
+    )
+    assert any(
+        note
+        == "historical_dataset_cycle coverage_status=cycle_insufficient observed_history_days=2520 inferred_history_days=365 inference_method=index_proxy cycle_reasons=missing_downcycle,missing_high_volatility"
+        for note in result.solver_notes
+    )
+
+
+@pytest.mark.contract
 def test_run_monte_carlo_respects_seed_and_path_count(goal_solver_input_base):
     normalized = goal_solver_engine._goal_solver_input_from_any(goal_solver_input_base)
     weights = normalized.candidate_allocations[0].weights

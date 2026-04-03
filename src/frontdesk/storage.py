@@ -1050,7 +1050,7 @@ class FrontdeskStore:
         result_payload = dict(onboarding_result)
         created_at = str(
             created_at
-            or result_payload.get("goal_solver_output", {}).get("generated_at")
+            or (result_payload.get("goal_solver_output") or {}).get("generated_at")
             or result_payload.get("created_at")
             or result_payload.get("run_id")
         )

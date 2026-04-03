@@ -6,6 +6,10 @@ from typing import Any
 
 from shared.datasets.cache import DatasetCache
 from shared.datasets.types import DatasetSpec, VersionPin, HistoryBar
+from shared.providers._history_common import read_cached_rows
+from shared.providers.akshare_history import fetch_akshare_history
+from shared.providers.baostock_history import fetch_baostock_history
+from shared.providers.yfinance_history import fetch_yfinance_history
 
 
 def _fetch_csv(spec: DatasetSpec, pin: VersionPin) -> list[dict[str, Any]]:
@@ -37,48 +41,63 @@ def fetch_timeseries(
     return_used_pin: bool = False,
 ):
     if spec.provider == "csv":
-        rows = None
         try:
             rows = _fetch_csv(spec, pin)
         except Exception:
-            rows = None
-        if rows is None and allow_fallback:
-            latest = cache.latest_cached_pin(spec)
-            if latest is not None:
-                cached = cache.read(spec, latest)
+            if allow_fallback:
+                cached = read_cached_rows(spec, cache=cache, return_used_pin=return_used_pin)
                 if cached is not None:
-                    return (cached, latest) if return_used_pin else cached
-        if rows is None:
+                    return cached
             raise
         cache.write(spec, pin, rows)
         return (rows, pin) if return_used_pin else rows
-    # Optional yfinance path (graceful): if unavailable, raise clear error
+    if spec.provider == "akshare":
+        try:
+            return fetch_akshare_history(
+                spec,
+                pin=pin,
+                cache=cache,
+                allow_fallback=allow_fallback,
+                return_used_pin=return_used_pin,
+            )
+        except Exception:
+            if allow_fallback:
+                cached = read_cached_rows(spec, cache=cache, return_used_pin=return_used_pin)
+                if cached is not None:
+                    return cached
+            raise
+    if spec.provider == "baostock":
+        try:
+            return fetch_baostock_history(
+                spec,
+                pin=pin,
+                cache=cache,
+                allow_fallback=allow_fallback,
+                return_used_pin=return_used_pin,
+            )
+        except Exception:
+            if allow_fallback:
+                cached = read_cached_rows(spec, cache=cache, return_used_pin=return_used_pin)
+                if cached is not None:
+                    return cached
+            raise
     if spec.provider == "yfinance":
         try:
-            import yfinance as yf  # type: ignore
-        except Exception as exc:  # pragma: no cover (not installed in CI)
-            raise RuntimeError("yfinance provider unavailable - install yfinance") from exc
-        ticker = spec.symbol or ""
-        if not ticker:
-            raise ValueError("yfinance provider requires spec.symbol")
-        df = yf.download(ticker, progress=False)
-        rows = [
-            {
-                "date": str(idx.date()),
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
-                "volume": float(row["Volume"]),
-            }
-            for idx, row in df.iterrows()
-        ]
-        rows = HistoryBar.coerce_many(rows)
-        cache.write(spec, pin, rows)
-        return (rows, pin) if return_used_pin else rows
+            return fetch_yfinance_history(
+                spec,
+                pin=pin,
+                cache=cache,
+                allow_fallback=allow_fallback,
+                return_used_pin=return_used_pin,
+            )
+        except Exception:
+            if allow_fallback:
+                cached = read_cached_rows(spec, cache=cache, return_used_pin=return_used_pin)
+                if cached is not None:
+                    return cached
+            raise
 
     raise ValueError(f"unsupported timeseries provider: {spec.provider}")
 
 
 __all__ = ["fetch_timeseries"]
-

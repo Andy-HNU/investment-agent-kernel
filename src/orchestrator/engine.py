@@ -204,6 +204,7 @@ def _snapshot_build_context(
                 or []
             ),
             "remaining_horizon_months": remaining_horizon_months,
+            "historical_dataset_metadata": _as_dict(envelope.get("historical_dataset_metadata")),
             "schema_version": _first_text(envelope.get("snapshot_schema_version"), "v1.0"),
         },
         missing,
@@ -239,6 +240,7 @@ def _resolve_snapshot_bundle(
             behavior_raw=context["behavior_raw"],
             remaining_horizon_months=int(context["remaining_horizon_months"]),
             policy_news_signals=context["policy_news_signals"],
+            historical_dataset_metadata=context["historical_dataset_metadata"] or None,
             schema_version=str(context["schema_version"]),
         ),
         "generated",

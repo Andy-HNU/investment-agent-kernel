@@ -14,13 +14,12 @@ from shared.profile_dimensions import build_profile_dimensions, goal_priority_fr
 from shared.product_defaults import (
     build_default_account_raw,
     build_default_allocation_input,
-    build_default_behavior_raw,
     build_default_constraint_raw,
     build_default_goal_raw,
-    build_default_market_raw,
 )
-from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
+from shared.onboarding import UserOnboardingProfile, _finalize_input_provenance, build_user_onboarding_inputs
 from shared.profile_parser import parse_profile_semantics
+from snapshot_ingestion.real_source_market import build_real_source_market_snapshot
 
 from frontdesk.adapter import FrontdeskExternalSnapshotAdapter
 from frontdesk.external_data import (
@@ -174,6 +173,19 @@ def _stringify_external_snapshot_config(config_source: str | Path | dict[str, An
     return json.dumps(config_source, ensure_ascii=False, sort_keys=True)
 
 
+def _adapter_name(config_source: str | Path | dict[str, Any] | None) -> str | None:
+    if config_source is None:
+        return None
+    payload = _mapping_from_source(config_source, option_name="external-data-config")
+    return str(payload.get("adapter") or "http_json").strip().lower()
+
+
+def _validate_formal_external_adapter(config_source: str | Path | dict[str, Any] | None) -> None:
+    adapter_name = _adapter_name(config_source)
+    if adapter_name in {"inline_snapshot", "local_json"}:
+        raise ValueError(f"formal frontdesk flow forbids debug adapter: {adapter_name}")
+
+
 def _deep_merge(base: Any, patch: Any) -> Any:
     if isinstance(base, dict) and isinstance(patch, dict):
         merged = deepcopy(base)
@@ -232,6 +244,58 @@ def _external_snapshot_items(external_payload: dict[str, Any]) -> list[dict[str,
     for item in items:
         deduped[str(item["field"])] = item
     return list(deduped.values())
+
+
+def _strip_market_defaults_from_provenance(input_provenance: dict[str, Any]) -> dict[str, Any]:
+    cleaned = deepcopy(input_provenance or {})
+    cleaned["default_assumed"] = [
+        item
+        for item in list(cleaned.get("default_assumed") or [])
+        if str(item.get("field") or "") not in {"market_raw", "behavior_raw"}
+    ]
+    return cleaned
+
+
+def _attach_real_source_market_history(
+    *,
+    raw_inputs: dict[str, Any],
+    input_provenance: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    existing_market = _as_dict(raw_inputs.get("market_raw"))
+    historical_dataset = _as_dict(
+        raw_inputs.get("historical_dataset_metadata") or existing_market.get("historical_dataset")
+    )
+    if historical_dataset:
+        raw_inputs["historical_dataset_metadata"] = historical_dataset
+        return raw_inputs, _strip_market_defaults_from_provenance(input_provenance)
+
+    market_snapshot = build_real_source_market_snapshot(as_of=str(raw_inputs.get("as_of") or _now_iso()))
+    merged_market = deepcopy(market_snapshot.market_raw)
+    merged_market.update(existing_market)
+    merged_market["historical_dataset"] = deepcopy(market_snapshot.historical_dataset_metadata)
+    raw_inputs["market_raw"] = merged_market
+    raw_inputs["historical_dataset_metadata"] = deepcopy(market_snapshot.historical_dataset_metadata)
+
+    cleaned = _strip_market_defaults_from_provenance(input_provenance)
+    externally_fetched = list(cleaned.get("externally_fetched") or [])
+    market_item = {
+        "field": "market_raw",
+        "label": "市场输入",
+        "value": market_snapshot.provider_name,
+        "note": "正式路径默认使用真实外部源抓取并版本化缓存的历史数据",
+        "source_type": "externally_fetched",
+        "source_label": "外部抓取",
+        "detail": {
+            "historical_dataset_version": market_snapshot.historical_dataset_metadata.get("version_id"),
+            "lookback_days": market_snapshot.historical_dataset_metadata.get("lookback_days"),
+            "source_versions": deepcopy(market_snapshot.source_versions),
+        },
+        "fetched_at": market_snapshot.fetched_at,
+    }
+    if not any(str(item.get("field") or "") == "market_raw" for item in externally_fetched):
+        externally_fetched.append(market_item)
+    cleaned["externally_fetched"] = externally_fetched
+    return raw_inputs, _finalize_input_provenance(cleaned)
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -327,6 +391,20 @@ def _build_refresh_summary(
         if domains:
             merged_meta["domains"] = domains
         meta = merged_meta
+    market_raw = _as_dict(raw_inputs.get("market_raw"))
+    historical_dataset = _as_dict(
+        raw_inputs.get("historical_dataset_metadata") or market_raw.get("historical_dataset")
+    )
+    if market_raw and not meta.get("provider_name"):
+        meta = dict(meta)
+        if market_raw.get("provider_name") is not None:
+            meta["provider_name"] = market_raw.get("provider_name")
+        if market_raw.get("fetched_at") is not None:
+            meta.setdefault("fetched_at", market_raw.get("fetched_at"))
+        if historical_dataset.get("as_of") is not None:
+            meta.setdefault("as_of", historical_dataset.get("as_of"))
+        if historical_dataset.get("source_ref") is not None:
+            meta.setdefault("source", historical_dataset.get("source_ref"))
     counts = dict((input_provenance or {}).get("counts") or {})
     fetched_at_raw = meta.get("fetched_at")
     fetched_at = str(fetched_at_raw) if fetched_at_raw else None
@@ -788,15 +866,10 @@ def _workflow_input_provenance(
             "note": "当前持仓描述未能稳定解析，临时按全现金占位，不代表真实持仓",
         }
         default_assumed = [
-            {"field": "market_raw", "label": "市场输入", "value": "product_default_market_snapshot"},
-            {"field": "behavior_raw", "label": "行为输入", "value": "product_default_behavior_snapshot"},
             default_assumed_item,
         ]
     else:
-        default_assumed = [
-            {"field": "market_raw", "label": "市场输入", "value": "product_default_market_snapshot"},
-            {"field": "behavior_raw", "label": "行为输入", "value": "product_default_behavior_snapshot"},
-        ]
+        default_assumed = []
     for field_name, source_type in goal_semantics.field_sources.items():
         item = {
             "field": f"goal.{field_name}",
@@ -872,7 +945,7 @@ def _workflow_raw_inputs(
     raw_inputs = {
         "account_profile_id": goal_solver_input["account_profile_id"],
         "as_of": as_of,
-        "market_raw": build_default_market_raw(goal_solver_input),
+        "market_raw": {},
         "account_raw": build_default_account_raw(goal_solver_input, live_portfolio),
         "goal_raw": build_default_goal_raw(goal_solver_input),
         "constraint_raw": build_default_constraint_raw(
@@ -882,11 +955,11 @@ def _workflow_raw_inputs(
         ),
         "goal_semantics": goal_semantics.to_dict(),
         "profile_dimensions": profile_dimensions_data,
-        "behavior_raw": build_default_behavior_raw(
-            cooldown_active=workflow_type == "event" and event_request,
-            cooldown_until=(as_of.split("T", 1)[0] + "T23:59:59Z") if workflow_type == "event" and event_request else None,
-            override_count_90d=1 if workflow_type == "event" and event_request else 0,
-        ),
+        "behavior_raw": {
+            "cooldown_active": workflow_type == "event" and event_request,
+            "cooldown_until": (as_of.split("T", 1)[0] + "T23:59:59Z") if workflow_type == "event" and event_request else None,
+            "override_count_90d": 1 if workflow_type == "event" and event_request else 0,
+        } if workflow_type == "event" and event_request else None,
         "remaining_horizon_months": _goal(goal_solver_input)["horizon_months"],
         "live_portfolio": live_portfolio,
         "profile_parse": parsed.to_dict(),
@@ -1100,6 +1173,8 @@ def run_frontdesk_onboarding(
         external_data_config = external_snapshot_config
     if external_snapshot_source is not None and external_data_config is not None:
         raise ValueError("use either external_snapshot_source or external_snapshot_config, not both")
+    if external_data_config is not None:
+        _validate_formal_external_adapter(external_data_config)
     db_path = Path(db_path)
     store = FrontdeskStore(db_path)
     store.init_schema()
@@ -1133,6 +1208,10 @@ def run_frontdesk_onboarding(
             account_profile_id=profile.account_profile_id,
             as_of=str(raw_inputs.get("as_of") or _now_iso()),
         )
+    raw_inputs, input_provenance = _attach_real_source_market_history(
+        raw_inputs=raw_inputs,
+        input_provenance=input_provenance,
+    )
     account_profile = _normalize_profile_payload(
         _merge_profile_override(
             _profile_to_dict(onboarding.profile),
@@ -1210,6 +1289,8 @@ def run_frontdesk_followup(
         external_data_config = external_snapshot_config
     if external_snapshot_source is not None and external_data_config is not None:
         raise ValueError("use either external_snapshot_source or external_snapshot_config, not both")
+    if external_data_config is not None:
+        _validate_formal_external_adapter(external_data_config)
     db_path = Path(db_path)
     store = FrontdeskStore(db_path)
     store.init_schema()
@@ -1311,6 +1392,10 @@ def run_frontdesk_followup(
             )
         except ExternalSnapshotAdapterError:
             raise
+    raw_inputs, input_provenance = _attach_real_source_market_history(
+        raw_inputs=raw_inputs,
+        input_provenance=input_provenance,
+    )
     active_profile = _merge_profile_override(
         active_profile,
         profile_patch_from_external_snapshot(raw_inputs, external_payload=external_payload),
