@@ -71,10 +71,46 @@ def test_run_goal_solver_uses_profile_driven_ranking(goal_solver_input_base):
     probability_result = run_goal_solver(probability_input)
 
     assert sufficiency_result.ranking_mode_used == RankingMode.SUFFICIENCY_FIRST
-    assert sufficiency_result.recommended_allocation.name == "defensive"
+    assert sufficiency_result.recommended_allocation.name == "growth"
     assert probability_result.ranking_mode_used == RankingMode.PROBABILITY_MAX
     assert probability_result.recommended_allocation.name == "growth"
     assert sufficiency_result.solver_notes[0].endswith("source=matrix")
+
+
+@pytest.mark.contract
+def test_sufficiency_first_prefers_higher_probability_when_no_candidate_meets_threshold(
+    goal_solver_input_base,
+    monkeypatch,
+):
+    solver_input = _mode_test_input(goal_solver_input_base)
+    solver_input["goal"]["priority"] = "important"
+    solver_input["goal"]["risk_preference"] = "moderate"
+    solver_input["goal"]["success_prob_threshold"] = 0.85
+
+    def _fake_run_monte_carlo(weights, *_args, **_kwargs):
+        if weights["equity_cn"] >= 0.70:
+            probability = 0.62
+            drawdown = 0.24
+        else:
+            probability = 0.55
+            drawdown = 0.08
+        return (
+            probability,
+            {"expected_terminal_value": 520_000.0},
+            RiskSummary(
+                max_drawdown_90pct=drawdown,
+                terminal_value_tail_mean_95=410_000.0,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.09,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert result.ranking_mode_used == RankingMode.SUFFICIENCY_FIRST
+    assert result.recommended_allocation.name == "growth"
 
 
 @pytest.mark.contract
@@ -131,10 +167,13 @@ def test_run_goal_solver_lightweight_uses_lightweight_path_count(goal_solver_inp
         market_state,
         n_paths: int,
         seed: int,
+        **_kwargs,
     ):
         del weights, cashflow_schedule, initial_value, goal_amount, market_state
         captured["n_paths"] = n_paths
         captured["seed"] = seed
+        captured["mode"] = _kwargs.get("mode")
+        captured["distribution_input"] = _kwargs.get("distribution_input")
         return 0.55, {"expected_terminal_value": 1_000_000.0}, RiskSummary(
             max_drawdown_90pct=0.12,
             terminal_value_tail_mean_95=800_000.0,
@@ -153,6 +192,45 @@ def test_run_goal_solver_lightweight_uses_lightweight_path_count(goal_solver_inp
     assert risk.max_drawdown_90pct == 0.12
     assert captured["n_paths"] == goal_solver_input_base["solver_params"]["n_paths_lightweight"]
     assert captured["seed"] == goal_solver_input_base["solver_params"]["seed"]
+    assert captured["mode"] == SimulationMode.STATIC_GAUSSIAN
+    assert captured["distribution_input"] is None
+
+
+@pytest.mark.contract
+def test_run_goal_solver_lightweight_passes_resolved_advanced_mode(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["solver_params"]["simulation_mode"] = "garch_t_dcc"
+    solver_input["solver_params"]["distribution_input"] = {
+        "garch_t_state": {"equity_cn": {"omega": 0.01, "alpha": 0.05, "beta": 0.90, "nu": 7.0}},
+        "dcc_state": {
+            "correlation_matrix": {
+                "equity_cn": {"equity_cn": 1.0, "bond_cn": 0.35},
+                "bond_cn": {"equity_cn": 0.35, "bond_cn": 1.0},
+            }
+        },
+    }
+    captured: dict[str, object] = {}
+
+    def _fake_run_monte_carlo(*args, **kwargs):
+        del args
+        captured["mode"] = kwargs.get("mode")
+        captured["distribution_input"] = kwargs.get("distribution_input")
+        return 0.55, {"expected_terminal_value": 1_000_000.0}, RiskSummary(
+            max_drawdown_90pct=0.12,
+            terminal_value_tail_mean_95=800_000.0,
+            shortfall_probability=0.45,
+            terminal_shortfall_p5_vs_initial=0.10,
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    run_goal_solver_lightweight(
+        weights=solver_input["candidate_allocations"][0]["weights"],
+        baseline_inp=solver_input,
+    )
+
+    assert captured["mode"] == SimulationMode.GARCH_T_DCC
+    assert captured["distribution_input"] is not None
 
 
 @pytest.mark.contract
@@ -296,6 +374,10 @@ def test_run_goal_solver_exposes_simulation_mode_highest_probability_and_implied
         == "probability_model method=conditional_monte_carlo distribution=garch_t_dcc requested_mode=garch_t_dcc_jump historical_backtest_used=false"
         for note in result.solver_notes
     )
+    assert any(
+        note == "distribution_overlays regime_participation=false jump_overlay_active=false"
+        for note in result.solver_notes
+    )
 
 
 @pytest.mark.contract
@@ -317,6 +399,43 @@ def test_run_goal_solver_downgrades_when_distribution_input_shape_is_only_partia
         == "simulation_mode requested=garch_t_dcc used=static_gaussian downgrade=true missing=garch_t_state,dcc_state"
         for note in result.solver_notes
     )
+
+
+@pytest.mark.contract
+def test_run_goal_solver_fallback_path_preserves_resolved_advanced_mode(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["candidate_allocations"] = []
+    solver_input["solver_params"]["simulation_mode"] = "garch_t_dcc_jump"
+    solver_input["solver_params"]["distribution_input"] = {
+        "garch_t_state": {"equity_cn": {"omega": 0.01, "alpha": 0.05, "beta": 0.90, "nu": 7.0}},
+        "dcc_state": {
+            "correlation_matrix": {
+                "equity_cn": {"equity_cn": 1.0, "bond_cn": 0.35},
+                "bond_cn": {"equity_cn": 0.35, "bond_cn": 1.0},
+            }
+        },
+        "jump_state": {"bucket_jump_probability_1m": {"equity_cn": 0.05}, "bucket_jump_loss": {"equity_cn": 0.10}},
+    }
+    captured: dict[str, object] = {}
+
+    def _fake_run_monte_carlo(*args, **kwargs):
+        del args
+        captured["mode"] = kwargs.get("mode")
+        captured["distribution_input"] = kwargs.get("distribution_input")
+        return 0.42, {"expected_terminal_value": 720_000.0}, RiskSummary(
+            max_drawdown_90pct=0.18,
+            terminal_value_tail_mean_95=610_000.0,
+            shortfall_probability=0.58,
+            terminal_shortfall_p5_vs_initial=0.12,
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert result.simulation_mode_used == SimulationMode.GARCH_T_DCC_JUMP
+    assert captured["mode"] == SimulationMode.GARCH_T_DCC_JUMP
+    assert captured["distribution_input"] is not None
 
 
 @pytest.mark.contract
@@ -521,3 +640,83 @@ def test_run_monte_carlo_advanced_modes_change_distribution_shape(goal_solver_in
     assert advanced_extra["expected_terminal_value"] != pytest.approx(static_extra["expected_terminal_value"], rel=1e-6)
     assert advanced_risk.max_drawdown_90pct > static_risk.max_drawdown_90pct
     assert advanced_risk.terminal_value_tail_mean_95 < static_risk.terminal_value_tail_mean_95
+
+
+@pytest.mark.contract
+def test_run_monte_carlo_garch_t_dcc_uses_current_correlation_matrix(goal_solver_input_base):
+    normalized = goal_solver_engine._goal_solver_input_from_any(goal_solver_input_base)
+    weights = normalized.candidate_allocations[0].weights
+    market_state = normalized.solver_params.market_assumptions
+    schedule = goal_solver_engine._build_cashflow_schedule(
+        normalized.cashflow_plan,
+        normalized.goal.horizon_months,
+    )
+    common_garch = {
+        "equity_cn": {"annualized_volatility": 0.24, "long_run_variance": 0.0048, "alpha": 0.10, "beta": 0.86, "nu": 6.0},
+        "bond_cn": {"annualized_volatility": 0.06, "long_run_variance": 0.0006, "alpha": 0.05, "beta": 0.92, "nu": 8.0},
+        "gold": {"annualized_volatility": 0.17, "long_run_variance": 0.0024, "alpha": 0.08, "beta": 0.88, "nu": 7.0},
+        "satellite": {"annualized_volatility": 0.34, "long_run_variance": 0.0096, "alpha": 0.14, "beta": 0.82, "nu": 5.0},
+    }
+    long_run = {
+        "equity_cn": {"equity_cn": 1.0, "bond_cn": 0.20, "gold": 0.05, "satellite": 0.45},
+        "bond_cn": {"equity_cn": 0.20, "bond_cn": 1.0, "gold": 0.05, "satellite": 0.10},
+        "gold": {"equity_cn": 0.05, "bond_cn": 0.05, "gold": 1.0, "satellite": 0.08},
+        "satellite": {"equity_cn": 0.45, "bond_cn": 0.10, "gold": 0.08, "satellite": 1.0},
+    }
+    high_corr = {
+        "equity_cn": {"equity_cn": 1.0, "bond_cn": 0.90, "gold": 0.10, "satellite": 0.92},
+        "bond_cn": {"equity_cn": 0.90, "bond_cn": 1.0, "gold": 0.10, "satellite": 0.80},
+        "gold": {"equity_cn": 0.10, "bond_cn": 0.10, "gold": 1.0, "satellite": 0.10},
+        "satellite": {"equity_cn": 0.92, "bond_cn": 0.80, "gold": 0.10, "satellite": 1.0},
+    }
+    low_corr = {
+        "equity_cn": {"equity_cn": 1.0, "bond_cn": -0.40, "gold": 0.10, "satellite": -0.35},
+        "bond_cn": {"equity_cn": -0.40, "bond_cn": 1.0, "gold": 0.10, "satellite": -0.20},
+        "gold": {"equity_cn": 0.10, "bond_cn": 0.10, "gold": 1.0, "satellite": 0.10},
+        "satellite": {"equity_cn": -0.35, "bond_cn": -0.20, "gold": 0.10, "satellite": 1.0},
+    }
+
+    high_prob, high_extra, high_risk = goal_solver_engine._run_monte_carlo(
+        weights,
+        schedule,
+        normalized.current_portfolio_value,
+        normalized.goal.goal_amount,
+        market_state,
+        1024,
+        42,
+        mode=SimulationMode.GARCH_T_DCC,
+        distribution_input=goal_solver_engine.DistributionInput(
+            garch_t_state=common_garch,
+            dcc_state={
+                "correlation_matrix": high_corr,
+                "long_run_correlation": long_run,
+                "alpha": 0.08,
+                "beta": 0.90,
+            },
+        ),
+    )
+    low_prob, low_extra, low_risk = goal_solver_engine._run_monte_carlo(
+        weights,
+        schedule,
+        normalized.current_portfolio_value,
+        normalized.goal.goal_amount,
+        market_state,
+        1024,
+        42,
+        mode=SimulationMode.GARCH_T_DCC,
+        distribution_input=goal_solver_engine.DistributionInput(
+            garch_t_state=common_garch,
+            dcc_state={
+                "correlation_matrix": low_corr,
+                "long_run_correlation": long_run,
+                "alpha": 0.08,
+                "beta": 0.90,
+            },
+        ),
+    )
+
+    assert high_prob != pytest.approx(low_prob, abs=1e-6) or high_extra["expected_terminal_value"] != pytest.approx(
+        low_extra["expected_terminal_value"],
+        rel=1e-6,
+    )
+    assert high_risk.max_drawdown_90pct != pytest.approx(low_risk.max_drawdown_90pct, abs=1e-6)

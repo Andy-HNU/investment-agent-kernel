@@ -754,6 +754,13 @@ def update_goal_solver_params(
     params.version = _version_id("goal_solver_params", created_at)
     params.market_assumptions = market_assumptions
     params.distribution_input = _distribution_input_from_model_state(distribution_model_state)
+    if params.simulation_mode == SimulationMode.STATIC_GAUSSIAN:
+        if params.distribution_input.jump_state:
+            params.simulation_mode = SimulationMode.GARCH_T_DCC_JUMP
+        elif params.distribution_input.dcc_state:
+            params.simulation_mode = SimulationMode.GARCH_T_DCC
+        elif params.distribution_input.garch_t_state:
+            params.simulation_mode = SimulationMode.GARCH_T
     return params
 
 
@@ -933,13 +940,22 @@ def _distribution_input_from_model_state(
 
     garch_input: dict[str, dict[str, float]] = {}
     if historical_ready:
+        jump_probability = jump_overlay_state.jump_probability_1m
         garch_input = {
             bucket: {
                 "annualized_volatility": float(garch_state.annualized_volatility.get(bucket, 0.0) or 0.0),
                 "long_run_variance": float(garch_state.long_run_variance.get(bucket, 0.0) or 0.0),
                 "alpha": float(garch_state.shock_loading.get(bucket, 0.0) or 0.0),
                 "beta": float(garch_state.persistence.get(bucket, 0.0) or 0.0),
-                "nu": 7.0,
+                "nu": float(
+                    _clip(
+                        10.5
+                        - 16.0 * float(garch_state.annualized_volatility.get(bucket, 0.0) or 0.0)
+                        - 18.0 * float(jump_probability.get(bucket, 0.0) or 0.0),
+                        3.5,
+                        10.0,
+                    )
+                ),
             }
             for bucket in garch_state.annualized_volatility
         }
@@ -971,28 +987,27 @@ def _distribution_input_from_model_state(
         }
     jump_input: dict[str, Any] = {}
     if historical_ready and jump_overlay_state.event_count > 0:
+        bucket_jump_probability = {
+            bucket: float(value) for bucket, value in jump_overlay_state.jump_probability_1m.items()
+        }
+        bucket_jump_loss = {
+            bucket: float(value) for bucket, value in jump_overlay_state.jump_loss.items()
+        }
+        max_bucket_probability = max(bucket_jump_probability.values(), default=0.0)
+        max_bucket_loss = max(bucket_jump_loss.values(), default=0.0)
+        stress_source = str(jump_overlay_state.stress_source or "").lower()
+        systemic_probability = max_bucket_probability * 0.5
+        if stress_source in {"tightening", "high_volatility", "liquidity_stress"}:
+            systemic_probability += 0.02
+        systemic_scale = max_bucket_loss * (2.0 if stress_source in {"tightening", "high_volatility"} else 1.5)
         jump_input = {
             "expected_jump_drag": float(jump_drag),
             "jump_vol_multiplier": float(jump_vol_multiplier),
             "event_count": float(jump_overlay_state.event_count),
-            "bucket_jump_probability_1m": {
-                bucket: float(value) for bucket, value in jump_overlay_state.jump_probability_1m.items()
-            },
-            "bucket_jump_loss": {
-                bucket: float(value) for bucket, value in jump_overlay_state.jump_loss.items()
-            },
-            "systemic_jump_probability_1m": float(
-                min(
-                    max(
-                        sum(float(value or 0.0) for value in jump_overlay_state.jump_probability_1m.values())
-                        / max(len(jump_overlay_state.jump_probability_1m), 1)
-                        / 3.0,
-                        0.0,
-                    ),
-                    0.20,
-                )
-            ),
-            "systemic_jump_scale": 0.75,
+            "bucket_jump_probability_1m": bucket_jump_probability,
+            "bucket_jump_loss": bucket_jump_loss,
+            "systemic_jump_probability_1m": float(_clip(systemic_probability, 0.0, 0.20)),
+            "systemic_jump_scale": float(_clip(systemic_scale, 0.25, 1.25)),
             "stress_source": jump_overlay_state.stress_source,
         }
     return DistributionInput(

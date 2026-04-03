@@ -146,6 +146,9 @@ def _now_iso() -> str:
 
 
 def _distribution_input_availability(distribution_input: DistributionInput | None) -> dict[str, bool]:
+    def _looks_like_flat_correlation_matrix(value: dict[str, Any]) -> bool:
+        return any(isinstance(item, dict) and item for item in value.values())
+
     def _has_non_empty_mapping(value: Any) -> bool:
         if not isinstance(value, dict) or not value:
             return False
@@ -161,9 +164,16 @@ def _distribution_input_availability(distribution_input: DistributionInput | Non
 
     if distribution_input is None:
         return {"garch_t_state": False, "dcc_state": False, "jump_state": False}
+    dcc_payload = distribution_input.dcc_state
+    has_dcc = False
+    if isinstance(dcc_payload, dict) and dcc_payload:
+        if isinstance(dcc_payload.get("correlation_matrix"), dict) and dcc_payload.get("correlation_matrix"):
+            has_dcc = True
+        elif _looks_like_flat_correlation_matrix(dcc_payload):
+            has_dcc = True
     return {
         "garch_t_state": _has_non_empty_mapping(distribution_input.garch_t_state),
-        "dcc_state": _has_non_empty_mapping(distribution_input.dcc_state),
+        "dcc_state": has_dcc,
         "jump_state": _has_non_empty_state(distribution_input.jump_state),
     }
 
@@ -374,6 +384,8 @@ def _correlation_from_payload(
 ) -> np.ndarray:
     payload = _obj(dcc_state or {})
     raw_matrix = payload.get("long_run_correlation") if long_run else payload.get("correlation_matrix")
+    if not isinstance(raw_matrix, dict) and payload:
+        raw_matrix = payload
     matrix = np.eye(len(buckets), dtype=float)
     if isinstance(raw_matrix, dict) and raw_matrix:
         for i, bucket_a in enumerate(buckets):
@@ -478,7 +490,7 @@ def _simulate_dynamic_monthly_returns(
     dcc_beta = float(dcc_state.get("beta", 0.93) or 0.93)
     dcc_alpha = _clamp(dcc_alpha, 0.0, 0.25)
     dcc_beta = _clamp(dcc_beta, 0.0, 0.98)
-    q_matrix = dcc_long_run.copy()
+    q_matrix = dcc_corr.copy()
 
     bucket_jump_probability = np.array(
         [
@@ -719,7 +731,9 @@ def _ranking_score(
 
     if mode == RankingMode.SUFFICIENCY_FIRST:
         meets_threshold = success_probability >= threshold
-        return (meets_threshold, -max_drawdown, success_probability, complexity)
+        if meets_threshold:
+            return (meets_threshold, -max_drawdown, success_probability, complexity)
+        return (meets_threshold, success_probability, -max_drawdown, complexity)
     if mode == RankingMode.PROBABILITY_MAX:
         return (success_probability, -max_drawdown, complexity)
     if mode == RankingMode.BALANCED:
@@ -1008,6 +1022,9 @@ def _append_model_honesty_notes(
     used_mode: SimulationMode,
 ) -> None:
     historical_backtest_used = bool(inp.solver_params.market_assumptions.historical_backtest_used)
+    distribution_input = inp.solver_params.distribution_input or DistributionInput()
+    dcc_state = _obj(distribution_input.dcc_state)
+    jump_state = _obj(distribution_input.jump_state)
     if requested_mode == SimulationMode.STATIC_GAUSSIAN and used_mode == SimulationMode.STATIC_GAUSSIAN:
         notes.append(
             "probability_model "
@@ -1022,6 +1039,11 @@ def _append_model_honesty_notes(
             f"distribution={used_mode.value} "
             f"requested_mode={requested_mode.value} "
             f"historical_backtest_used={'true' if historical_backtest_used else 'false'}"
+        )
+        notes.append(
+            "distribution_overlays "
+            f"regime_participation={'true' if bool(dcc_state.get('regime_anchor')) else 'false'} "
+            f"jump_overlay_active={'true' if bool(jump_state) else 'false'}"
         )
     if historical_backtest_used:
         notes.append(
@@ -1131,6 +1153,8 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             simulation_market_state,
             params.n_paths,
             params.seed,
+            mode=used_mode,
+            distribution_input=params.distribution_input,
         )
         fallback_result = _decorate_result(
             fallback,
@@ -1226,6 +1250,8 @@ def run_goal_solver_lightweight(
         ),
         baseline_inp.solver_params.n_paths_lightweight,
         baseline_inp.solver_params.seed,
+        mode=used_mode,
+        distribution_input=baseline_inp.solver_params.distribution_input,
     )
     return probability, risk
 

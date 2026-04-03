@@ -249,5 +249,6 @@ def test_frontdesk_onboarding_accepts_market_history_provider_fixture(tmp_path, 
     assert summary["status"] == "completed"
     assert summary["external_snapshot_status"] == "fetched"
     assert summary["refresh_summary"]["provider_name"] == "market_history_akshare_tx"
+    assert summary["simulation_mode_used"] == "garch_t_dcc"
     market_domain = next(item for item in summary["refresh_summary"]["domain_details"] if item["domain"] == "market_raw")
     assert market_domain["freshness_state"] == "fresh"

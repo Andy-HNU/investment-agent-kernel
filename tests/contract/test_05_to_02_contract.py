@@ -288,6 +288,10 @@ def test_calibration_to_goal_solver_preserves_requested_simulation_mode_and_dist
     assert calibration_result.goal_solver_params.distribution_input.jump_state
     assert "correlation_matrix" in calibration_result.goal_solver_params.distribution_input.dcc_state
     assert "bucket_jump_probability_1m" in calibration_result.goal_solver_params.distribution_input.jump_state
+    assert (
+        calibration_result.goal_solver_params.distribution_input.garch_t_state["equity_cn"]["nu"]
+        != calibration_result.goal_solver_params.distribution_input.garch_t_state["bond_cn"]["nu"]
+    )
     assert solver_output.simulation_mode_used == SimulationMode.GARCH_T_DCC_JUMP
     assert any(
         note
@@ -297,6 +301,45 @@ def test_calibration_to_goal_solver_preserves_requested_simulation_mode_and_dist
     assert any(
         note
         == "probability_model method=conditional_monte_carlo distribution=garch_t_dcc_jump requested_mode=garch_t_dcc_jump historical_backtest_used=true"
+        for note in solver_output.solver_notes
+    )
+
+
+@pytest.mark.contract
+def test_calibration_promotes_default_static_mode_when_distribution_inputs_are_available(
+    goal_solver_input_base,
+    live_portfolio_base,
+):
+    requested_input = dict(goal_solver_input_base)
+
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw=_market_raw_with_distribution_inputs(goal_solver_input_base),
+        account_raw=_account_raw(goal_solver_input_base, live_portfolio_base),
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=None,
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+    )
+
+    calibration_result = run_calibration(
+        bundle,
+        prior_calibration=None,
+        default_goal_solver_params=goal_solver_input_base["solver_params"],
+    )
+    updated_solver_input = _apply_calibration_to_goal_solver_input(
+        requested_input,
+        calibration_result.to_dict(),
+    )
+
+    solver_output = run_goal_solver(updated_solver_input)
+
+    assert calibration_result.goal_solver_params.simulation_mode == SimulationMode.GARCH_T_DCC_JUMP
+    assert solver_output.simulation_mode_used == SimulationMode.GARCH_T_DCC_JUMP
+    assert any(
+        note
+        == "simulation_mode requested=garch_t_dcc_jump used=garch_t_dcc_jump downgrade=false missing=none"
         for note in solver_output.solver_notes
     )
 
