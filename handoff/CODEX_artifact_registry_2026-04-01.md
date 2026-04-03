@@ -41,13 +41,17 @@
 
 ### 主执行地图
 
+- `handoff/CODEX_v1.2_task_map_2026-04-03.md`
+  - 当前 `v1.2` 唯一正式执行地图
+  - 覆盖真实源历史数据、产品选择/维护、观察持仓同步与 Claw 顾问壳升级
+
 - `handoff/CODEX_v1.1_task_map_2026-04-02.md`
-  - 当前 `v1.1` 唯一正式执行地图
-  - 覆盖建模升级、provider 真实源闭环、Claw shell 闭环、acceptance 缺陷修复
+  - `v1.1` 阶段正式执行地图
+  - 当前保留作上一版本历史执行参考
 
 - `handoff/CODEX_kernel_first_roadmap_2026-04-01.md`
   - `v1` 阶段的历史正式开发顺序
-  - 当前继续作为背景路线保留，不再单独驱动 `v1.1`
+  - 当前继续作为背景路线保留，不再单独驱动 `v1.2`
 
 ### v1 阶段结论与验收
 
@@ -165,7 +169,8 @@
 现在开始：
 
 - 看模块语义：先看 `system/`
-- 看当前开发顺序：先看 `CODEX_v1.1_task_map_2026-04-02.md`
+- 看当前开发顺序：先看 `CODEX_v1.2_task_map_2026-04-03.md`
+- 看上一版本执行地图：再看 `CODEX_v1.1_task_map_2026-04-02.md`
 - 看 `v1` 历史路线：再看 `CODEX_kernel_first_roadmap_2026-04-01.md`
 - 看 v1 阶段结论：看 `CODEX_v1_phase_reports_2026-04-02.md`
 - 看验证证据：看 `CODEX_v1_system_test_report_2026-04-02.md`
