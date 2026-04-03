@@ -285,7 +285,7 @@ def test_frontdesk_snapshot_surfaces_execution_plan_comparison_for_pending_vs_ac
     )
 
     updated_profile = profile.to_dict()
-    updated_profile["restrictions"] = ["不碰股票"]
+    updated_profile["restrictions"] = ["只接受黄金和现金"]
     second_onboarding = run_frontdesk_onboarding(UserOnboardingProfile(**updated_profile), db_path=db_path)
 
     comparison = second_onboarding["user_state"]["execution_plan_comparison"]

@@ -260,7 +260,7 @@ def test_frontdesk_cli_show_user_surfaces_execution_plan_comparison(tmp_path, ca
     capsys.readouterr()
 
     updated_profile = profile.to_dict()
-    updated_profile["restrictions"] = ["不碰股票"]
+    updated_profile["restrictions"] = ["只接受黄金和现金"]
     second_onboard_exit = main(
         [
             "onboard",

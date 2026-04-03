@@ -100,6 +100,8 @@ class UserOnboardingProfile:
     current_weights: dict[str, float] | None = None
     allowed_buckets: list[str] = field(default_factory=list)
     forbidden_buckets: list[str] = field(default_factory=list)
+    allowed_wrappers: list[str] = field(default_factory=list)
+    forbidden_wrappers: list[str] = field(default_factory=list)
     preferred_themes: list[str] = field(default_factory=list)
     forbidden_themes: list[str] = field(default_factory=list)
     qdii_allowed: bool | None = None
@@ -202,6 +204,8 @@ def build_user_onboarding_inputs(
             "current_weights": persisted_current_weights,
             "allowed_buckets": sorted(set(profile.allowed_buckets or parsed_profile.allowed_buckets)),
             "forbidden_buckets": sorted(set(profile.forbidden_buckets or parsed_profile.forbidden_buckets)),
+            "allowed_wrappers": sorted(set(profile.allowed_wrappers or parsed_profile.allowed_wrappers)),
+            "forbidden_wrappers": sorted(set(profile.forbidden_wrappers or parsed_profile.forbidden_wrappers)),
             "preferred_themes": sorted(set(profile.preferred_themes or parsed_profile.preferred_themes)),
             "forbidden_themes": sorted(set(profile.forbidden_themes or parsed_profile.forbidden_themes)),
             "qdii_allowed": profile.qdii_allowed if profile.qdii_allowed is not None else parsed_profile.qdii_allowed,

@@ -265,6 +265,8 @@ def build_product_allocation_input(
     profile_dimensions: dict[str, Any] | None = None,
     allowed_buckets: list[str] | None = None,
     forbidden_buckets: list[str] | None = None,
+    allowed_wrappers: list[str] | None = None,
+    forbidden_wrappers: list[str] | None = None,
     preferred_themes: list[str] | None = None,
     forbidden_themes: list[str] | None = None,
     qdii_allowed: bool = True,
@@ -274,6 +276,8 @@ def build_product_allocation_input(
     model_inputs = dict(profile_dimensions.get("model_inputs") or {})
     allowed_buckets = list(parsed_profile.get("allowed_buckets") or allowed_buckets or [])
     forbidden_buckets = list(parsed_profile.get("forbidden_buckets") or forbidden_buckets or [])
+    allowed_wrappers = list(parsed_profile.get("allowed_wrappers") or allowed_wrappers or [])
+    forbidden_wrappers = list(parsed_profile.get("forbidden_wrappers") or forbidden_wrappers or [])
     preferred_themes = list(parsed_profile.get("preferred_themes") or preferred_themes or [])
     forbidden_themes = list(parsed_profile.get("forbidden_themes") or forbidden_themes or [])
     qdii_value = parsed_profile.get("qdii_allowed")
@@ -292,6 +296,8 @@ def build_product_allocation_input(
             "complexity_tolerance": complexity_tolerance,
             "allowed_buckets": allowed_buckets,
             "forbidden_buckets": forbidden_buckets,
+            "allowed_wrappers": allowed_wrappers,
+            "forbidden_wrappers": forbidden_wrappers,
             "preferred_themes": preferred_themes,
             "forbidden_themes": forbidden_themes,
             "qdii_allowed": bool(qdii_value),

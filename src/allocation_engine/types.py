@@ -13,6 +13,8 @@ class AllocationProfile:
     complexity_tolerance: str = "medium"
     allowed_buckets: list[str] = field(default_factory=list)
     forbidden_buckets: list[str] = field(default_factory=list)
+    allowed_wrappers: list[str] = field(default_factory=list)
+    forbidden_wrappers: list[str] = field(default_factory=list)
     preferred_themes: list[str] = field(default_factory=list)
     forbidden_themes: list[str] = field(default_factory=list)
     qdii_allowed: bool = True

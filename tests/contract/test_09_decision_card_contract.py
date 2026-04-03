@@ -298,6 +298,28 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                             "primary_product_id": "cn_equity_csi300_etf",
                             "provider_symbol": "510300",
                             "target_weight": 0.55,
+                            "recommended_products": [
+                                {
+                                    "product_id": "cn_equity_csi300_etf",
+                                    "product_name": "沪深300ETF",
+                                    "wrapper_type": "etf",
+                                    "core_or_satellite": "core",
+                                    "target_weight_within_bucket": 0.60,
+                                    "target_portfolio_weight": 0.33,
+                                },
+                                {
+                                    "product_id": "cn_equity_dividend_etf",
+                                    "product_name": "红利ETF",
+                                    "wrapper_type": "etf",
+                                    "core_or_satellite": "core",
+                                    "target_weight_within_bucket": 0.25,
+                                    "target_portfolio_weight": 0.1375,
+                                },
+                            ],
+                            "selection_evidence": {
+                                "core_or_satellite": "core",
+                                "selection_reason": ["候选按流动性、费率、估值与约束排序。"],
+                            },
                         }
                     ]
                 },
@@ -312,3 +334,5 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
     assert card["probability_explanation"]["recommended_allocation_label"] == "平衡推进方案"
     assert "不是最高达成率方案" in card["probability_explanation"]["why_not_highest_probability"]
     assert card["product_evidence_panel"]["items"][0]["primary_product_name"] == "沪深300ETF"
+    assert card["product_evidence_panel"]["items"][0]["recommended_products"][0]["product_id"] == "cn_equity_csi300_etf"
+    assert card["product_evidence_panel"]["items"][0]["selection_evidence"]["selection_reason"]

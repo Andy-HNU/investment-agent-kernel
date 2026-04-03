@@ -61,6 +61,8 @@ _MONTHLY_EVENT_PROFILE_FIELDS = {
     "manual_confirmation_threshold",
     "allowed_buckets",
     "forbidden_buckets",
+    "allowed_wrappers",
+    "forbidden_wrappers",
     "preferred_themes",
     "forbidden_themes",
     "qdii_allowed",
@@ -694,6 +696,8 @@ def _normalize_profile_payload(profile: dict[str, Any]) -> dict[str, Any]:
         normalized["current_weights"] = None
     normalized["allowed_buckets"] = list(parsed.allowed_buckets)
     normalized["forbidden_buckets"] = list(parsed.forbidden_buckets)
+    normalized["allowed_wrappers"] = list(parsed.allowed_wrappers)
+    normalized["forbidden_wrappers"] = list(parsed.forbidden_wrappers)
     normalized["preferred_themes"] = list(parsed.preferred_themes)
     normalized["forbidden_themes"] = list(parsed.forbidden_themes)
     if normalized.get("qdii_allowed") is None and parsed.qdii_allowed is not None:

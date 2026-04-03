@@ -77,9 +77,11 @@ def test_build_execution_plan_respects_do_not_touch_stocks_restriction():
         restrictions=["不碰股票"],
     )
 
-    assert "equity_cn" not in {item.asset_bucket for item in plan.items}
-    assert any("不碰股票" in warning for warning in plan.warnings)
-    assert {"bond_cn", "gold", "cash_liquidity"}.issubset({item.asset_bucket for item in plan.items})
+    assert "equity_cn" in {item.asset_bucket for item in plan.items}
+    equity_item = next(item for item in plan.items if item.asset_bucket == "equity_cn")
+    assert equity_item.primary_product.wrapper_type != "single_stock"
+    assert all(product.wrapper_type != "single_stock" for product in equity_item.alternate_products)
+    assert any("禁个股" in warning for warning in plan.warnings)
 
 
 @pytest.mark.contract

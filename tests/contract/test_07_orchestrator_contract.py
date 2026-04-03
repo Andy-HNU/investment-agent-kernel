@@ -214,6 +214,9 @@ def test_run_orchestrator_onboarding_persistence_plan_includes_execution_plan_ar
         result.decision_card["execution_plan_summary"]["bucket_success_probability"]
     )
     assert result.decision_card["product_evidence_panel"]["items"]
+    first_panel_item = result.decision_card["product_evidence_panel"]["items"][0]
+    assert first_panel_item["recommended_products"]
+    assert first_panel_item["selection_evidence"]["selection_reason"]
     assert result.decision_card["probability_explanation"]["recommended_allocation_name"] == (
         result.goal_solver_output.recommended_result.allocation_name
     )

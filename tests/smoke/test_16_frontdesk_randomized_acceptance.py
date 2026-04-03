@@ -120,18 +120,16 @@ def _assert_profile_restrictions_respected(snapshot: dict[str, object], onboardi
     candidate_options = onboarding_summary.get("candidate_options") or []
     restrictions = set(profile.get("restrictions") or [])
 
-    if "不碰股票" in restrictions or "只能黄金和现金" in restrictions:
-        assert "equity_cn" in set(profile.get("forbidden_buckets") or [])
-        assert "satellite" in set(profile.get("forbidden_buckets") or [])
+    if "不碰股票" in restrictions:
+        assert "single_stock" in set(profile.get("forbidden_wrappers") or [])
+    if "只能黄金和现金" in restrictions:
+        assert {"equity_cn", "bond_cn", "satellite"}.issubset(set(profile.get("forbidden_buckets") or []))
         for option in candidate_options:
             rendered_mix = " ".join(option.get("allocation_mix") or [])
             assert "权益" not in rendered_mix
             assert "卫星" not in rendered_mix
     if "不碰科技" in restrictions:
-        assert "satellite" in set(profile.get("forbidden_buckets") or [])
-        for option in candidate_options:
-            rendered_mix = " ".join(option.get("allocation_mix") or [])
-            assert "卫星" not in rendered_mix
+        assert {"technology", "chip", "innovation"}.intersection(set(profile.get("forbidden_themes") or []))
 
 
 def _assert_p1_profile_model_present(snapshot: dict[str, object], onboarding_summary: dict[str, object]) -> None:

@@ -1457,6 +1457,8 @@ def _product_evidence_panel(execution_plan: Any) -> dict[str, Any]:
                 "liquidity_tier": liquidity_tier,
                 "risk_labels": risk_labels,
                 "overlay_penalty": round(overlay_penalty, 6),
+                "recommended_products": list(entry.get("recommended_products") or []),
+                "selection_evidence": _as_dict(entry.get("selection_evidence")),
             }
         )
 

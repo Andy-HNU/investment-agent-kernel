@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
-
-from shared.profile_parser import parse_profile_semantics
 
 from product_mapping.catalog import load_builtin_catalog
-from product_mapping.types import ExecutionPlan, ExecutionPlanItem, ProductCandidate
+from product_mapping.selection import (
+    build_recommended_products,
+    build_selection_evidence,
+    normalize_user_restrictions,
+    product_matches_constraints,
+    rank_bucket_candidates,
+)
+from product_mapping.types import ExecutionPlan, ExecutionPlanItem, ProductCandidate, ProductConstraintProfile
 
 
 _BUCKET_ALIASES = {
@@ -16,24 +20,6 @@ _BUCKET_ALIASES = {
     "cash_liquidity": "cash_liquidity",
     "liquidity": "cash_liquidity",
 }
-_LIQUIDITY_PRIORITY = {"high": 0, "medium": 1, "low": 2}
-_FEE_PRIORITY = {"low": 0, "medium": 1, "high": 2}
-_WRAPPER_PRIORITY = {
-    ("equity_cn", "etf"): 0,
-    ("bond_cn", "etf"): 0,
-    ("bond_cn", "fund"): 1,
-    ("gold", "etf"): 0,
-    ("gold", "fund"): 1,
-    ("cash_liquidity", "cash_mgmt"): 0,
-    ("cash_liquidity", "fund"): 1,
-}
-
-
-@dataclass(frozen=True)
-class _RestrictionFilter:
-    allowed_buckets: set[str]
-    forbidden_buckets: set[str]
-    warnings: list[str]
 
 
 def _normalize_bucket(bucket: str) -> str:
@@ -49,61 +35,36 @@ def _normalize_bucket_targets(bucket_targets: dict[str, float]) -> dict[str, flo
     return normalized
 
 
-def _compile_restrictions(restrictions: list[str] | None) -> _RestrictionFilter:
-    raw_restrictions = [str(item).strip() for item in restrictions or [] if str(item).strip()]
-    parsed = parse_profile_semantics(current_holdings="", restrictions=raw_restrictions)
-    allowed_buckets = {_normalize_bucket(bucket) for bucket in parsed.allowed_buckets}
-    forbidden_buckets = {_normalize_bucket(bucket) for bucket in parsed.forbidden_buckets}
-    warnings: list[str] = []
-    lowered_items = [item.lower() for item in raw_restrictions]
-
-    if any(token in item for item in lowered_items for token in ("不碰股票", "不买股票", "不能买股票")):
-        forbidden_buckets.add("equity_cn")
-        warnings.append("限制条件“不碰股票”已过滤权益类产品。")
-
-    if any(
-        token in item
-        for item in lowered_items
-        for token in ("只接受黄金和现金", "只接受现金和黄金", "只能黄金和现金", "只要黄金和现金")
-    ):
-        allowed_buckets.update({"gold", "cash_liquidity"})
-        forbidden_buckets.update({"equity_cn", "bond_cn"})
-        warnings.append("限制条件“只接受黄金和现金”已过滤为仅保留黄金与现金/流动性产品。")
-
-    return _RestrictionFilter(
-        allowed_buckets={bucket for bucket in allowed_buckets if bucket},
-        forbidden_buckets={bucket for bucket in forbidden_buckets if bucket},
-        warnings=warnings,
+def _build_item(
+    bucket: str,
+    target_weight: float,
+    candidates: list[ProductCandidate],
+    warnings: list[str],
+    constraints: ProductConstraintProfile,
+) -> ExecutionPlanItem:
+    ordered_candidates = rank_bucket_candidates(bucket, candidates)
+    recommended_products = build_recommended_products(
+        bucket=bucket,
+        target_weight=target_weight,
+        ordered_candidates=ordered_candidates,
     )
-
-
-def _matches_restrictions(candidate: ProductCandidate, restriction_filter: _RestrictionFilter) -> bool:
-    if candidate.asset_bucket in restriction_filter.forbidden_buckets:
-        return False
-    if restriction_filter.allowed_buckets and candidate.asset_bucket not in restriction_filter.allowed_buckets:
-        return False
-    return candidate.enabled and not candidate.deprecated
-
-
-def _candidate_sort_key(candidate: ProductCandidate) -> tuple[int, int, int, str]:
-    return (
-        _WRAPPER_PRIORITY.get((candidate.asset_bucket, candidate.wrapper_type), 9),
-        _LIQUIDITY_PRIORITY.get(candidate.liquidity_tier, 9),
-        _FEE_PRIORITY.get(candidate.fee_tier, 9),
-        candidate.product_id,
-    )
-
-
-def _build_item(bucket: str, target_weight: float, candidates: list[ProductCandidate]) -> ExecutionPlanItem:
-    ordered_candidates = sorted(candidates, key=_candidate_sort_key)
     primary_product = ordered_candidates[0]
     alternate_products = ordered_candidates[1:]
     rationale = [
         f"该执行项承接资金桶 {bucket} 的建议权重。",
-        "主推产品按高流动性、低费用、低复杂度优先排序。",
+        "候选先经过包装/风格/市场约束过滤，再按流动性、费率、估值和跟踪质量排序。",
     ]
     if alternate_products:
-        rationale.append(f"同时保留 {len(alternate_products)} 个替代产品，避免把候选隐藏成黑箱答案。")
+        rationale.append(f"当前保留 {len(alternate_products)} 个替代产品，避免只有 1 主 1 备的单薄映射。")
+    selection_evidence = build_selection_evidence(
+        bucket=bucket,
+        ordered_candidates=ordered_candidates,
+        constraints=constraints,
+    )
+    selection_evidence["selection_reason"] = list(rationale)
+    selection_evidence["recommended_product_count"] = len(recommended_products)
+    if bucket == "satellite" and len(recommended_products) < 3:
+        warnings.append("卫星桶当前候选过少，后续应继续扩充主题产品池。")
 
     return ExecutionPlanItem(
         asset_bucket=bucket,
@@ -111,9 +72,11 @@ def _build_item(bucket: str, target_weight: float, candidates: list[ProductCandi
         primary_product_id=primary_product.product_id,
         alternate_product_ids=[product.product_id for product in alternate_products],
         rationale=rationale,
-        risk_labels=sorted(set(primary_product.risk_labels)),
+        risk_labels=sorted({label for candidate in ordered_candidates for label in candidate.risk_labels}),
         primary_product=primary_product,
         alternate_products=alternate_products,
+        recommended_products=recommended_products,
+        selection_evidence=selection_evidence,
     )
 
 
@@ -127,30 +90,29 @@ def build_execution_plan(
     catalog: list[ProductCandidate] | None = None,
 ) -> ExecutionPlan:
     normalized_targets = _normalize_bucket_targets(bucket_targets)
-    restriction_filter = _compile_restrictions(restrictions)
+    constraint_profile = normalize_user_restrictions(restrictions)
     grouped_candidates: dict[str, list[ProductCandidate]] = defaultdict(list)
 
     for candidate in catalog or load_builtin_catalog():
-        if _matches_restrictions(candidate, restriction_filter):
-            grouped_candidates[_normalize_bucket(candidate.asset_bucket)].append(candidate)
+        normalized_bucket = _normalize_bucket(candidate.asset_bucket)
+        if product_matches_constraints(candidate, constraint_profile):
+            grouped_candidates[normalized_bucket].append(candidate)
 
     items: list[ExecutionPlanItem] = []
-    warnings = list(restriction_filter.warnings)
+    warnings = list(constraint_profile.warnings)
     for bucket, target_weight in normalized_targets.items():
         if target_weight <= 0:
             continue
-        if bucket in restriction_filter.forbidden_buckets:
-            warnings.append(f"资金桶 {bucket} 因用户限制被排除。")
-            continue
-        if restriction_filter.allowed_buckets and bucket not in restriction_filter.allowed_buckets:
-            warnings.append(f"资金桶 {bucket} 不在用户允许范围内，已从执行计划移除。")
+        if bucket in constraint_profile.forbidden_exposures:
+            warnings.append(f"资金桶 {bucket} 因用户暴露限制被排除。")
             continue
         bucket_candidates = grouped_candidates.get(bucket, [])
         if not bucket_candidates:
             warnings.append(f"资金桶 {bucket} 当前没有可用产品候选。")
             continue
-        items.append(_build_item(bucket, target_weight, bucket_candidates))
+        items.append(_build_item(bucket, target_weight, bucket_candidates, warnings, constraint_profile))
 
+    warnings.extend(constraint_profile.notes)
     return ExecutionPlan(
         plan_id=f"{source_run_id}:{source_allocation_id}",
         source_run_id=source_run_id,

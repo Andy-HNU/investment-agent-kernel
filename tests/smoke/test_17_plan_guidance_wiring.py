@@ -77,7 +77,7 @@ def test_monthly_card_consumes_plan_guidance_next_steps(tmp_path):
 
     # Generate a new pending plan by onboarding with changed restrictions (stable)
     updated_profile = _profile(account_profile_id=profile.account_profile_id)
-    updated_profile.restrictions = ["不碰股票"]
+    updated_profile.restrictions = ["只接受黄金和现金"]
     run_frontdesk_onboarding(updated_profile, db_path=db_path)
 
     monthly = run_frontdesk_followup(
