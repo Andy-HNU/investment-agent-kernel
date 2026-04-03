@@ -16,6 +16,16 @@
 
 本任务书从现在开始取代 `CODEX_kernel_first_roadmap_2026-04-01.md` 作为当前主执行地图；旧 roadmap 保留为 `v1` 历史路线，不再单独驱动下一轮开发。
 
+## 当前执行进度
+
+- 已交付：
+  - `主线 1 / Wave M1`：建模 raw contract 与 `simulation_mode` 诚实披露骨架
+  - `主线 2`：真实公开源 provider 架构、历史数据缓存、real-source smoke 第一版
+  - `主线 3`：`satellite / qdii / overseas` 产品映射第一版、execution plan `coverage_ratio / blocked / degraded` 闭环、frontdesk/orchestrator/CLI 持久化与展示收口
+- 当前未完成：
+  - `主线 1 / Wave M2-M4`：真正的 `GARCH / DCC / Jump` 校准与概率解释升级
+  - `主线 4-6`：Claw shell 闭环、年度验收 defect 全清、概率 UX 升级
+
 ## 协作约定
 
 - 继续采用多角色协作：

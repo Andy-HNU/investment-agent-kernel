@@ -1427,6 +1427,9 @@ def _build_execution_plan_summary(execution_plan: Any) -> dict[str, Any]:
         "warning_count": len(list(data.get("warnings") or [])),
         "approved_at": data.get("approved_at"),
         "superseded_by_plan_id": data.get("superseded_by_plan_id"),
+        "coverage_ratio": round(float(data.get("coverage_ratio", 0.0) or 0.0), 4),
+        "unmapped_bucket_count": len(list(data.get("unmapped_buckets") or [])),
+        "degraded_bucket_count": len(list(data.get("degraded_buckets") or [])),
     }
 
 
@@ -1867,6 +1870,25 @@ def run_orchestrator(
         status=status,
         goal_solver_output=goal_solver_output,
         envelope=envelope,
+    )
+    execution_plan_data = _as_dict(_payload(execution_plan))
+    execution_plan_status = _first_text(execution_plan_data.get("status"))
+    if execution_plan_status == "blocked":
+        blocking_reasons.append("execution_plan is blocked")
+        for warning in list(execution_plan_data.get("warnings") or []):
+            if warning:
+                blocking_reasons.append(str(warning))
+    elif execution_plan_status == "degraded":
+        degraded_notes.append("execution_plan is degraded")
+        for warning in list(execution_plan_data.get("warnings") or []):
+            if warning:
+                degraded_notes.append(str(warning))
+    blocking_reasons = _unique_items(blocking_reasons)
+    degraded_notes = _unique_items(degraded_notes)
+    status = _status_from_flags(
+        blocking_reasons=blocking_reasons,
+        degraded_notes=degraded_notes,
+        escalation_reasons=escalation_reasons,
     )
     # Plan guidance from frontdesk context
     plan_context = _as_dict(envelope.get("frontdesk_execution_plan_context"))

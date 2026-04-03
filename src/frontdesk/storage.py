@@ -13,7 +13,8 @@ _SOURCE_LABELS = {
     "externally_fetched": "外部抓取",
 }
 _ACTIVE_EXECUTION_PLAN_STATUSES = {"approved"}
-_PENDING_EXECUTION_PLAN_STATUSES = {"draft", "user_review"}
+_PENDING_EXECUTION_PLAN_STATUSES = {"draft", "user_review", "degraded"}
+_BLOCKED_EXECUTION_PLAN_STATUSES = {"blocked"}
 
 
 def _empty_input_provenance() -> dict[str, Any]:
@@ -217,6 +218,25 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
     if not payload:
         return None
     items = list(payload.get("items") or [])
+    item_preview = []
+    for item in items:
+        entry = dict(item or {})
+        primary_product = dict(entry.get("primary_product") or {})
+        alternate_products = [dict(product or {}) for product in list(entry.get("alternate_products") or [])]
+        item_preview.append(
+            {
+                "asset_bucket": entry.get("asset_bucket"),
+                "target_weight": entry.get("target_weight"),
+                "primary_product_id": entry.get("primary_product_id") or primary_product.get("product_id"),
+                "primary_product_name": primary_product.get("product_name"),
+                "alternate_product_ids": list(entry.get("alternate_product_ids") or []),
+                "alternate_product_names": [
+                    product.get("product_name")
+                    for product in alternate_products
+                    if product.get("product_name")
+                ],
+            }
+        )
     return {
         "plan_id": payload.get("plan_id"),
         "plan_version": payload.get("plan_version"),
@@ -228,14 +248,23 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "warning_count": len(list(payload.get("warnings") or [])),
         "approved_at": payload.get("approved_at"),
         "superseded_by_plan_id": payload.get("superseded_by_plan_id"),
+        "coverage_ratio": round(float(payload.get("coverage_ratio", 0.0) or 0.0), 4),
+        "warnings": list(payload.get("warnings") or []),
+        "unmapped_buckets": list(payload.get("unmapped_buckets") or []),
+        "degraded_buckets": list(payload.get("degraded_buckets") or []),
+        "unmapped_bucket_count": len(list(payload.get("unmapped_buckets") or [])),
+        "degraded_bucket_count": len(list(payload.get("degraded_buckets") or [])),
+        "items_preview": item_preview,
     }
 
 
 def _execution_plan_record_summary(record: FrontdeskExecutionPlanRecord | None) -> dict[str, Any] | None:
     if record is None:
         return None
-    payload_summary = _execution_plan_summary(record.payload) or {}
+    payload = dict(record.payload or {})
+    payload_summary = _execution_plan_summary(payload) or {}
     return {
+        **payload,
         **payload_summary,
         "plan_id": record.plan_id,
         "plan_version": record.plan_version,
@@ -1282,6 +1311,7 @@ class FrontdeskStore:
             "baseline_card": dict(baseline.get("decision_card") or {}),
             "active_execution_plan": snapshot.get("active_execution_plan"),
             "pending_execution_plan": snapshot.get("pending_execution_plan"),
+            "blocked_execution_plan": snapshot.get("blocked_execution_plan"),
             "execution_plan_comparison": snapshot.get("execution_plan_comparison"),
             "execution_feedback": snapshot.get("execution_feedback"),
             "execution_feedback_summary": snapshot.get("execution_feedback_summary"),
@@ -1430,6 +1460,26 @@ class FrontdeskStore:
             ).fetchone()
         return _execution_plan_record_from_row(row)
 
+    def get_latest_blocked_execution_plan(
+        self,
+        account_profile_id: str,
+    ) -> FrontdeskExecutionPlanRecord | None:
+        placeholders = ", ".join("?" for _ in _BLOCKED_EXECUTION_PLAN_STATUSES)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM execution_plan_records
+                WHERE account_profile_id = ?
+                  AND status IN ({placeholders})
+                  AND superseded_by_plan_id IS NULL
+                ORDER BY updated_at DESC, plan_version DESC, id DESC
+                LIMIT 1
+                """,
+                (account_profile_id, *_BLOCKED_EXECUTION_PLAN_STATUSES),
+            ).fetchone()
+        return _execution_plan_record_from_row(row)
+
     def approve_execution_plan(
         self,
         account_profile_id: str,
@@ -1447,6 +1497,8 @@ class FrontdeskStore:
             raise ValueError(f"no execution plan for {account_profile_id}: {plan_id}@v{plan_version}")
         if target.superseded_by_plan_id:
             raise ValueError(f"execution plan already superseded: {plan_id}@v{plan_version}")
+        if target.status == "blocked":
+            raise ValueError(f"execution plan is blocked and cannot be approved: {plan_id}@v{plan_version}")
 
         active = self.get_latest_active_execution_plan(account_profile_id)
         if (
@@ -1504,6 +1556,7 @@ class FrontdeskStore:
         latest_run = self.get_latest_run(account_profile_id)
         active_execution_plan = self.get_latest_active_execution_plan(account_profile_id)
         pending_execution_plan = self.get_latest_pending_execution_plan(account_profile_id)
+        blocked_execution_plan = self.get_latest_blocked_execution_plan(account_profile_id)
         execution_feedback_summary = self.get_execution_feedback_summary(account_profile_id)
         return {
             "profile": profile,
@@ -1520,6 +1573,7 @@ class FrontdeskStore:
             "latest_run": latest_run,
             "active_execution_plan": _execution_plan_record_summary(active_execution_plan),
             "pending_execution_plan": _execution_plan_record_summary(pending_execution_plan),
+            "blocked_execution_plan": _execution_plan_record_summary(blocked_execution_plan),
             "execution_plan_comparison": _compare_execution_plans(active_execution_plan, pending_execution_plan),
             "execution_feedback": execution_feedback_summary["latest_feedback"],
             "execution_feedback_summary": execution_feedback_summary,

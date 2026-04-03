@@ -945,6 +945,7 @@ def _quarterly_raw_inputs(
 ) -> dict[str, Any]:
     bundle = build_user_onboarding_inputs(_profile_model(profile), as_of=as_of)
     raw_inputs = deepcopy(bundle.raw_inputs)
+    raw_inputs["live_portfolio"] = deepcopy(bundle.live_portfolio)
     raw_inputs.setdefault("input_provenance", {}).setdefault("system_inferred", []).append(
         {
             "field": "baseline.run_id",
@@ -1016,6 +1017,7 @@ def _frontdesk_summary(
         "refresh_summary": refresh_summary,
         "active_execution_plan": user_state.get("active_execution_plan"),
         "pending_execution_plan": user_state.get("pending_execution_plan"),
+        "blocked_execution_plan": user_state.get("blocked_execution_plan"),
         "execution_plan_comparison": user_state.get("execution_plan_comparison"),
         "execution_feedback": user_state.get("execution_feedback"),
         "execution_feedback_summary": user_state.get("execution_feedback_summary"),
@@ -1066,19 +1068,41 @@ def _apply_execution_plan_guidance(
     changed_bucket_count = int(comparison.get("changed_bucket_count") or 0)
     product_switch_count = int(comparison.get("product_switch_count") or 0)
     max_weight_delta = float(comparison.get("max_weight_delta") or 0.0)
+    summary_bits: list[str] = []
+    if changed_bucket_count:
+        summary_bits.append(f"{changed_bucket_count} 个资金桶变化")
+    if product_switch_count:
+        summary_bits.append(f"{product_switch_count} 个主产品切换")
+    if max_weight_delta > 0.0:
+        summary_bits.append(f"最大权重变化 {max_weight_delta:.2%}")
+    summary_line = "；".join(summary_bits)
 
     if recommendation == "replace_active":
         headline = "新执行计划与当前已确认计划差异较大，建议替换当前 active plan。"
-        next_step = "approve_pending_plan"
-        review_condition = "after_reviewing_plan_replacement"
+        next_steps_to_add = ["approve_pending_plan_replacement", "review_plan_differences"]
+        review_conditions_to_add = ["after_reviewing_plan_replacement", "pending_plan_major_change"]
+        guidance_note = (
+            f"新计划相对当前已确认计划属于重大变化：{summary_line}。"
+            if summary_line
+            else "新计划相对当前已确认计划属于重大变化。"
+        )
     elif recommendation == "review_replace":
         headline = "新执行计划与当前 active plan 有局部变化，建议人工复核后决定是否替换。"
-        next_step = "review_plan_delta"
-        review_condition = "after_reviewing_plan_delta"
+        next_steps_to_add = ["review_plan_differences", "confirm_keep_or_replace_active_plan"]
+        review_conditions_to_add = ["after_reviewing_plan_delta", "pending_plan_minor_change_review"]
+        guidance_note = (
+            f"新计划相对当前已确认计划存在中小幅变化：{summary_line}。"
+            if summary_line
+            else "新计划相对当前已确认计划存在中小幅变化。"
+        )
     else:
         headline = "新执行计划与当前 active plan 基本一致，可继续沿用当前计划。"
-        next_step = "keep_active_plan"
-        review_condition = "after_next_scheduled_review"
+        next_steps_to_add = ["keep_active_plan", "recheck_after_next_cycle"]
+        review_conditions_to_add = ["after_next_scheduled_review", "no_new_plan_generated"]
+        if comparison.get("pending_plan_id") is None:
+            guidance_note = "本轮没有生成新的待确认执行计划，可继续沿用当前已执行方案。"
+        else:
+            guidance_note = "新计划相对当前已确认计划基本一致，可继续沿用当前 active plan。"
 
     guidance = {
         "recommendation": recommendation,
@@ -1108,15 +1132,21 @@ def _apply_execution_plan_guidance(
     )
     if evidence_line not in evidence_highlights:
         evidence_highlights.append(evidence_line)
+    execution_notes = list(card.get("execution_notes") or [])
+    if guidance_note not in execution_notes:
+        execution_notes.append(guidance_note)
     next_steps = list(card.get("next_steps") or [])
-    if next_step not in next_steps:
-        next_steps.insert(0, next_step)
+    for next_step in reversed(next_steps_to_add):
+        if next_step not in next_steps:
+            next_steps.insert(0, next_step)
     review_conditions = list(card.get("review_conditions") or [])
-    if review_condition not in review_conditions:
-        review_conditions.append(review_condition)
+    for review_condition in review_conditions_to_add:
+        if review_condition not in review_conditions:
+            review_conditions.append(review_condition)
 
     card["recommendation_reason"] = recommendation_reason
     card["evidence_highlights"] = evidence_highlights
+    card["execution_notes"] = execution_notes
     card["next_steps"] = next_steps
     card["review_conditions"] = review_conditions
     card["execution_plan_guidance"] = guidance
@@ -1129,6 +1159,7 @@ def run_frontdesk_onboarding(
     profile: UserOnboardingProfile,
     *,
     db_path: str | Path = DEFAULT_DB_PATH,
+    as_of: str | None = None,
     external_snapshot_source: str | Path | None = None,
     external_snapshot_config: str | Path | dict[str, Any] | None = None,
     external_data_config: str | Path | dict[str, Any] | None = None,
@@ -1143,7 +1174,10 @@ def run_frontdesk_onboarding(
     store = FrontdeskStore(db_path)
     store.init_schema()
 
-    onboarding = build_user_onboarding_inputs(profile)
+    if as_of is None:
+        onboarding = build_user_onboarding_inputs(profile)
+    else:
+        onboarding = build_user_onboarding_inputs(profile, as_of=as_of)
     external_payload = None
     external_error = None
     if external_snapshot_source is not None:
@@ -1234,6 +1268,8 @@ def run_frontdesk_followup(
     account_profile_id: str,
     workflow_type: str,
     db_path: str | Path = DEFAULT_DB_PATH,
+    as_of: str | None = None,
+    allow_historical_replay: bool = False,
     event_request: bool = False,
     profile: UserOnboardingProfile | dict[str, Any] | None = None,
     event_context: dict[str, Any] | None = None,
@@ -1288,7 +1324,7 @@ def run_frontdesk_followup(
         event_request
         or bool(event_context)
     )
-    as_of = _now_iso()
+    as_of = as_of or _now_iso()
     raw_inputs = (
         _quarterly_raw_inputs(
             profile=active_profile,
@@ -1350,6 +1386,13 @@ def run_frontdesk_followup(
             )
         except ExternalSnapshotAdapterError:
             raise
+    if allow_historical_replay:
+        runtime_overrides = dict(raw_inputs.get("optimizer_params") or {})
+        runtime_overrides["max_portfolio_snapshot_age_days"] = max(
+            int(runtime_overrides.get("max_portfolio_snapshot_age_days", 3) or 3),
+            3660,
+        )
+        raw_inputs["optimizer_params"] = runtime_overrides
     active_profile = _merge_profile_override(
         active_profile,
         profile_patch_from_external_snapshot(raw_inputs, external_payload=external_payload),
@@ -1556,6 +1599,7 @@ def approve_frontdesk_execution_plan(
         "approved_execution_plan": _as_dict(record),
         "active_execution_plan": (snapshot or {}).get("active_execution_plan"),
         "pending_execution_plan": (snapshot or {}).get("pending_execution_plan"),
+        "blocked_execution_plan": (snapshot or {}).get("blocked_execution_plan"),
         "execution_plan_comparison": (snapshot or {}).get("execution_plan_comparison"),
         "refresh_summary": (snapshot or {}).get("refresh_summary"),
         "user_state": user_state,

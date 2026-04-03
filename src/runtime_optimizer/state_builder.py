@@ -18,6 +18,11 @@ def _obj(value: Any) -> Any:
     return value
 
 
+def _is_idle_cash_bucket(bucket: str | None) -> bool:
+    normalized = str(bucket or "").strip().lower()
+    return normalized in {"cash", "cash_liquidity", "cash / liquidity", "cash/liquidity", "liquidity"}
+
+
 def _reference_snapshot_date(output: dict[str, Any], baseline: dict[str, Any]) -> date:
     snapshot_ref = str(output.get("input_snapshot_id") or baseline.get("snapshot_id") or "")
     match = re.search(r"(20\d{2})(\d{2})(\d{2})T", snapshot_ref)
@@ -51,7 +56,11 @@ def validate_ev_state_inputs(
     )
     assert abs(total - 1.0) < 0.01 or all_cash_snapshot, f"weights 合计 {total:.4f}，应接近 1.0"
     assert constraints.get("bucket_category"), "bucket_category 不能为空；必须显式提供，禁止字符串推断"
-    unmapped = [b for b in live["weights"] if b not in constraints["bucket_category"]]
+    unmapped = [
+        bucket
+        for bucket in live["weights"]
+        if bucket not in constraints["bucket_category"] and not _is_idle_cash_bucket(bucket)
+    ]
     assert not unmapped, f"以下资产桶未在 bucket_category 中映射：{unmapped}"
     assert live["remaining_horizon_months"] > 0
     assert live["available_cash"] >= 0
@@ -71,7 +80,11 @@ def validate_ev_state_inputs(
     except (ValueError, AttributeError, TypeError) as exc:
         raise AssertionError(f"日期字段格式错误，无法校验时效：{exc}") from exc
     target_buckets = set(output["recommended_allocation"]["weights"].keys())
-    unknown_buckets = set(live["weights"].keys()) - target_buckets
+    unknown_buckets = {
+        bucket
+        for bucket in live["weights"].keys()
+        if bucket not in target_buckets and not _is_idle_cash_bucket(bucket)
+    }
     if unknown_buckets:
         unknown_weight = sum(float(live["weights"].get(bucket, 0.0)) for bucket in unknown_buckets)
         assert unknown_weight <= 0.05, (

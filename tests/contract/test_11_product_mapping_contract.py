@@ -12,12 +12,12 @@ from product_mapping import (
 
 
 @pytest.mark.contract
-def test_builtin_catalog_covers_first_wave_buckets_with_typed_candidates():
+def test_builtin_catalog_covers_wave3_buckets_with_typed_candidates():
     catalog = load_builtin_catalog()
 
     assert catalog
     assert all(isinstance(candidate, ProductCandidate) for candidate in catalog)
-    assert {"equity_cn", "bond_cn", "gold", "cash_liquidity"}.issubset(
+    assert {"equity_cn", "bond_cn", "gold", "cash_liquidity", "satellite", "qdii_global", "overseas"}.issubset(
         {candidate.asset_bucket for candidate in catalog}
     )
 
@@ -98,3 +98,102 @@ def test_build_execution_plan_respects_gold_and_cash_only_restriction():
 
     assert {item.asset_bucket for item in plan.items} == {"gold", "cash_liquidity"}
     assert any("只接受黄金和现金" in warning for warning in plan.warnings)
+
+
+@pytest.mark.contract
+def test_build_execution_plan_respects_no_qdii_restriction():
+    plan = build_execution_plan(
+        source_run_id="run_no_qdii",
+        source_allocation_id="allocation_no_qdii",
+        bucket_targets={
+            "qdii": 0.40,
+            "overseas": 0.20,
+            "bond_cn": 0.40,
+        },
+        restrictions=["不买QDII"],
+    )
+
+    assert "qdii_global" not in {item.asset_bucket for item in plan.items}
+    assert {"overseas", "bond_cn"}.issubset({item.asset_bucket for item in plan.items})
+    assert any("QDII" in warning or "qdii" in warning.lower() for warning in plan.warnings)
+
+
+@pytest.mark.contract
+def test_build_execution_plan_maps_satellite_bucket_and_closes_weight_sum():
+    plan = build_execution_plan(
+        source_run_id="run_satellite_mapping",
+        source_allocation_id="allocation_satellite",
+        bucket_targets={
+            "equity_cn": 0.55,
+            "bond_cn": 0.25,
+            "gold": 0.10,
+            "satellite": 0.10,
+        },
+        restrictions=[],
+    )
+
+    assert plan.status == "draft"
+    assert plan.coverage_ratio == pytest.approx(1.0, rel=1e-6)
+    assert plan.unmapped_buckets == []
+    assert plan.degraded_buckets == []
+    assert sum(item.target_weight for item in plan.items) == pytest.approx(1.0, rel=1e-6)
+    assert {"equity_cn", "bond_cn", "gold", "satellite"} == {item.asset_bucket for item in plan.items}
+    assert all("当前没有可用产品候选" not in warning for warning in plan.warnings)
+
+
+@pytest.mark.contract
+def test_build_execution_plan_degrades_unknown_bucket_into_cash_liquidity_fallback():
+    plan = build_execution_plan(
+        source_run_id="run_unknown_bucket_degraded",
+        source_allocation_id="allocation_degraded",
+        bucket_targets={
+            "equity_cn": 0.60,
+            "alts_private": 0.40,
+        },
+        restrictions=[],
+    )
+
+    assert plan.status == "degraded"
+    assert plan.coverage_ratio == pytest.approx(1.0, rel=1e-6)
+    assert plan.unmapped_buckets == ["alts_private"]
+    assert plan.degraded_buckets == ["alts_private"]
+    assert sum(item.target_weight for item in plan.items) == pytest.approx(1.0, rel=1e-6)
+    cash_item = next(item for item in plan.items if item.asset_bucket == "cash_liquidity")
+    assert cash_item.target_weight == pytest.approx(0.40, rel=1e-6)
+    assert any("alts_private" in warning for warning in plan.warnings)
+
+
+@pytest.mark.contract
+def test_build_execution_plan_blocks_when_restrictions_remove_all_executable_paths():
+    plan = build_execution_plan(
+        source_run_id="run_blocked_plan",
+        source_allocation_id="allocation_blocked",
+        bucket_targets={"equity_cn": 1.0},
+        restrictions=["不碰股票"],
+    )
+
+    assert plan.status == "blocked"
+    assert plan.coverage_ratio == pytest.approx(0.0, abs=1e-9)
+    assert plan.items == []
+    assert any("因用户限制被排除" in warning for warning in plan.warnings)
+
+
+@pytest.mark.contract
+def test_build_execution_plan_blocks_qdii_bucket_when_user_forbids_qdii():
+    plan = build_execution_plan(
+        source_run_id="run_blocked_qdii",
+        source_allocation_id="allocation_blocked_qdii",
+        bucket_targets={
+            "qdii": 0.40,
+            "bond_cn": 0.60,
+        },
+        restrictions=["不买QDII"],
+    )
+
+    assert plan.status == "blocked"
+    assert plan.confirmation_required is False
+    assert plan.coverage_ratio < 1.0
+    assert plan.unmapped_buckets == []
+    assert plan.degraded_buckets == []
+    assert all(item.asset_bucket != "cash_liquidity" or item.target_weight < 0.40 for item in plan.items)
+    assert any("QDII" in warning or "qdii" in warning for warning in plan.warnings)

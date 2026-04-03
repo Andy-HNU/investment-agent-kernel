@@ -177,3 +177,101 @@ def test_render_frontdesk_summary_surfaces_wave1_probability_fields():
     assert "implied_required_annual_return=8.12%" in rendered
     assert "highest_probability_allocation=growth_tilt__aggressive__01" in rendered
     assert "highest_probability_success=76.00%" in rendered
+
+
+@pytest.mark.smoke
+def test_render_frontdesk_summary_surfaces_blocked_execution_plan_details():
+    from frontdesk.cli import render_frontdesk_summary
+
+    rendered = render_frontdesk_summary(
+        {
+            "workflow": "onboard",
+            "status": "blocked",
+            "refresh_summary": {},
+            "user_state": {
+                "profile": {"account_profile_id": "blocked_user", "display_name": "Andy"},
+                "decision_card": {
+                    "card_type": "blocked",
+                    "summary": "当前执行计划无法落地，需要调整约束或替代产品。",
+                    "input_provenance": {},
+                },
+                "active_execution_plan": None,
+                "pending_execution_plan": None,
+                "blocked_execution_plan": {
+                    "plan_id": "blocked_plan",
+                    "plan_version": 1,
+                    "status": "blocked",
+                    "item_count": 1,
+                    "coverage_ratio": 0.6,
+                    "confirmation_required": False,
+                    "warnings": ["资金桶 qdii 当前因用户限制无法执行。"],
+                    "unmapped_bucket_count": 0,
+                    "degraded_bucket_count": 0,
+                    "items_preview": [
+                        {
+                            "asset_bucket": "bond_cn",
+                            "target_weight": 0.6,
+                            "primary_product_id": "cn_bond_gov_etf",
+                            "primary_product_name": "国债ETF",
+                            "alternate_product_ids": [],
+                            "alternate_product_names": [],
+                        }
+                    ],
+                },
+            },
+        }
+    )
+
+    assert "blocked_execution_plan:" in rendered
+    assert "blocked_execution_plan_warning=资金桶 qdii 当前因用户限制无法执行。" in rendered
+    assert "blocked_execution_plan_item: bucket=bond_cn" in rendered
+
+
+@pytest.mark.smoke
+def test_render_frontdesk_summary_surfaces_blocked_execution_plan_details():
+    from frontdesk.cli import render_frontdesk_summary
+
+    rendered = render_frontdesk_summary(
+        {
+            "workflow": "status",
+            "status": "blocked",
+            "user_state": {
+                "profile": {
+                    "account_profile_id": "blocked_plan_user",
+                    "display_name": "Blocked User",
+                },
+                "decision_card": {
+                    "card_type": "status",
+                    "summary": "需要先处理被阻断的执行计划。",
+                    "primary_recommendation": "review_plan_blockers",
+                    "recommended_action": "review",
+                    "input_provenance": {},
+                },
+                "blocked_execution_plan": {
+                    "plan_id": "blocked_plan",
+                    "plan_version": 1,
+                    "status": "blocked",
+                    "item_count": 1,
+                    "coverage_ratio": 0.6,
+                    "confirmation_required": False,
+                    "warnings": ["资金桶 qdii_global 当前因用户限制无法执行。"],
+                    "unmapped_buckets": [],
+                    "degraded_buckets": [],
+                    "items_preview": [
+                        {
+                            "asset_bucket": "bond_cn",
+                            "target_weight": 0.6,
+                            "primary_product_id": "cn_bond_gov_etf",
+                            "primary_product_name": "国债ETF",
+                            "alternate_product_ids": [],
+                            "alternate_product_names": [],
+                        }
+                    ],
+                },
+            },
+        }
+    )
+
+    assert "blocked_execution_plan: plan_id=blocked_plan" in rendered
+    assert "blocked_execution_plan_warning=资金桶 qdii_global 当前因用户限制无法执行。" in rendered
+    assert "blocked_execution_plan_item: bucket=bond_cn" in rendered

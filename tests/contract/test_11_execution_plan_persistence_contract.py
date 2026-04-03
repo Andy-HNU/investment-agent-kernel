@@ -151,3 +151,72 @@ def test_execution_plan_storage_supports_version_history_per_plan_id(tmp_path):
         ("plan_hist", 1, "draft", None, None),
         ("plan_hist", 2, "approved", "2026-03-31T00:00:00Z", None),
     ]
+
+
+@pytest.mark.contract
+def test_frontdesk_snapshot_surfaces_blocked_execution_plan_and_rejects_approval(tmp_path):
+    from frontdesk.store import FrontdeskStore
+
+    db_path = tmp_path / "frontdesk.sqlite"
+    store = FrontdeskStore(db_path)
+    store.initialize()
+    store.upsert_user_profile(
+        account_profile_id="blocked_plan_user",
+        display_name="Blocked User",
+        profile={"account_profile_id": "blocked_plan_user", "display_name": "Blocked User"},
+        created_at="2026-03-30T00:00:00Z",
+    )
+    blocked_payload = {
+        "plan_id": "blocked_plan",
+        "plan_version": 1,
+        "source_run_id": "run_blocked",
+        "source_allocation_id": "allocation_blocked",
+        "status": "blocked",
+        "confirmation_required": False,
+        "warnings": ["资金桶 qdii 当前因用户限制无法执行。"],
+        "coverage_ratio": 0.6,
+        "unmapped_buckets": [],
+        "degraded_buckets": [],
+        "items": [
+            {
+                "asset_bucket": "bond_cn",
+                "target_weight": 0.6,
+                "primary_product_id": "cn_bond_gov_etf",
+                "alternate_product_ids": [],
+                "primary_product": {
+                    "product_id": "cn_bond_gov_etf",
+                    "product_name": "国债ETF",
+                },
+                "alternate_products": [],
+            }
+        ],
+        "approved_at": None,
+        "superseded_by_plan_id": None,
+    }
+    store.save_execution_plan_record(
+        account_profile_id="blocked_plan_user",
+        plan_id="blocked_plan",
+        plan_version=1,
+        source_run_id="run_blocked",
+        source_allocation_id="allocation_blocked",
+        status="blocked",
+        confirmation_required=False,
+        payload=blocked_payload,
+        created_at="2026-03-30T00:00:00Z",
+        updated_at="2026-03-30T00:00:00Z",
+    )
+
+    snapshot = store.get_frontdesk_snapshot("blocked_plan_user")
+
+    assert snapshot["pending_execution_plan"] is None
+    assert snapshot["blocked_execution_plan"]["plan_id"] == "blocked_plan"
+    assert snapshot["blocked_execution_plan"]["status"] == "blocked"
+    assert snapshot["blocked_execution_plan"]["coverage_ratio"] == pytest.approx(0.6, rel=1e-6)
+
+    with pytest.raises(ValueError, match="blocked"):
+        store.approve_execution_plan(
+            "blocked_plan_user",
+            plan_id="blocked_plan",
+            plan_version=1,
+            approved_at="2026-03-31T00:00:00Z",
+        )

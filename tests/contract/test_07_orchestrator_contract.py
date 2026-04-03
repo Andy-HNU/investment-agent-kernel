@@ -12,6 +12,7 @@ from allocation_engine.types import AllocationEngineResult
 from decision_card.types import DecisionCardType
 from orchestrator.engine import run_orchestrator
 from orchestrator.types import OrchestratorResult, WorkflowStatus, WorkflowType
+from product_mapping.types import ExecutionPlan
 from runtime_optimizer.types import RuntimeOptimizerMode, RuntimeOptimizerResult
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 
@@ -239,6 +240,153 @@ def test_run_orchestrator_execution_plan_respects_user_restrictions():
     assert plan_buckets.issubset({"gold", "cash_liquidity"})
     assert "equity_cn" not in plan_buckets
     assert "bond_cn" not in plan_buckets
+
+
+@pytest.mark.contract
+def test_run_orchestrator_promotes_blocked_execution_plan_into_blocking_reasons(monkeypatch):
+    profile = UserOnboardingProfile(
+        account_profile_id="orchestrator_blocked_plan",
+        display_name="Blocked Plan User",
+        current_total_assets=50_000.0,
+        monthly_contribution=12_000.0,
+        goal_amount=1_000_000.0,
+        goal_horizon_months=60,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.10,
+        current_holdings="cash",
+        restrictions=[],
+    )
+    bundle = build_user_onboarding_inputs(profile, as_of="2026-03-30T00:00:00Z")
+
+    def _blocked_plan(**_: object) -> ExecutionPlan:
+        return ExecutionPlan(
+            plan_id="blocked_plan",
+            source_run_id="run_blocked_execution_plan",
+            source_allocation_id="allocation_blocked",
+            status="blocked",
+            items=[],
+            warnings=["资金桶 qdii 当前因用户限制无法执行。"],
+            confirmation_required=False,
+            coverage_ratio=0.6,
+            unmapped_buckets=[],
+            degraded_buckets=[],
+        )
+
+    monkeypatch.setattr("orchestrator.engine.build_execution_plan", _blocked_plan)
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "run_blocked_execution_plan"},
+        raw_inputs=bundle.raw_inputs,
+    )
+
+    assert result.status == WorkflowStatus.BLOCKED
+    assert "execution_plan is blocked" in result.blocking_reasons
+    assert any("qdii" in reason.lower() for reason in result.blocking_reasons)
+    assert result.persistence_plan.run_record["status"] == "blocked"
+
+
+@pytest.mark.contract
+def test_run_orchestrator_promotes_degraded_execution_plan_into_degraded_notes(monkeypatch):
+    profile = UserOnboardingProfile(
+        account_profile_id="orchestrator_degraded_plan",
+        display_name="Degraded Plan User",
+        current_total_assets=50_000.0,
+        monthly_contribution=12_000.0,
+        goal_amount=1_000_000.0,
+        goal_horizon_months=60,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.10,
+        current_holdings="cash",
+        restrictions=[],
+    )
+    bundle = build_user_onboarding_inputs(profile, as_of="2026-03-30T00:00:00Z")
+
+    def _degraded_plan(**_: object) -> ExecutionPlan:
+        return ExecutionPlan(
+            plan_id="degraded_plan",
+            source_run_id="run_degraded_execution_plan",
+            source_allocation_id="allocation_degraded",
+            status="degraded",
+            items=[],
+            warnings=["资金桶 satellite 当前没有直接产品映射，本轮先降级为现金承接。"],
+            confirmation_required=True,
+            coverage_ratio=1.0,
+            unmapped_buckets=["satellite"],
+            degraded_buckets=["satellite"],
+        )
+
+    monkeypatch.setattr("orchestrator.engine.build_execution_plan", _degraded_plan)
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "run_degraded_execution_plan"},
+        raw_inputs=bundle.raw_inputs,
+    )
+
+    assert result.status == WorkflowStatus.DEGRADED
+    assert "execution_plan is degraded" in result.degraded_notes
+    assert any("satellite" in note.lower() for note in result.degraded_notes)
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize(
+    ("plan_status", "expected_status", "expected_field", "expected_fragment"),
+    [
+        ("blocked", WorkflowStatus.BLOCKED, "blocking_reasons", "execution_plan"),
+        ("degraded", WorkflowStatus.DEGRADED, "degraded_notes", "execution_plan"),
+    ],
+)
+def test_run_orchestrator_promotes_execution_plan_status_into_workflow_status(
+    monkeypatch,
+    goal_solver_input_base,
+    calibration_result_base,
+    plan_status,
+    expected_status,
+    expected_field,
+    expected_fragment,
+):
+    bundle_id = calibration_result_base["source_bundle_id"]
+    blocked_like_plan = {
+        "plan_id": f"plan_{plan_status}",
+        "plan_version": 1,
+        "source_run_id": f"run_{plan_status}",
+        "source_allocation_id": "allocation_contract",
+        "status": plan_status,
+        "confirmation_required": plan_status != "blocked",
+        "coverage_ratio": 0.6 if plan_status == "blocked" else 1.0,
+        "unmapped_buckets": ["qdii_global"] if plan_status == "blocked" else [],
+        "degraded_buckets": ["alts_private"] if plan_status == "degraded" else [],
+        "warnings": [f"contract {plan_status} warning"],
+        "items": [
+            {
+                "asset_bucket": "bond_cn",
+                "target_weight": 0.6,
+                "primary_product_id": "cn_bond_gov_etf",
+                "primary_product": {"product_id": "cn_bond_gov_etf", "product_name": "国债ETF"},
+                "alternate_products": [],
+            }
+        ],
+    }
+
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "_maybe_build_execution_plan",
+        lambda **_: blocked_like_plan,
+    )
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": f"run_execution_plan_{plan_status}"},
+        raw_inputs={
+            "account_profile_id": goal_solver_input_base["account_profile_id"],
+            "snapshot_bundle": {"bundle_id": bundle_id},
+            "calibration_result": calibration_result_base,
+            "allocation_engine_input": _allocation_input(goal_solver_input_base),
+            "goal_solver_input": goal_solver_input_base,
+        },
+    )
+
+    assert result.status == expected_status
+    assert expected_fragment in " ".join(getattr(result, expected_field))
+    assert result.decision_card["status_badge"] == expected_status.value
 
 
 @pytest.mark.contract

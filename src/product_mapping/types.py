@@ -63,13 +63,16 @@ class ExecutionPlan:
     plan_id: str
     source_run_id: str
     source_allocation_id: str
-    status: Literal["draft", "user_review", "approved", "superseded", "cancelled"] = "draft"
+    status: Literal["draft", "user_review", "approved", "superseded", "cancelled", "degraded", "blocked"] = "draft"
     items: list[ExecutionPlanItem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     confirmation_required: bool = True
     plan_version: int = 1
     approved_at: str | None = None
     superseded_by_plan_id: str | None = None
+    coverage_ratio: float = 0.0
+    unmapped_buckets: list[str] = field(default_factory=list)
+    degraded_buckets: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -89,4 +92,7 @@ class ExecutionPlan:
             "warning_count": len(self.warnings),
             "approved_at": self.approved_at,
             "superseded_by_plan_id": self.superseded_by_plan_id,
+            "coverage_ratio": round(float(self.coverage_ratio), 4),
+            "unmapped_bucket_count": len(self.unmapped_buckets),
+            "degraded_bucket_count": len(self.degraded_buckets),
         }

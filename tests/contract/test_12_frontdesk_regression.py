@@ -183,6 +183,24 @@ def test_frontdesk_onboarding_summary_surfaces_probability_context_fields(tmp_pa
 
 
 @pytest.mark.contract
+def test_frontdesk_onboarding_exposes_pending_execution_plan_items_and_products(tmp_path):
+    profile = _profile(account_profile_id="execution_plan_items_visible")
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    summary = run_frontdesk_onboarding(profile, db_path=db_path)
+
+    pending_plan = dict(summary["pending_execution_plan"] or {})
+
+    assert summary["status"] in {"completed", "degraded"}
+    assert pending_plan["items"]
+    assert any(item["asset_bucket"] == "satellite" for item in pending_plan["items"])
+    first_item = pending_plan["items"][0]
+    assert isinstance(first_item["primary_product"], dict)
+    assert first_item["primary_product"]["product_id"]
+    assert "coverage_ratio" in pending_plan
+
+
+@pytest.mark.contract
 def test_frontdesk_summary_normalizes_quarterly_goal_metrics_from_decision_card(tmp_path):
     summary = _frontdesk_summary(
         account_profile_id="quarterly_goal_metric_alias",
@@ -215,6 +233,46 @@ def test_frontdesk_summary_normalizes_quarterly_goal_metrics_from_decision_card(
     assert summary["implied_required_annual_return"] == "8.12%"
     assert summary["highest_probability_result"]["allocation_name"] == "growth_tilt__aggressive__01"
     assert summary["key_metrics"]["new_baseline_highest_probability_success"] == "76.00%"
+
+
+@pytest.mark.contract
+def test_frontdesk_quarterly_without_external_snapshot_reuses_account_raw_as_runtime_portfolio(tmp_path):
+    profile = _profile(account_profile_id="quarterly_runtime_portfolio_from_account_raw")
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    onboarding = run_frontdesk_onboarding(profile, db_path=db_path)
+    quarterly = run_frontdesk_followup(
+        account_profile_id=profile.account_profile_id,
+        workflow_type="quarterly",
+        db_path=db_path,
+    )
+
+    assert onboarding["status"] in {"completed", "degraded"}
+    assert quarterly["status"] != "blocked"
+    assert quarterly["decision_card"]["card_type"] == "quarterly_review"
+
+
+@pytest.mark.contract
+def test_frontdesk_followup_allows_future_dated_replay_when_explicitly_enabled(tmp_path):
+    profile = _profile(account_profile_id="future_dated_year_replay")
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    onboarding = run_frontdesk_onboarding(
+        profile,
+        db_path=db_path,
+        as_of="2026-01-05T00:00:00Z",
+    )
+    monthly = run_frontdesk_followup(
+        account_profile_id=profile.account_profile_id,
+        workflow_type="monthly",
+        db_path=db_path,
+        as_of="2026-07-05T00:00:00Z",
+        allow_historical_replay=True,
+    )
+
+    assert onboarding["run_id"]
+    assert monthly["status"] != "blocked"
+    assert monthly["refresh_summary"]["as_of"] == "2026-07-05T00:00:00Z"
 
 
 @pytest.mark.contract

@@ -360,14 +360,37 @@ def _render_execution_plan_block(
                 f"version={execution_plan.get('plan_version')}",
                 f"status={execution_plan.get('status')}",
                 f"items={execution_plan.get('item_count')}",
+                f"coverage={execution_plan.get('coverage_ratio')}",
                 f"confirmation_required={execution_plan.get('confirmation_required')}",
             ]
         )
     ]
+    if execution_plan.get("unmapped_bucket_count"):
+        lines.append(
+            f"{label}_unmapped_buckets="
+            f"{','.join(execution_plan.get('unmapped_buckets') or []) or execution_plan.get('unmapped_bucket_count')}"
+        )
+    if execution_plan.get("degraded_bucket_count"):
+        lines.append(
+            f"{label}_degraded_buckets="
+            f"{','.join(execution_plan.get('degraded_buckets') or []) or execution_plan.get('degraded_bucket_count')}"
+        )
     if execution_plan.get("approved_at"):
         lines.append(f"{label}_approved_at={execution_plan.get('approved_at')}")
     if execution_plan.get("superseded_by_plan_id"):
         lines.append(f"{label}_superseded_by={execution_plan.get('superseded_by_plan_id')}")
+    for warning in execution_plan.get("warnings") or []:
+        lines.append(f"{label}_warning={warning}")
+    for item in execution_plan.get("items_preview") or []:
+        alternates = ",".join(item.get("alternate_product_names") or item.get("alternate_product_ids") or [])
+        line_parts = [
+            f"bucket={item.get('asset_bucket')}",
+            f"target_weight={item.get('target_weight')}",
+            f"primary={item.get('primary_product_name') or item.get('primary_product_id')}",
+        ]
+        if alternates:
+            line_parts.append(f"alternates={alternates}")
+        lines.append(f"{label}_item: " + ", ".join(line_parts))
     return lines
 
 
@@ -442,6 +465,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         decision_card = user_state.get("decision_card") or {}
         active_execution_plan = payload.get("active_execution_plan") or user_state.get("active_execution_plan")
         pending_execution_plan = payload.get("pending_execution_plan") or user_state.get("pending_execution_plan")
+        blocked_execution_plan = payload.get("blocked_execution_plan") or user_state.get("blocked_execution_plan")
         lines = [
             f"account_profile_id={profile.get('account_profile_id')}",
             f"display_name={profile.get('display_name')}",
@@ -468,6 +492,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
             lines.append(f"model_disclaimer={decision_card.get('model_disclaimer')}")
         lines.extend(_render_execution_plan_block(active_execution_plan, label="active_execution_plan"))
         lines.extend(_render_execution_plan_block(pending_execution_plan, label="pending_execution_plan"))
+        lines.extend(_render_execution_plan_block(blocked_execution_plan, label="blocked_execution_plan"))
         lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison") or user_state.get("execution_plan_comparison")))
         lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
         lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
@@ -509,6 +534,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         )
         lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
         lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
+        lines.extend(_render_execution_plan_block(payload.get("blocked_execution_plan"), label="blocked_execution_plan"))
         lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
         lines.extend(_render_execution_plan_guidance_block((payload.get("user_state") or {}).get("decision_card", {}).get("execution_plan_guidance")))
         lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
@@ -542,6 +568,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
     lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
     lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
     lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
+    lines.extend(_render_execution_plan_block(payload.get("blocked_execution_plan"), label="blocked_execution_plan"))
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
     lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
     lines.extend(
@@ -582,6 +609,7 @@ def render_frontdesk_snapshot(payload: dict[str, Any]) -> str:
     lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
     lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
     lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
+    lines.extend(_render_execution_plan_block(payload.get("blocked_execution_plan"), label="blocked_execution_plan"))
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
     lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
     lines.extend(
