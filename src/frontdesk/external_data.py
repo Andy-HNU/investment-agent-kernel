@@ -70,6 +70,17 @@ def _ensure_default_providers_registered() -> None:
 
         registry.register_external_snapshot("local_json", _local_json_fetcher)
 
+    if registry.get_external_snapshot("market_history") is None:
+        def _market_history_fetcher(config: dict[str, Any], *, workflow_type: str, account_profile_id: str, as_of: str):
+            return fetch_snapshot_from_provider_config(
+                config,
+                workflow_type=workflow_type,
+                account_profile_id=account_profile_id,
+                as_of=as_of,
+            )
+
+        registry.register_external_snapshot("market_history", _market_history_fetcher)
+
 
 def fetch_external_snapshot(
     config: dict[str, Any] | None,

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from frontdesk.service import run_frontdesk_onboarding
+from shared.datasets.types import VersionPin
 from shared.onboarding import UserOnboardingProfile
 from snapshot_ingestion.historical import (
     HistoricalDatasetCache,
@@ -112,3 +113,109 @@ def test_frontdesk_onboarding_accepts_local_json_provider_fixture(tmp_path):
     assert summary["external_snapshot_status"] == "fetched"
     assert summary["refresh_summary"]["provider_name"] == "fixture_local_json"
     assert summary["user_state"]["profile"]["current_total_assets"] == 63_500.0
+
+
+@pytest.mark.contract
+def test_fetch_snapshot_from_provider_config_supports_market_history_with_provider_fallback(tmp_path, monkeypatch):
+    from shared.audit import DataStatus
+
+    calls: list[tuple[str, str]] = []
+
+    def _fake_fetch_timeseries(spec, *, pin, cache, allow_fallback=False, return_used_pin=False):
+        calls.append((spec.provider, spec.symbol or ""))
+        if spec.provider == "akshare":
+            raise RuntimeError("historical_provider_unavailable:eastmoney_history_endpoint_closed")
+        rows = [
+            {"date": "2024-03-28", "open": 3.20, "high": 3.25, "low": 3.18, "close": 3.24, "volume": 1000},
+            {"date": "2024-03-29", "open": 3.24, "high": 3.28, "low": 3.20, "close": 3.27, "volume": 2000},
+            {"date": "2024-04-01", "open": 3.27, "high": 3.30, "low": 3.25, "close": 3.29, "volume": 1500},
+        ]
+        return (rows, pin) if return_used_pin else rows
+
+    monkeypatch.setattr("snapshot_ingestion.providers.fetch_timeseries", _fake_fetch_timeseries)
+
+    fetched = fetch_snapshot_from_provider_config(
+        {
+            "adapter": "market_history",
+            "provider": "akshare",
+            "coverage_asset_class": "etf",
+            "cache_dir": str(tmp_path / "cache"),
+            "lookback_months": 12,
+        },
+        workflow_type="onboarding",
+        account_profile_id="provider_registry_user",
+        as_of="2026-04-04T00:00:00Z",
+    )
+
+    assert fetched is not None
+    assert calls[0][0] == "akshare"
+    assert any(provider == "yfinance" for provider, _ in calls)
+    assert fetched.provider_name == "market_history"
+    assert fetched.provenance_items[0]["data_status"] == DataStatus.COMPUTED_FROM_OBSERVED.value
+
+    historical = fetched.raw_overrides["market_raw"]["historical_dataset"]
+    assert historical["source_name"] == "yfinance"
+    assert historical["coverage_status"] == "degraded"
+    assert any("eastmoney_history_endpoint_closed" in note for note in historical["notes"])
+    assert historical["audit_window"]["trading_days"] == 3
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_accepts_market_history_provider_config(tmp_path, monkeypatch):
+    def _fake_fetch_timeseries(spec, *, pin, cache, allow_fallback=False, return_used_pin=False):
+        rows = [
+            {"date": "2024-03-28", "open": 3.20, "high": 3.25, "low": 3.18, "close": 3.24, "volume": 1000},
+            {"date": "2024-03-29", "open": 3.24, "high": 3.28, "low": 3.20, "close": 3.27, "volume": 2000},
+            {"date": "2024-04-01", "open": 3.27, "high": 3.30, "low": 3.25, "close": 3.29, "volume": 1500},
+        ]
+        return (rows, pin) if return_used_pin else rows
+
+    monkeypatch.setattr("snapshot_ingestion.providers.fetch_timeseries", _fake_fetch_timeseries)
+
+    summary = run_frontdesk_onboarding(
+        _profile(account_profile_id="market_history_provider_user"),
+        db_path=tmp_path / "frontdesk.sqlite",
+        external_data_config={
+            "adapter": "market_history",
+            "provider": "yfinance",
+            "coverage_asset_class": "etf",
+            "cache_dir": str(tmp_path / "cache"),
+            "lookback_months": 12,
+        },
+    )
+
+    assert summary["external_snapshot_status"] == "fetched"
+    assert summary["refresh_summary"]["provider_name"] == "market_history"
+    assert summary["refresh_summary"]["external_status"] == "fetched"
+    assert summary["decision_card"]["input_provenance"]["counts"]["externally_fetched"] > 0
+
+
+@pytest.mark.contract
+def test_market_history_adapter_marks_cache_fallback_as_degraded(tmp_path, monkeypatch):
+    def _fake_fetch_timeseries(spec, *, pin, cache, allow_fallback=False, return_used_pin=False):
+        rows = [
+            {"date": "2024-03-28", "open": 3.20, "high": 3.25, "low": 3.18, "close": 3.24, "volume": 1000},
+            {"date": "2024-03-29", "open": 3.24, "high": 3.28, "low": 3.20, "close": 3.27, "volume": 2000},
+            {"date": "2024-04-01", "open": 3.27, "high": 3.30, "low": 3.25, "close": 3.29, "volume": 1500},
+        ]
+        used_pin = VersionPin(version_id=f"cached::{spec.symbol}", source_ref=f"{spec.provider}://cached::{spec.symbol}")
+        return (rows, used_pin) if return_used_pin else rows
+
+    monkeypatch.setattr("snapshot_ingestion.providers.fetch_timeseries", _fake_fetch_timeseries)
+
+    fetched = fetch_snapshot_from_provider_config(
+        {
+            "adapter": "market_history",
+            "provider": "yfinance",
+            "coverage_asset_class": "etf",
+            "cache_dir": str(tmp_path / "cache"),
+            "lookback_months": 12,
+        },
+        workflow_type="monthly",
+        account_profile_id="provider_registry_user",
+        as_of="2026-04-04T00:00:00Z",
+    )
+
+    historical = fetched.raw_overrides["market_raw"]["historical_dataset"]
+    assert historical["coverage_status"] == "degraded"
+    assert any("cache fallback activated" in note for note in historical["notes"])
