@@ -611,6 +611,24 @@ def _build_execution_realism_summary(
     tiny_trade_buckets = sorted({item.asset_bucket for item in items if item.violates_minimum_trade})
     estimated_total_fee = round(sum(float(item.estimated_fee or 0.0) for item in items), 2)
     estimated_total_slippage = round(sum(float(item.estimated_slippage or 0.0) for item in items), 2)
+    initial_buy_amount = round(
+        sum(float(item.initial_trade_amount or 0.0) for item in items if item.trade_direction == "buy"),
+        2,
+    )
+    initial_sell_amount = round(
+        sum(float(item.initial_trade_amount or 0.0) for item in items if item.trade_direction == "sell"),
+        2,
+    )
+    fundable_initial_cash = None
+    if available_cash is not None:
+        reserve_after_cash = max(
+            float(available_cash) - float(cash_reserve_target_amount or 0.0),
+            0.0,
+        )
+        fundable_initial_cash = round(
+            reserve_after_cash + initial_sell_amount - estimated_total_fee - estimated_total_slippage,
+            2,
+        )
     reasons: list[str] = []
     if cash_reserve_target_amount is not None and cash_target_amount + 1e-6 < cash_reserve_target_amount:
         reasons.append("cash_reserve_conflict")
@@ -618,18 +636,26 @@ def _build_execution_realism_summary(
         reasons.append(f"tiny_trade:{bucket}")
     if abs(amount_closure_delta) > 1.0:
         reasons.append("account_amount_not_closed")
+    if fundable_initial_cash is not None and fundable_initial_cash + 1e-6 < initial_buy_amount:
+        reasons.append("initial_deploy_cash_shortfall")
 
     return ExecutionRealismSummary(
         executable=not reasons,
         account_total_value=round(total_value, 2),
         available_cash=None if available_cash is None else round(float(available_cash), 2),
         cash_reserve_target_amount=cash_reserve_target_amount,
+        initial_buy_amount=initial_buy_amount,
+        initial_sell_amount=initial_sell_amount,
+        fundable_initial_cash=fundable_initial_cash,
         minimum_trade_amount=None if minimum_trade_amount is None else round(float(minimum_trade_amount), 2),
         total_target_amount=total_target_amount,
         cash_target_amount=cash_target_amount,
         amount_closure_delta=amount_closure_delta,
         estimated_total_fee=estimated_total_fee,
         estimated_total_slippage=estimated_total_slippage,
+        execution_cost_data_status="prior_default",
+        execution_cost_disclosure="当前交易费与滑点仅按默认/启发式口径估计，不是券商实盘观测成本。",
+        tax_estimate_status="not_modeled",
         tiny_trade_buckets=tiny_trade_buckets,
         reasons=reasons,
     )

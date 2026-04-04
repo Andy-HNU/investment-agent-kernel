@@ -463,3 +463,36 @@ def test_build_execution_plan_flags_tiny_trade_buckets_below_minimum_amount():
     assert plan.execution_realism_summary is not None
     assert plan.execution_realism_summary.executable is False
     assert plan.execution_realism_summary.tiny_trade_buckets == ["cash_liquidity", "satellite"]
+
+
+@pytest.mark.contract
+def test_build_execution_plan_flags_initial_deploy_cash_shortfall_after_reserve_and_costs():
+    plan = build_execution_plan(
+        source_run_id="run_execution_realism_cash_shortfall",
+        source_allocation_id="allocation_execution_realism_cash_shortfall",
+        bucket_targets={
+            "equity_cn": 0.45,
+            "bond_cn": 0.35,
+            "gold": 0.15,
+            "satellite": 0.05,
+        },
+        restrictions=[],
+        account_total_value=1_000.0,
+        current_weights={"cash_liquidity": 1.0},
+        available_cash=1_000.0,
+        liquidity_reserve_min=0.80,
+        minimum_trade_amount=50.0,
+        transaction_fee_rate={
+            "equity_cn": 0.003,
+            "bond_cn": 0.001,
+            "gold": 0.001,
+            "satellite": 0.004,
+        },
+    )
+
+    assert plan.execution_realism_summary is not None
+    assert plan.execution_realism_summary.executable is False
+    assert plan.execution_realism_summary.initial_buy_amount == pytest.approx(400.0, abs=1e-6)
+    assert plan.execution_realism_summary.fundable_initial_cash is not None
+    assert plan.execution_realism_summary.fundable_initial_cash < plan.execution_realism_summary.initial_buy_amount
+    assert "initial_deploy_cash_shortfall" in plan.execution_realism_summary.reasons

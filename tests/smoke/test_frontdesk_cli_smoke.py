@@ -550,9 +550,14 @@ def test_render_frontdesk_summary_surfaces_execution_realism_fields():
                     "execution_realism_summary": {
                         "executable": False,
                         "cash_reserve_target_amount": 3500.0,
+                        "initial_buy_amount": 11900.0,
+                        "initial_sell_amount": 1900.0,
+                        "fundable_initial_cash": 10846.0,
                         "minimum_trade_amount": 500.0,
                         "estimated_total_fee": 42.8,
                         "estimated_total_slippage": 11.2,
+                        "execution_cost_data_status": "prior_default",
+                        "tax_estimate_status": "not_modeled",
                         "tiny_trade_buckets": ["satellite"],
                         "reasons": ["cash_reserve_conflict", "tiny_trade:satellite"],
                     },
@@ -563,8 +568,13 @@ def test_render_frontdesk_summary_surfaces_execution_realism_fields():
 
     assert "pending_execution_plan_executable=False" in output
     assert "pending_execution_plan_cash_reserve_target=3500.0" in output
+    assert "pending_execution_plan_initial_buy_amount=11900.0" in output
+    assert "pending_execution_plan_initial_sell_amount=1900.0" in output
+    assert "pending_execution_plan_fundable_initial_cash=10846.0" in output
     assert "pending_execution_plan_minimum_trade_amount=500.0" in output
     assert "pending_execution_plan_estimated_total_fee=42.8" in output
     assert "pending_execution_plan_estimated_total_slippage=11.2" in output
+    assert "pending_execution_plan_execution_cost_data_status=prior_default" in output
+    assert "pending_execution_plan_tax_estimate_status=not_modeled" in output
     assert "pending_execution_plan_tiny_trade_buckets=['satellite']" in output
     assert "pending_execution_plan_execution_realism_reasons=['cash_reserve_conflict', 'tiny_trade:satellite']" in output

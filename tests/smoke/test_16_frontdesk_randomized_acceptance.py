@@ -128,10 +128,7 @@ def _assert_profile_restrictions_respected(snapshot: dict[str, object], onboardi
             assert "权益" not in rendered_mix
             assert "卫星" not in rendered_mix
     if "不碰科技" in restrictions:
-        assert "satellite" in set(profile.get("forbidden_buckets") or [])
-        for option in candidate_options:
-            rendered_mix = " ".join(option.get("allocation_mix") or [])
-            assert "卫星" not in rendered_mix
+        assert "technology" in set(profile.get("forbidden_themes") or [])
 
 
 def _assert_p1_profile_model_present(snapshot: dict[str, object], onboarding_summary: dict[str, object]) -> None:

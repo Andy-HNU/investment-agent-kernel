@@ -355,6 +355,18 @@ def _render_execution_plan_block(
             lines.append(
                 f"{label}_cash_reserve_target={execution_realism_summary.get('cash_reserve_target_amount')}"
             )
+        if execution_realism_summary.get("initial_buy_amount") is not None:
+            lines.append(
+                f"{label}_initial_buy_amount={execution_realism_summary.get('initial_buy_amount')}"
+            )
+        if execution_realism_summary.get("initial_sell_amount") is not None:
+            lines.append(
+                f"{label}_initial_sell_amount={execution_realism_summary.get('initial_sell_amount')}"
+            )
+        if execution_realism_summary.get("fundable_initial_cash") is not None:
+            lines.append(
+                f"{label}_fundable_initial_cash={execution_realism_summary.get('fundable_initial_cash')}"
+            )
         if execution_realism_summary.get("minimum_trade_amount") is not None:
             lines.append(
                 f"{label}_minimum_trade_amount={execution_realism_summary.get('minimum_trade_amount')}"
@@ -366,6 +378,14 @@ def _render_execution_plan_block(
         if execution_realism_summary.get("estimated_total_slippage") is not None:
             lines.append(
                 f"{label}_estimated_total_slippage={execution_realism_summary.get('estimated_total_slippage')}"
+            )
+        if execution_realism_summary.get("execution_cost_data_status") is not None:
+            lines.append(
+                f"{label}_execution_cost_data_status={execution_realism_summary.get('execution_cost_data_status')}"
+            )
+        if execution_realism_summary.get("tax_estimate_status") is not None:
+            lines.append(
+                f"{label}_tax_estimate_status={execution_realism_summary.get('tax_estimate_status')}"
             )
         if execution_realism_summary.get("tiny_trade_buckets"):
             lines.append(

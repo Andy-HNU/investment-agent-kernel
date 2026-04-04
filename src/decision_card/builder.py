@@ -717,6 +717,31 @@ def _build_goal_fallback_options(goal_output: dict[str, Any]) -> list[dict[str, 
     return options
 
 
+def _build_user_visible_candidate_alternatives(candidate_options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    visible: list[dict[str, Any]] = []
+    for item in candidate_options[1:]:
+        data = _obj(item)
+        visible.append(
+            {
+                "label": _metric(data.get("label")) or "备选方案",
+                "highlight": _metric(data.get("highlight")) or "备选方案",
+                "description": _metric(data.get("description")) or "",
+                "success_probability": _metric(data.get("success_probability")) or "",
+                "bucket_success_probability": _metric(data.get("bucket_success_probability")) or "",
+                "product_adjusted_success_probability": _metric(data.get("product_adjusted_success_probability")) or "",
+                "product_probability_method": _metric(data.get("product_probability_method")) or "",
+                "implied_required_annual_return": _metric(data.get("implied_required_annual_return")) or "",
+                "expected_terminal_value": _metric(data.get("expected_terminal_value")) or "",
+                "max_drawdown_90pct": _metric(data.get("max_drawdown_90pct")) or "",
+                "shortfall_probability": _metric(data.get("shortfall_probability")) or "",
+                "metrics": dict(_obj(data.get("metrics"))),
+                "model_disclaimer": _metric(data.get("model_disclaimer")) or "",
+                "evidence_source": _metric(data.get("evidence_source")) or "model_estimate",
+            }
+        )
+    return visible
+
+
 def _build_input_provenance(inp: DecisionCardBuildInput) -> dict[str, Any]:
     raw = _obj(inp.input_provenance)
     items: list[dict[str, str]] = []
@@ -1271,7 +1296,7 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         summary += recommended_description
     if model_disclaimer:
         summary += f" {model_disclaimer}"
-    user_visible_alternatives = fallback_options or candidate_options[1:]
+    user_visible_alternatives = fallback_options or _build_user_visible_candidate_alternatives(candidate_options)
     review_conditions = _build_review_conditions(
         inp,
         {},

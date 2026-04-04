@@ -91,12 +91,18 @@ class ExecutionRealismSummary:
     account_total_value: float | None = None
     available_cash: float | None = None
     cash_reserve_target_amount: float | None = None
+    initial_buy_amount: float | None = None
+    initial_sell_amount: float | None = None
+    fundable_initial_cash: float | None = None
     minimum_trade_amount: float | None = None
     total_target_amount: float | None = None
     cash_target_amount: float | None = None
     amount_closure_delta: float | None = None
     estimated_total_fee: float | None = None
     estimated_total_slippage: float | None = None
+    execution_cost_data_status: str | None = None
+    execution_cost_disclosure: str | None = None
+    tax_estimate_status: str | None = None
     tiny_trade_buckets: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
 
