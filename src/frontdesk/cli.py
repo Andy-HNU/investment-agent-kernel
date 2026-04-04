@@ -339,15 +339,39 @@ def _render_execution_plan_block(
     proxy_universe_summary = execution_plan.get("proxy_universe_summary") or {}
     if proxy_universe_summary:
         lines.append(f"{label}_proxy_mode={proxy_universe_summary.get('solving_mode')}")
+        if proxy_universe_summary.get("proxy_scope") is not None:
+            lines.append(f"{label}_proxy_scope={proxy_universe_summary.get('proxy_scope')}")
         lines.append(
             f"{label}_proxy_covered_buckets={proxy_universe_summary.get('covered_asset_buckets')}"
         )
         lines.append(
             f"{label}_proxy_uncovered_buckets={proxy_universe_summary.get('uncovered_asset_buckets')}"
         )
+        if proxy_universe_summary.get("product_proxy_count") is not None:
+            lines.append(f"{label}_proxy_selected_product_count={proxy_universe_summary.get('product_proxy_count')}")
+        if proxy_universe_summary.get("runtime_candidate_proxy_count") is not None:
+            lines.append(
+                f"{label}_proxy_runtime_candidate_count={proxy_universe_summary.get('runtime_candidate_proxy_count')}"
+            )
+        if proxy_universe_summary.get("data_status") is not None:
+            lines.append(f"{label}_proxy_data_status={proxy_universe_summary.get('data_status')}")
         lines.append(
             f"{label}_proxy_disclosure={proxy_universe_summary.get('disclosure')}"
         )
+    product_proxy_specs = execution_plan.get("product_proxy_specs") or []
+    if product_proxy_specs:
+        data_statuses = sorted({str(spec.get("data_status")) for spec in product_proxy_specs if spec.get("data_status")})
+        confidence_statuses = sorted(
+            {
+                str(spec.get("confidence_data_status"))
+                for spec in product_proxy_specs
+                if spec.get("confidence_data_status")
+            }
+        )
+        if data_statuses:
+            lines.append(f"{label}_proxy_spec_data_statuses={data_statuses}")
+        if confidence_statuses:
+            lines.append(f"{label}_proxy_confidence_data_statuses={confidence_statuses}")
     execution_realism_summary = execution_plan.get("execution_realism_summary") or {}
     if execution_realism_summary:
         lines.append(f"{label}_executable={execution_realism_summary.get('executable')}")

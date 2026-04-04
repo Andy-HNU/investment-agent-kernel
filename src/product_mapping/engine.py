@@ -542,6 +542,8 @@ def _build_product_proxy_spec(candidate: ProductCandidate) -> ProductProxySpec:
         proxy_kind=_proxy_kind(candidate),
         proxy_ref=proxy_ref,
         confidence=_PROXY_CONFIDENCE_BY_WRAPPER.get(candidate.wrapper_type, 0.70),
+        confidence_data_status="manual_annotation",
+        confidence_disclosure="proxy confidence is a heuristic wrapper-level mapping, not observed market coverage or empirical fit quality.",
         source_ref=proxy_ref,
         data_status="manual_annotation",
     )
@@ -561,24 +563,46 @@ def _build_proxy_universe_summary(
     *,
     normalized_targets: dict[str, float],
     runtime_candidates: list[RuntimeProductCandidate],
+    selected_items: list[ExecutionPlanItem],
     product_proxy_specs: list[ProductProxySpec],
 ) -> ProxyUniverseSummary:
     requested_buckets = sorted(bucket for bucket, weight in normalized_targets.items() if weight > 0)
-    covered_buckets = sorted({_normalize_bucket(item.candidate.asset_bucket) for item in runtime_candidates})
+    covered_buckets = sorted({_normalize_bucket(item.asset_bucket) for item in selected_items})
     uncovered_buckets = [bucket for bucket in requested_buckets if bucket not in covered_buckets]
-    covered_regions = sorted({str(item.candidate.region or "CN") for item in runtime_candidates})
+    covered_regions = sorted(
+        {
+            str(product.region or "CN")
+            for item in selected_items
+            for product in [item.primary_product, *item.alternate_products]
+        }
+    )
     return ProxyUniverseSummary(
         solving_mode="proxy_universe",
+        proxy_scope="selected_plan_items",
         covered_asset_buckets=covered_buckets,
         uncovered_asset_buckets=uncovered_buckets,
         covered_regions=covered_regions,
         product_proxy_count=len(product_proxy_specs),
+        runtime_candidate_proxy_count=len(runtime_candidates),
+        data_status="manual_annotation",
         claims_real_product_history=False,
         disclosure=(
-            "当前仍是代理宇宙求解：产品层使用注册表与代理映射做筛选和披露，"
-            "不应解读为每个产品都已有独立历史序列进入求解器。"
+            "当前仍是代理宇宙求解：plan 级 proxy 披露仅覆盖执行计划中实际选中的产品，"
+            "不是整个 runtime candidate pool，也不应解读为每个产品都已有独立历史序列进入求解器。"
         ),
     )
+
+
+def _build_selected_plan_proxy_specs(items: list[ExecutionPlanItem]) -> list[ProductProxySpec]:
+    selected_products: dict[str, ProductCandidate] = {}
+    for item in items:
+        selected_products[item.primary_product.product_id] = item.primary_product
+        for product in item.alternate_products:
+            selected_products[product.product_id] = product
+    return [
+        _build_product_proxy_spec(candidate)
+        for candidate in sorted(selected_products.values(), key=lambda candidate: candidate.product_id)
+    ]
 
 
 def _build_execution_realism_summary(
@@ -798,12 +822,7 @@ def build_execution_plan(
         valuation_result=valuation_result,
         policy_news_signals=policy_news_signals,
     )
-    runtime_candidate_pool, product_proxy_specs = _attach_proxy_specs(runtime_candidate_pool)
-    proxy_universe_summary = _build_proxy_universe_summary(
-        normalized_targets=normalized_targets,
-        runtime_candidates=runtime_candidate_pool,
-        product_proxy_specs=product_proxy_specs,
-    )
+    runtime_candidate_pool, _runtime_pool_proxy_specs = _attach_proxy_specs(runtime_candidate_pool)
     grouped_candidates: dict[str, list[RuntimeProductCandidate]] = defaultdict(list)
 
     for runtime_candidate in runtime_candidate_pool:
@@ -854,6 +873,14 @@ def build_execution_plan(
                 if f"执行真实性约束未通过: {reason}" not in warnings
             ]
         )
+
+    product_proxy_specs = _build_selected_plan_proxy_specs(items)
+    proxy_universe_summary = _build_proxy_universe_summary(
+        normalized_targets=normalized_targets,
+        runtime_candidates=runtime_candidate_pool,
+        selected_items=items,
+        product_proxy_specs=product_proxy_specs,
+    )
 
     return ExecutionPlan(
         plan_id=f"{source_run_id}:{source_allocation_id}",

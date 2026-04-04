@@ -547,6 +547,28 @@ def test_render_frontdesk_summary_surfaces_execution_realism_fields():
                     "item_count": 4,
                     "confirmation_required": True,
                     "runtime_candidate_count": 8,
+                    "product_proxy_specs": [
+                        {
+                            "product_id": "cn_dividend_etf",
+                            "proxy_kind": "listed_fund_price_proxy",
+                            "proxy_ref": "akshare:sh510880",
+                            "confidence": 0.93,
+                            "confidence_data_status": "manual_annotation",
+                            "confidence_disclosure": "proxy confidence is a heuristic wrapper-level mapping, not observed market coverage or empirical fit quality.",
+                            "source_ref": "akshare:sh510880",
+                            "data_status": "manual_annotation",
+                        }
+                    ],
+                    "proxy_universe_summary": {
+                        "solving_mode": "proxy_universe",
+                        "proxy_scope": "selected_plan_items",
+                        "covered_asset_buckets": ["equity_cn"],
+                        "uncovered_asset_buckets": [],
+                        "product_proxy_count": 1,
+                        "runtime_candidate_proxy_count": 8,
+                        "data_status": "manual_annotation",
+                        "disclosure": "当前仍是代理宇宙求解",
+                    },
                     "execution_realism_summary": {
                         "executable": False,
                         "cash_reserve_target_amount": 3500.0,
@@ -567,6 +589,13 @@ def test_render_frontdesk_summary_surfaces_execution_realism_fields():
     )
 
     assert "pending_execution_plan_executable=False" in output
+    assert "pending_execution_plan_proxy_mode=proxy_universe" in output
+    assert "pending_execution_plan_proxy_scope=selected_plan_items" in output
+    assert "pending_execution_plan_proxy_selected_product_count=1" in output
+    assert "pending_execution_plan_proxy_runtime_candidate_count=8" in output
+    assert "pending_execution_plan_proxy_data_status=manual_annotation" in output
+    assert "pending_execution_plan_proxy_spec_data_statuses=['manual_annotation']" in output
+    assert "pending_execution_plan_proxy_confidence_data_statuses=['manual_annotation']" in output
     assert "pending_execution_plan_cash_reserve_target=3500.0" in output
     assert "pending_execution_plan_initial_buy_amount=11900.0" in output
     assert "pending_execution_plan_initial_sell_amount=1900.0" in output

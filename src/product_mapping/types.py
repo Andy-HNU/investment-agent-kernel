@@ -64,6 +64,8 @@ class ProductProxySpec:
     proxy_kind: str
     proxy_ref: str
     confidence: float
+    confidence_data_status: str
+    confidence_disclosure: str
     source_ref: str
     data_status: str
 
@@ -74,10 +76,13 @@ class ProductProxySpec:
 @dataclass(frozen=True)
 class ProxyUniverseSummary:
     solving_mode: str
+    proxy_scope: str = "selected_plan_items"
     covered_asset_buckets: list[str] = field(default_factory=list)
     uncovered_asset_buckets: list[str] = field(default_factory=list)
     covered_regions: list[str] = field(default_factory=list)
     product_proxy_count: int = 0
+    runtime_candidate_proxy_count: int = 0
+    data_status: str = "manual_annotation"
     claims_real_product_history: bool = False
     disclosure: str = ""
 
