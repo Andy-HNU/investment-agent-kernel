@@ -45,6 +45,14 @@
   - 当前 `v1.2` 唯一正式执行地图
   - 覆盖真实源历史数据、产品选择/维护、观察持仓同步与 Claw 顾问壳升级
 
+- `handoff/CODEX_dynamic_data_hardline_audit_2026-04-04.md`
+  - 动态数据硬红线与静态化审计
+  - 定义后续开发的仓库级约束：
+    - 动态数据不得写死到正式路径
+    - fallback/default 不得伪装成真实来源
+    - demo/test-only 内容必须与正式路径隔离
+    - 正式路径判定与数据状态标签必须可审计
+
 - `handoff/CODEX_v1.1_task_map_2026-04-02.md`
   - `v1.1` 阶段正式执行地图
   - 当前保留作上一版本历史执行参考
@@ -163,6 +171,7 @@
 4. 不再新增新的“总路线 handoff”而不登记到本 registry
 5. 若旧文档已被当前路线替代，可保留，但必须默认视为 historical
 6. 若新增 active handoff 文档，需同步更新 `handoff/README.md` 与本 registry
+7. 若发现“本应动态获取/动态计算”的内容被写死进正式路径，必须同步更新 `handoff/CODEX_dynamic_data_hardline_audit_2026-04-04.md`
 
 ## 当前一句话判定
 
@@ -170,6 +179,7 @@
 
 - 看模块语义：先看 `system/`
 - 看当前开发顺序：先看 `CODEX_v1.2_task_map_2026-04-03.md`
+- 看动态数据硬边界：看 `CODEX_dynamic_data_hardline_audit_2026-04-04.md`
 - 看上一版本执行地图：再看 `CODEX_v1.1_task_map_2026-04-02.md`
 - 看 `v1` 历史路线：再看 `CODEX_kernel_first_roadmap_2026-04-01.md`
 - 看 v1 阶段结论：看 `CODEX_v1_phase_reports_2026-04-02.md`
