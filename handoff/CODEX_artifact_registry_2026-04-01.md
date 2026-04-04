@@ -45,6 +45,13 @@
   - 当前 `v1.2` 唯一正式执行地图
   - 覆盖真实源历史数据、产品选择/维护、观察持仓同步与 Claw 顾问壳升级
 
+- `handoff/CODEX_v1.2_patch_dynamic_data_remediation_2026-04-04.md`
+  - `v1.2` 动态数据修复补丁任务地图
+  - 把 hardline audit 的三张清单展开成：
+    - 正式修复顺序
+    - 动态数据替换策略
+    - 测试门与验收标准
+
 - `handoff/CODEX_dynamic_data_hardline_audit_2026-04-04.md`
   - 动态数据硬红线与静态化审计
   - 定义后续开发的仓库级约束：
@@ -179,6 +186,7 @@
 
 - 看模块语义：先看 `system/`
 - 看当前开发顺序：先看 `CODEX_v1.2_task_map_2026-04-03.md`
+- 看 `v1.2` 动态数据修复补丁：看 `CODEX_v1.2_patch_dynamic_data_remediation_2026-04-04.md`
 - 看动态数据硬边界：看 `CODEX_dynamic_data_hardline_audit_2026-04-04.md`
 - 看上一版本执行地图：再看 `CODEX_v1.1_task_map_2026-04-02.md`
 - 看 `v1` 历史路线：再看 `CODEX_kernel_first_roadmap_2026-04-01.md`
