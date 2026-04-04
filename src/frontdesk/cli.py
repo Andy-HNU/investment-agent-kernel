@@ -322,9 +322,16 @@ def _render_execution_plan_block(
                 f"status={execution_plan.get('status')}",
                 f"items={execution_plan.get('item_count')}",
                 f"confirmation_required={execution_plan.get('confirmation_required')}",
+                f"runtime_candidates={execution_plan.get('runtime_candidate_count')}",
             ]
         )
     ]
+    if execution_plan.get("registry_candidate_count") is not None:
+        lines.append(f"{label}_registry_candidates={execution_plan.get('registry_candidate_count')}")
+    if execution_plan.get("candidate_filter_dropped_reasons"):
+        lines.append(
+            f"{label}_candidate_filter_drop_reasons={execution_plan.get('candidate_filter_dropped_reasons')}"
+        )
     if execution_plan.get("approved_at"):
         lines.append(f"{label}_approved_at={execution_plan.get('approved_at')}")
     if execution_plan.get("superseded_by_plan_id"):

@@ -129,3 +129,54 @@ def test_build_execution_plan_filters_qdii_and_overseas_candidates_from_runtime_
     assert all(candidate.candidate.region == "CN" for candidate in restricted.runtime_candidates)
     assert restricted.runtime_candidate_count < unrestricted.runtime_candidate_count
     assert any("region:non_cn" in reason or "tag:qdii" in reason for reason in restricted.candidate_filter_breakdown.dropped_reasons)
+
+
+@pytest.mark.contract
+def test_build_execution_plan_accepts_explicit_runtime_candidate_pool():
+    registry = load_builtin_catalog()
+    runtime_pool = [
+        candidate
+        for candidate in registry
+        if candidate.product_id in {"cn_equity_dividend_etf", "cn_bond_gov_etf", "cn_gold_etf"}
+    ]
+
+    plan = build_execution_plan(
+        source_run_id="run_explicit_runtime_pool",
+        source_allocation_id="allocation_explicit_runtime_pool",
+        bucket_targets={"equity_cn": 0.50, "bond_cn": 0.30, "gold": 0.20},
+        restrictions=[],
+        catalog=registry,
+        runtime_candidates=runtime_pool,
+    )
+
+    assert plan.registry_candidate_count == len(registry)
+    assert plan.runtime_candidate_count == 3
+    assert {item.primary_product_id for item in plan.items} == {
+        "cn_equity_dividend_etf",
+        "cn_bond_gov_etf",
+        "cn_gold_etf",
+    }
+
+
+@pytest.mark.contract
+def test_build_execution_plan_filters_theme_without_collapsing_satellite_bucket():
+    unrestricted = build_execution_plan(
+        source_run_id="run_theme_allowed",
+        source_allocation_id="allocation_theme_allowed",
+        bucket_targets={"satellite": 0.20},
+        restrictions=[],
+    )
+    restricted = build_execution_plan(
+        source_run_id="run_theme_forbidden",
+        source_allocation_id="allocation_theme_forbidden",
+        bucket_targets={"satellite": 0.20},
+        restrictions=["不碰科技"],
+    )
+
+    unrestricted_satellite = next(item for item in unrestricted.items if item.asset_bucket == "satellite")
+    restricted_satellite = next(item for item in restricted.items if item.asset_bucket == "satellite")
+
+    assert unrestricted_satellite.primary_product_id != restricted_satellite.primary_product_id
+    assert "technology" not in restricted_satellite.primary_product.tags
+    assert restricted.runtime_candidate_count < unrestricted.runtime_candidate_count
+    assert any("theme:technology" in reason for reason in restricted.candidate_filter_breakdown.dropped_reasons)

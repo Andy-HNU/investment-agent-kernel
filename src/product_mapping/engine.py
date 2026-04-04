@@ -42,6 +42,9 @@ class _RestrictionFilter:
     forbidden_buckets: set[str]
     allowed_wrappers: set[str]
     forbidden_wrappers: set[str]
+    allowed_regions: set[str]
+    forbidden_regions: set[str]
+    forbidden_themes: set[str]
     qdii_allowed: bool | None
     warnings: list[str]
 
@@ -66,6 +69,9 @@ def _compile_restrictions(restrictions: list[str] | None) -> _RestrictionFilter:
     forbidden_buckets = {_normalize_bucket(bucket) for bucket in parsed.forbidden_buckets}
     allowed_wrappers = {str(wrapper).strip().lower() for wrapper in parsed.allowed_wrappers}
     forbidden_wrappers = {str(wrapper).strip().lower() for wrapper in parsed.forbidden_wrappers}
+    allowed_regions = {str(region).strip().upper() for region in parsed.allowed_regions}
+    forbidden_regions = {str(region).strip().upper() for region in parsed.forbidden_regions}
+    forbidden_themes = {str(theme).strip().lower() for theme in parsed.forbidden_themes}
     warnings: list[str] = []
     lowered_items = [item.lower() for item in raw_restrictions]
 
@@ -87,6 +93,9 @@ def _compile_restrictions(restrictions: list[str] | None) -> _RestrictionFilter:
         forbidden_buckets={bucket for bucket in forbidden_buckets if bucket},
         allowed_wrappers={wrapper for wrapper in allowed_wrappers if wrapper},
         forbidden_wrappers={wrapper for wrapper in forbidden_wrappers if wrapper},
+        allowed_regions={region for region in allowed_regions if region},
+        forbidden_regions={region for region in forbidden_regions if region},
+        forbidden_themes={theme for theme in forbidden_themes if theme},
         qdii_allowed=parsed.qdii_allowed,
         warnings=warnings,
     )
@@ -117,11 +126,26 @@ def _wrapper_reason(candidate: ProductCandidate, restriction_filter: _Restrictio
 
 
 def _region_reason(candidate: ProductCandidate, restriction_filter: _RestrictionFilter) -> str | None:
+    region = str(candidate.region or "").strip().upper()
+    if restriction_filter.allowed_regions and region and region not in restriction_filter.allowed_regions:
+        return f"region:not_allowed:{region}"
+    if region in restriction_filter.forbidden_regions:
+        return f"region:{region.lower()}"
+    if "NON_CN" in restriction_filter.forbidden_regions and region and region != "CN":
+        return "region:non_cn"
     if restriction_filter.qdii_allowed is False:
         if "qdii" in candidate.tags:
             return "tag:qdii"
-        if candidate.region != "CN":
+        if region and region != "CN":
             return "region:non_cn"
+    return None
+
+
+def _theme_reason(candidate: ProductCandidate, restriction_filter: _RestrictionFilter) -> str | None:
+    candidate_tags = {str(tag).strip().lower() for tag in candidate.tags}
+    for theme in sorted(restriction_filter.forbidden_themes):
+        if theme in candidate_tags:
+            return f"theme:{theme}"
     return None
 
 
@@ -181,8 +205,18 @@ def _apply_stage(
 def _build_runtime_candidate_pool(
     registry: list[ProductCandidate],
     restriction_filter: _RestrictionFilter,
+    *,
+    runtime_candidates: list[ProductCandidate] | list[RuntimeProductCandidate] | None = None,
 ) -> tuple[list[RuntimeProductCandidate], CandidateFilterBreakdown]:
-    staged_candidates = list(enumerate(registry))
+    if runtime_candidates is None:
+        staged_candidates = list(enumerate(registry))
+    else:
+        staged_candidates = []
+        for index, entry in enumerate(runtime_candidates):
+            if isinstance(entry, RuntimeProductCandidate):
+                staged_candidates.append((entry.registry_index, entry.candidate))
+            else:
+                staged_candidates.append((index, entry))
     stages: list[CandidateFilterStage] = []
 
     staged_candidates, stage = _apply_stage("availability", staged_candidates, _availability_reason)
@@ -205,6 +239,12 @@ def _build_runtime_candidate_pool(
         lambda candidate: _region_reason(candidate, restriction_filter),
     )
     stages.append(stage)
+    staged_candidates, stage = _apply_stage(
+        "theme_restrictions",
+        staged_candidates,
+        lambda candidate: _theme_reason(candidate, restriction_filter),
+    )
+    stages.append(stage)
 
     dropped_reasons: dict[str, int] = {}
     for stage in stages:
@@ -215,6 +255,7 @@ def _build_runtime_candidate_pool(
         RuntimeProductCandidate(candidate=candidate, registry_index=registry_index)
         for registry_index, candidate in staged_candidates
     ]
+    input_candidate_count = len(runtime_candidates) if runtime_candidates is not None else len(registry)
     return runtime_candidates, CandidateFilterBreakdown(
         registry_candidate_count=len(registry),
         runtime_candidate_count=len(runtime_candidates),
@@ -231,14 +272,19 @@ def build_execution_plan(
     restrictions: list[str] | None = None,
     plan_version: int = 1,
     catalog: list[ProductCandidate] | None = None,
+    runtime_candidates: list[ProductCandidate] | list[RuntimeProductCandidate] | None = None,
 ) -> ExecutionPlan:
     normalized_targets = _normalize_bucket_targets(bucket_targets)
     restriction_filter = _compile_restrictions(restrictions)
     registry = list(catalog or load_builtin_catalog())
-    runtime_candidates, candidate_filter_breakdown = _build_runtime_candidate_pool(registry, restriction_filter)
+    runtime_candidate_pool, candidate_filter_breakdown = _build_runtime_candidate_pool(
+        registry,
+        restriction_filter,
+        runtime_candidates=runtime_candidates,
+    )
     grouped_candidates: dict[str, list[ProductCandidate]] = defaultdict(list)
 
-    for runtime_candidate in runtime_candidates:
+    for runtime_candidate in runtime_candidate_pool:
         candidate = runtime_candidate.candidate
         grouped_candidates[_normalize_bucket(candidate.asset_bucket)].append(candidate)
 
@@ -267,7 +313,7 @@ def build_execution_plan(
         warnings=warnings,
         plan_version=max(int(plan_version), 1),
         registry_candidate_count=len(registry),
-        runtime_candidate_count=len(runtime_candidates),
-        runtime_candidates=runtime_candidates,
+        runtime_candidate_count=len(runtime_candidate_pool),
+        runtime_candidates=runtime_candidate_pool,
         candidate_filter_breakdown=candidate_filter_breakdown,
     )

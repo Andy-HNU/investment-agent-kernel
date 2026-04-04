@@ -288,8 +288,10 @@ def test_frontdesk_cli_show_user_surfaces_execution_plan_comparison(tmp_path, ca
     assert second_onboard_exit == 0
     assert show_user_exit == 0
     assert "execution_plan_comparison:" in output
-    assert "recommendation=replace_active" in output
-    assert "bucket=equity_cn" in output
+    assert "recommendation=keep_active" in output
+    assert "runtime_candidates=" in output
+    assert "candidate_filter_drop_reasons=" in output
+    assert "wrapper:stock" in output
 
 
 @pytest.mark.smoke

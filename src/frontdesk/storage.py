@@ -223,6 +223,7 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
     if not payload:
         return None
     items = list(payload.get("items") or [])
+    breakdown = dict(payload.get("candidate_filter_breakdown") or {})
     return {
         "plan_id": payload.get("plan_id"),
         "plan_version": payload.get("plan_version"),
@@ -234,6 +235,10 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "warning_count": len(list(payload.get("warnings") or [])),
         "approved_at": payload.get("approved_at"),
         "superseded_by_plan_id": payload.get("superseded_by_plan_id"),
+        "registry_candidate_count": payload.get("registry_candidate_count"),
+        "runtime_candidate_count": payload.get("runtime_candidate_count"),
+        "candidate_filter_dropped_reasons": dict(breakdown.get("dropped_reasons") or {}),
+        "candidate_filter_stages": list(breakdown.get("stages") or []),
     }
 
 

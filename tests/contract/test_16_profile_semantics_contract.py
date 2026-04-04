@@ -32,7 +32,8 @@ def test_profile_parser_compiles_known_constraints_and_marks_unknown_restriction
     )
 
     assert parsed.current_weights == {"gold": 1.0}
-    assert parsed.forbidden_buckets == ["equity_cn", "satellite"]
+    assert parsed.forbidden_buckets == []
+    assert parsed.forbidden_wrappers == ["stock"]
     assert parsed.warnings == []
     assert parsed.requires_confirmation is False
 
@@ -52,15 +53,16 @@ def test_onboarding_build_makes_target_explicit_and_compiles_restricted_constrai
     bundle = build_user_onboarding_inputs(_restricted_profile(account_profile_id="contract_profile"))
 
     assert bundle.profile.current_weights == {"gold": 1.0}
-    assert bundle.profile.forbidden_buckets == ["equity_cn", "satellite"]
+    assert bundle.profile.forbidden_buckets == []
+    assert bundle.profile.forbidden_wrappers == ["stock"]
     assert "目标期末总资产" in bundle.goal_solver_input["goal"]["goal_description"]
-    assert bundle.goal_solver_input["constraints"]["ips_bucket_boundaries"]["equity_cn"] == (0.0, 0.0)
-    assert bundle.goal_solver_input["constraints"]["ips_bucket_boundaries"]["satellite"] == (0.0, 0.0)
-    assert bundle.goal_solver_input["constraints"]["ips_bucket_boundaries"]["bond_cn"][1] >= 0.85
+    assert bundle.goal_solver_input["constraints"]["ips_bucket_boundaries"]["equity_cn"][1] > 0.0
+    assert bundle.goal_solver_input["constraints"]["ips_bucket_boundaries"]["satellite"][1] > 0.0
     assert (
         bundle.raw_inputs["allocation_engine_input"]["account_profile"]["forbidden_buckets"]
-        == ["equity_cn", "satellite"]
+        == []
     )
+    assert bundle.raw_inputs["allocation_engine_input"]["account_profile"]["forbidden_wrappers"] == ["stock"]
     goal_amount_item = next(
         item for item in bundle.input_provenance["user_provided"] if item["field"] == "goal.goal_amount"
     )
@@ -77,13 +79,14 @@ def test_frontdesk_onboarding_does_not_block_restricted_no_stock_profile(tmp_pat
     assert summary["status"] in {"completed", "degraded"}
     assert summary["status"] != "blocked"
     assert summary["candidate_options"]
-    for option in summary["candidate_options"]:
-        rendered_mix = " ".join(option.get("allocation_mix") or [])
-        assert "权益" not in rendered_mix
-        assert "卫星" not in rendered_mix
+    pending_plan = summary["user_state"]["pending_execution_plan"]
+    assert pending_plan is not None
+    assert int(pending_plan["runtime_candidate_count"]) > 0
+    assert "wrapper:stock" in set((pending_plan.get("candidate_filter_dropped_reasons") or {}).keys())
     snapshot = load_frontdesk_snapshot(profile.account_profile_id, db_path=tmp_path / "restricted.sqlite")
     assert snapshot is not None
-    assert snapshot["profile"]["profile"]["forbidden_buckets"] == ["equity_cn", "satellite"]
+    assert snapshot["profile"]["profile"]["forbidden_buckets"] == []
+    assert snapshot["profile"]["profile"]["forbidden_wrappers"] == ["stock"]
 
 
 @pytest.mark.contract
@@ -131,8 +134,9 @@ def test_long_natural_language_profile_text_flows_into_constraints_and_profile_m
     assert snapshot is not None
     persisted_profile = snapshot["profile"]["profile"]
     assert persisted_profile["current_weights"] == {"gold": 1.0}
-    assert "equity_cn" in set(persisted_profile["forbidden_buckets"] or [])
-    assert "satellite" in set(persisted_profile["forbidden_buckets"] or [])
+    assert "stock" in set(persisted_profile["forbidden_wrappers"] or [])
+    assert "technology" in set(persisted_profile["forbidden_themes"] or [])
+    assert "satellite" not in set(persisted_profile["forbidden_buckets"] or [])
     assert summary["goal_semantics"]["goal_amount_scope"] == "total_assets"
     assert summary["profile_dimensions"]["model_inputs"]["goal_priority"] in {"important", "essential", "aspirational"}
 

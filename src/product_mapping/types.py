@@ -115,6 +115,10 @@ class ExecutionPlan:
         return self.status in {"draft", "user_review", "approved"}
 
     def summary(self) -> dict[str, Any]:
+        breakdown = self.candidate_filter_breakdown or CandidateFilterBreakdown(
+            registry_candidate_count=self.registry_candidate_count,
+            runtime_candidate_count=self.runtime_candidate_count,
+        )
         return {
             "plan_id": self.plan_id,
             "plan_version": self.plan_version,
@@ -126,4 +130,8 @@ class ExecutionPlan:
             "warning_count": len(self.warnings),
             "approved_at": self.approved_at,
             "superseded_by_plan_id": self.superseded_by_plan_id,
+            "registry_candidate_count": self.registry_candidate_count,
+            "runtime_candidate_count": self.runtime_candidate_count,
+            "candidate_filter_dropped_reasons": dict(breakdown.dropped_reasons),
+            "candidate_filter_stages": [stage.to_dict() for stage in breakdown.stages],
         }

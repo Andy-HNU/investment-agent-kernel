@@ -32,6 +32,8 @@ class ParsedProfilePreferences:
     forbidden_buckets: list[str] = field(default_factory=list)
     allowed_wrappers: list[str] = field(default_factory=list)
     forbidden_wrappers: list[str] = field(default_factory=list)
+    allowed_regions: list[str] = field(default_factory=list)
+    forbidden_regions: list[str] = field(default_factory=list)
     preferred_themes: list[str] = field(default_factory=list)
     forbidden_themes: list[str] = field(default_factory=list)
     qdii_allowed: bool | None = None
@@ -127,12 +129,13 @@ def _parse_restrictions(restrictions: list[str]) -> ParsedProfilePreferences:
             parsed.notes.append("限制条件包含“不碰股票”，已编译为禁止股票包装，不影响 ETF/基金权益敞口。")
             matched = True
         if "不碰科技" in item or "不买科技" in item or "不能买科技" in item:
-            parsed.forbidden_buckets.append("satellite")
-            parsed.notes.append("限制条件包含“不碰科技”，在当前产品 universe 中已编译为禁止卫星桶。")
+            parsed.forbidden_themes.append("technology")
+            parsed.notes.append("限制条件包含“不碰科技”，已编译为 technology 主题过滤。")
             matched = True
         if "不买qdii" in item or "不碰qdii" in item or "不能买qdii" in item:
             parsed.qdii_allowed = False
-            parsed.notes.append("限制条件包含“不买QDII”，已关闭 QDII。")
+            parsed.forbidden_regions.append("non_cn")
+            parsed.notes.append("限制条件包含“不买QDII”，已关闭非 CN / QDII 产品。")
             matched = True
         if "只能黄金和现金" in item or "只要黄金和现金" in item:
             parsed.allowed_buckets = ["gold", "cash_liquidity"]
@@ -145,6 +148,7 @@ def _parse_restrictions(restrictions: list[str]) -> ParsedProfilePreferences:
 
     parsed.forbidden_buckets = sorted(set(parsed.forbidden_buckets))
     parsed.forbidden_wrappers = sorted(set(parsed.forbidden_wrappers))
+    parsed.forbidden_regions = sorted(set(parsed.forbidden_regions))
     parsed.forbidden_themes = sorted(set(parsed.forbidden_themes))
     if unmatched_items and parsed.notes:
         parsed.restrictions_parse_status = "partial"

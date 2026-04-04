@@ -350,18 +350,16 @@ def test_frontdesk_snapshot_surfaces_execution_plan_comparison_for_pending_vs_ac
     second_onboarding = run_frontdesk_onboarding(UserOnboardingProfile(**updated_profile), db_path=db_path)
 
     comparison = second_onboarding["user_state"]["execution_plan_comparison"]
+    active_plan = second_onboarding["user_state"]["active_execution_plan"]
+    pending_plan = second_onboarding["user_state"]["pending_execution_plan"]
 
     assert second_onboarding["status"] == "completed"
     assert comparison is not None
-    assert comparison["change_level"] == "major"
-    assert comparison["recommendation"] == "replace_active"
-    assert comparison["changed_bucket_count"] >= 1
-    assert any(
-        item["asset_bucket"] == "equity_cn"
-        and item["active_target_weight"] > 0.0
-        and item["pending_target_weight"] == 0.0
-        for item in comparison["bucket_changes"]
-    )
+    assert comparison["change_level"] == "none"
+    assert comparison["recommendation"] == "keep_active"
+    assert active_plan is not None and pending_plan is not None
+    assert int(active_plan["runtime_candidate_count"]) > int(pending_plan["runtime_candidate_count"])
+    assert "wrapper:stock" in set((pending_plan.get("candidate_filter_dropped_reasons") or {}).keys())
 
 
 @pytest.mark.parametrize("workflow_type", ["monthly", "quarterly"])

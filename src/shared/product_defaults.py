@@ -268,6 +268,10 @@ def build_product_allocation_input(
     preferred_themes: list[str] | None = None,
     forbidden_themes: list[str] | None = None,
     qdii_allowed: bool = True,
+    allowed_wrappers: list[str] | None = None,
+    forbidden_wrappers: list[str] | None = None,
+    allowed_regions: list[str] | None = None,
+    forbidden_regions: list[str] | None = None,
 ) -> dict[str, Any]:
     parsed_profile = parsed_profile or {}
     profile_dimensions = profile_dimensions or {}
@@ -276,6 +280,10 @@ def build_product_allocation_input(
     forbidden_buckets = list(parsed_profile.get("forbidden_buckets") or forbidden_buckets or [])
     preferred_themes = list(parsed_profile.get("preferred_themes") or preferred_themes or [])
     forbidden_themes = list(parsed_profile.get("forbidden_themes") or forbidden_themes or [])
+    allowed_wrappers = list(parsed_profile.get("allowed_wrappers") or allowed_wrappers or [])
+    forbidden_wrappers = list(parsed_profile.get("forbidden_wrappers") or forbidden_wrappers or [])
+    allowed_regions = list(parsed_profile.get("allowed_regions") or allowed_regions or [])
+    forbidden_regions = list(parsed_profile.get("forbidden_regions") or forbidden_regions or [])
     qdii_value = parsed_profile.get("qdii_allowed")
     if qdii_value is None:
         qdii_value = qdii_allowed
@@ -292,6 +300,10 @@ def build_product_allocation_input(
             "complexity_tolerance": complexity_tolerance,
             "allowed_buckets": allowed_buckets,
             "forbidden_buckets": forbidden_buckets,
+            "allowed_wrappers": allowed_wrappers,
+            "forbidden_wrappers": forbidden_wrappers,
+            "allowed_regions": allowed_regions,
+            "forbidden_regions": forbidden_regions,
             "preferred_themes": preferred_themes,
             "forbidden_themes": forbidden_themes,
             "qdii_allowed": bool(qdii_value),
