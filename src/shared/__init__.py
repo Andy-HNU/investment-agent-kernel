@@ -1,6 +1,14 @@
 """Shared utility namespace for demo flows and reusable local scenarios."""
 
-from .audit import AuditRecord, AuditWindow, DataStatus, coerce_data_status
+from .audit import (
+    AuditRecord,
+    AuditWindow,
+    DataStatus,
+    FormalPathStatus,
+    FormalPathVisibility,
+    coerce_data_status,
+    coerce_formal_path_status,
+)
 from .demo_flow import (
     build_demo_allocation_input,
     build_demo_behavior_raw,
@@ -37,6 +45,8 @@ __all__ = [
     "DataStatus",
     "DEMO_SCENARIO_ALIASES",
     "DEMO_SCENARIOS",
+    "FormalPathStatus",
+    "FormalPathVisibility",
     "build_demo_allocation_input",
     "build_demo_behavior_raw",
     "build_demo_constraint_raw",
@@ -59,4 +69,5 @@ __all__ = [
     "serialize_demo_journey",
     "summarize_demo_lifecycle",
     "coerce_data_status",
+    "coerce_formal_path_status",
 ]

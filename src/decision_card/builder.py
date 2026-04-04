@@ -540,6 +540,12 @@ def _build_input_provenance(inp: DecisionCardBuildInput) -> dict[str, Any]:
                 "value": data.get("value"),
                 "note": _metric(data.get("note")),
                 "detail": _metric(data.get("detail")) or "",
+                "source_ref": _metric(data.get("source_ref")) or _metric(data.get("value")) or "",
+                "as_of": _metric(data.get("as_of")) or "",
+                "fetched_at": _metric(data.get("fetched_at")) or "",
+                "freshness_state": _metric(data.get("freshness_state")) or _metric(data.get("freshness_status")) or "",
+                "data_status": _metric(data.get("data_status")) or "",
+                "audit_window": data.get("audit_window"),
             }
         )
 
@@ -576,6 +582,10 @@ def _input_source_sections(input_provenance: dict[str, Any]) -> list[dict[str, A
                         "label": item.get("label"),
                         "value": item.get("value"),
                         "note": item.get("note") or item.get("detail"),
+                        "source_ref": item.get("source_ref"),
+                        "as_of": item.get("as_of"),
+                        "data_status": item.get("data_status"),
+                        "audit_window": item.get("audit_window"),
                     }
                     for item in entries
                 ],

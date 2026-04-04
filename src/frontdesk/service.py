@@ -9,6 +9,14 @@ from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from orchestrator.engine import run_orchestrator
+from shared.audit import (
+    AuditRecord,
+    AuditWindow,
+    DataStatus,
+    FormalPathStatus,
+    FormalPathVisibility,
+    coerce_data_status,
+)
 from shared.goal_semantics import build_goal_semantics
 from shared.profile_dimensions import build_profile_dimensions, goal_priority_from_dimensions
 from shared.product_defaults import (
@@ -70,6 +78,13 @@ _MONTHLY_EVENT_PROFILE_FIELDS = {
     "requires_confirmation",
     "goal_semantics",
     "profile_dimensions",
+}
+_FORMAL_PATH_REQUIRED_FIELDS = {"market_raw", "account_raw", "behavior_raw", "live_portfolio"}
+_FORMAL_PATH_SOURCE_STATUS = {
+    "user_provided": DataStatus.OBSERVED,
+    "system_inferred": DataStatus.INFERRED,
+    "default_assumed": DataStatus.PRIOR_DEFAULT,
+    "externally_fetched": DataStatus.OBSERVED,
 }
 
 
@@ -201,7 +216,17 @@ def _external_snapshot_items(external_payload: dict[str, Any]) -> list[dict[str,
                 "source_type": "externally_fetched",
                 "source_label": "外部抓取",
             }
-            for key in ("detail", "as_of", "fetched_at", "freshness", "freshness_status"):
+            for key in (
+                "detail",
+                "source_ref",
+                "as_of",
+                "fetched_at",
+                "freshness",
+                "freshness_status",
+                "freshness_state",
+                "data_status",
+                "audit_window",
+            ):
                 if payload.get(key) is not None:
                     rendered[key] = deepcopy(payload.get(key))
             items.append(rendered)
@@ -221,12 +246,18 @@ def _external_snapshot_items(external_payload: dict[str, Any]) -> list[dict[str,
             if isinstance(domain_meta, dict):
                 if domain_meta.get("detail") is not None:
                     rendered["detail"] = deepcopy(domain_meta.get("detail"))
+                if domain_meta.get("source_ref") is not None:
+                    rendered["source_ref"] = deepcopy(domain_meta.get("source_ref"))
                 if domain_meta.get("as_of") is not None:
                     rendered["as_of"] = deepcopy(domain_meta.get("as_of"))
                 if domain_meta.get("fetched_at") is not None:
                     rendered["fetched_at"] = deepcopy(domain_meta.get("fetched_at"))
                 if domain_meta.get("status") is not None:
                     rendered["freshness_status"] = deepcopy(domain_meta.get("status"))
+                if domain_meta.get("audit_window") is not None:
+                    rendered["audit_window"] = deepcopy(domain_meta.get("audit_window"))
+                if domain_meta.get("data_status") is not None:
+                    rendered["data_status"] = deepcopy(domain_meta.get("data_status"))
             items.append(rendered)
     deduped: dict[str, dict[str, Any]] = {}
     for item in items:
@@ -272,6 +303,209 @@ def _freshness_state(
     if age_seconds <= 24 * 3600:
         return "aging"
     return "stale"
+
+
+def _unique_strings(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        rendered = str(item).strip()
+        if not rendered or rendered in seen:
+            continue
+        seen.add(rendered)
+        ordered.append(rendered)
+    return ordered
+
+
+def _coerce_audit_window(value: Any) -> AuditWindow | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        if "audit_window" in value and isinstance(value.get("audit_window"), dict):
+            return AuditWindow.from_any(value.get("audit_window"))
+        return AuditWindow.from_any(value)
+    return AuditWindow.from_any(value)
+
+
+def _normalize_audit_records(
+    input_provenance: dict[str, Any] | None,
+    refresh_summary: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    provenance = input_provenance or {}
+    refresh = refresh_summary or {}
+    domain_lookup = {
+        str(item.get("domain") or ""): dict(item)
+        for item in list(refresh.get("domain_details") or [])
+        if str(item.get("domain") or "").strip()
+    }
+    items = list(provenance.get("items") or [])
+    if not items:
+        for source_type in ("user_provided", "system_inferred", "default_assumed", "externally_fetched"):
+            for item in list(provenance.get(source_type) or []):
+                rendered = dict(item)
+                rendered.setdefault("source_type", source_type)
+                items.append(rendered)
+
+    records: list[dict[str, Any]] = []
+    for item in items:
+        payload = dict(item)
+        source_type = str(payload.get("source_type") or "default_assumed")
+        field = str(payload.get("field") or "unknown")
+        domain_meta = domain_lookup.get(field, {})
+        source_ref = str(
+            payload.get("source_ref")
+            or (payload.get("value") if isinstance(payload.get("value"), str) else "")
+            or domain_meta.get("source_ref")
+            or (refresh.get("source_ref") if source_type == "externally_fetched" else "")
+            or ""
+        )
+        as_of = str(payload.get("as_of") or domain_meta.get("as_of") or refresh.get("as_of") or "")
+        record = AuditRecord.from_any(
+            {
+                "field": field,
+                "label": payload.get("label"),
+                "source_type": source_type,
+                "source_label": payload.get("source_label"),
+                "source_ref": source_ref,
+                "as_of": as_of,
+                "detail": payload.get("detail") or payload.get("note") or domain_meta.get("detail"),
+                "fetched_at": payload.get("fetched_at") or domain_meta.get("fetched_at") or refresh.get("fetched_at"),
+                "freshness_state": payload.get("freshness_state")
+                or payload.get("freshness_status")
+                or domain_meta.get("freshness_state"),
+                "data_status": payload.get("data_status") or _FORMAL_PATH_SOURCE_STATUS.get(source_type, DataStatus.INFERRED),
+                "audit_window": _coerce_audit_window(payload.get("audit_window"))
+                or _coerce_audit_window(domain_meta.get("audit_window")),
+            }
+        )
+        records.append(record.to_dict())
+    return records
+
+
+def _classify_formal_path_visibility(
+    decision_card: dict[str, Any] | None,
+    refresh_summary: dict[str, Any] | None,
+    audit_records: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    card = decision_card or {}
+    refresh = refresh_summary or {}
+    records = [AuditRecord.from_any(item) for item in list(audit_records or [])]
+    degraded_scope: list[str] = []
+    fallback_scope: list[str] = []
+    reasons: list[str] = []
+    missing_audit_fields: list[str] = []
+
+    for item in list(card.get("guardrails") or []) + list(card.get("execution_notes") or []):
+        text = str(item).strip()
+        if text.startswith("bundle_quality="):
+            degraded_scope.append("bundle")
+        elif text.startswith("calibration_quality="):
+            degraded_scope.append("calibration")
+        elif text.startswith("candidate_poverty="):
+            degraded_scope.append("runtime_candidates")
+        elif text.startswith("cooldown_active=") or text.startswith("high_risk_request="):
+            degraded_scope.append("runtime_controls")
+
+    if str(card.get("status_badge") or "").strip().lower() == "degraded" or bool(card.get("low_confidence")):
+        degraded_scope.append("decision_card")
+        reasons.append("decision_card flagged degraded/low_confidence")
+
+    refresh_state = str(refresh.get("freshness_state") or "").strip().lower()
+    external_status = str(refresh.get("external_status") or "").strip().lower()
+    if refresh_state in {"fallback", "degraded", "stale"} or external_status == "fallback":
+        fallback_scope.append("external_snapshot")
+        reasons.append("external snapshot refresh is fallback/degraded")
+
+    for detail in list(refresh.get("domain_details") or []):
+        domain = str((detail or {}).get("domain") or "").strip()
+        state = str((detail or {}).get("freshness_state") or "").strip().lower()
+        if not domain:
+            continue
+        if state in {"fallback", "degraded", "stale"}:
+            degraded_scope.append(domain)
+            if state == "fallback":
+                fallback_scope.append(domain)
+
+    combined_text = " ".join(
+        [
+            str(card.get("summary") or "").strip(),
+            *[str(item).strip() for item in card.get("recommendation_reason") or []],
+        ]
+    )
+    if "synthetic_fallback_used" in combined_text or any(
+        marker in combined_text for marker in ("临时参考", "候选方案不足", "不存在满足")
+    ):
+        fallback_scope.append("goal_solver")
+        reasons.append("goal solver emitted fallback-style candidate output")
+
+    for record in records:
+        if record.field in _FORMAL_PATH_REQUIRED_FIELDS:
+            if record.source_type == "externally_fetched":
+                if not record.source_ref:
+                    missing_audit_fields.append(f"{record.field}.source_ref")
+                if not record.as_of:
+                    missing_audit_fields.append(f"{record.field}.as_of")
+                if record.audit_window is None or not record.audit_window.has_required_window():
+                    missing_audit_fields.append(f"{record.field}.audit_window")
+            if record.data_status in {DataStatus.PRIOR_DEFAULT, DataStatus.SYNTHETIC_DEMO, DataStatus.MANUAL_ANNOTATION}:
+                degraded_scope.append(record.field)
+                reasons.append(f"{record.field} is backed by non-formal data_status={record.data_status.value}")
+
+    degraded_scope = _unique_strings(degraded_scope)
+    fallback_scope = _unique_strings(fallback_scope)
+    reasons = _unique_strings(reasons)
+    missing_audit_fields = _unique_strings(missing_audit_fields)
+
+    if str(card.get("card_type") or "") == "blocked":
+        status = FormalPathStatus.BLOCKED
+    elif fallback_scope:
+        status = FormalPathStatus.FALLBACK_USED_BUT_NOT_FORMAL
+    elif degraded_scope or missing_audit_fields:
+        status = FormalPathStatus.DEGRADED
+    else:
+        status = FormalPathStatus.FORMAL
+
+    recommended_action = str(card.get("recommended_action") or "").strip()
+    execution_eligible = True
+    execution_reason = "eligible"
+    if status is not FormalPathStatus.FORMAL:
+        execution_eligible = False
+        execution_reason = status.value
+    elif any(item == "manual_review_required" for item in card.get("execution_notes") or []):
+        execution_eligible = False
+        execution_reason = "manual_review_required"
+    elif recommended_action in {"", "blocked", "review", "observe", "freeze"}:
+        execution_eligible = False
+        execution_reason = "non_executable_recommendation"
+
+    return FormalPathVisibility(
+        status=status,
+        execution_eligible=execution_eligible,
+        execution_eligibility_reason=execution_reason,
+        degraded_scope=degraded_scope,
+        fallback_used=bool(fallback_scope),
+        fallback_scope=fallback_scope,
+        reasons=reasons,
+        missing_audit_fields=missing_audit_fields,
+    ).to_dict()
+
+
+def _apply_formal_path_metadata(
+    payload: dict[str, Any],
+    *,
+    input_provenance: dict[str, Any] | None,
+    refresh_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    enriched = dict(payload)
+    decision_card = dict(enriched.get("decision_card") or {})
+    audit_records = _normalize_audit_records(input_provenance, refresh_summary)
+    visibility = _classify_formal_path_visibility(decision_card, refresh_summary, audit_records)
+    decision_card["audit_records"] = audit_records
+    decision_card["formal_path_visibility"] = visibility
+    enriched["decision_card"] = decision_card
+    enriched["audit_records"] = audit_records
+    enriched["formal_path_visibility"] = visibility
+    return enriched
 
 
 def _build_input_source_summary(input_provenance: dict[str, Any]) -> dict[str, Any]:
@@ -380,10 +614,14 @@ def _build_refresh_summary(
                 "label": _EXT_SOURCE_LABELS.get(key, key),
                 "source_type": domain_source,
                 "source_label": (input_provenance or {}).get("source_labels", {}).get(domain_source or "", domain_source),
+                "source_ref": domain_meta.get("source_ref") or (source_ref if domain_source == "externally_fetched" else None),
+                "data_status": domain_meta.get("data_status")
+                or (_FORMAL_PATH_SOURCE_STATUS.get(domain_source or "", DataStatus.INFERRED).value if domain_source else None),
                 "freshness_state": domain_state,
                 "freshness_label": freshness_label_map.get(domain_state, domain_state),
                 "fetched_at": domain_meta.get("fetched_at") or (fetched_at if domain_source == "externally_fetched" else None),
                 "as_of": domain_meta.get("as_of") or meta.get("as_of") or as_of or None,
+                "audit_window": _coerce_audit_window(domain_meta).to_dict() if _coerce_audit_window(domain_meta) else None,
                 "detail": domain_meta.get("detail"),
             }
         )
@@ -975,6 +1213,19 @@ def _frontdesk_summary(
         result_payload.get("input_source_summary")
         or _build_input_source_summary(decision_card.get("input_provenance", {}) or {})
     )
+    formal_path_visibility = dict(
+        result_payload.get("formal_path_visibility")
+        or _classify_formal_path_visibility(
+            decision_card,
+            refresh_summary,
+            list(result_payload.get("audit_records") or decision_card.get("audit_records") or []),
+        )
+    )
+    audit_records = list(
+        result_payload.get("audit_records")
+        or decision_card.get("audit_records")
+        or _normalize_audit_records(decision_card.get("input_provenance", {}) or {}, refresh_summary)
+    )
     profile_payload = _as_dict(user_state.get("profile"))
     if isinstance(profile_payload.get("profile"), dict):
         profile_payload = _as_dict(profile_payload.get("profile"))
@@ -991,6 +1242,8 @@ def _frontdesk_summary(
         "input_source_summary": input_source_summary,
         "candidate_options": decision_card.get("candidate_options", []),
         "goal_alternatives": decision_card.get("goal_alternatives", []),
+        "audit_records": audit_records,
+        "formal_path_visibility": formal_path_visibility,
         "refresh_summary": refresh_summary,
         "active_execution_plan": user_state.get("active_execution_plan"),
         "pending_execution_plan": user_state.get("pending_execution_plan"),
@@ -1161,6 +1414,11 @@ def run_frontdesk_onboarding(
         external_payload=external_payload,
         external_snapshot_config=_stringify_external_snapshot_config(external_data_config),
     )
+    payload = _apply_formal_path_metadata(
+        payload,
+        input_provenance=input_provenance,
+        refresh_summary=payload.get("refresh_summary"),
+    )
     created_at = _now_iso()
     store.save_onboarding_result(
         account_profile=account_profile,
@@ -1187,6 +1445,8 @@ def run_frontdesk_onboarding(
     )
     summary["workflow"] = "onboard"
     summary["user_state"] = user_state
+    if summary.get("formal_path_visibility") is not None and isinstance(summary["user_state"], dict):
+        summary["user_state"]["formal_path_visibility"] = summary["formal_path_visibility"]
     return summary
 
 
@@ -1346,6 +1606,11 @@ def run_frontdesk_followup(
         external_payload=external_payload,
         external_snapshot_config=_stringify_external_snapshot_config(external_data_config),
     )
+    payload = _apply_formal_path_metadata(
+        payload,
+        input_provenance=input_provenance,
+        refresh_summary=payload.get("refresh_summary"),
+    )
     created_at = _now_iso()
     normalized_provenance = store.save_run_artifacts(
         account_profile_id=account_profile_id,
@@ -1382,7 +1647,7 @@ def run_frontdesk_followup(
             created_at=created_at,
         )
     user_state = store.load_user_state(account_profile_id)
-    return _frontdesk_summary(
+    summary = _frontdesk_summary(
         account_profile_id=account_profile_id,
         display_name=str(active_profile.get("display_name", snapshot["profile"]["display_name"])),
         result_payload=payload,
@@ -1395,6 +1660,10 @@ def run_frontdesk_followup(
         external_payload=external_payload,
         user_state=user_state,
     )
+    if summary.get("formal_path_visibility") is not None and isinstance(user_state, dict):
+        user_state["formal_path_visibility"] = summary["formal_path_visibility"]
+        summary["user_state"] = user_state
+    return summary
 
 
 def load_frontdesk_snapshot(
@@ -1427,6 +1696,20 @@ def load_frontdesk_snapshot(
         result_payload.get("input_source_summary")
         or _build_input_source_summary(decision_card.get("input_provenance", {}) or {})
     )
+    snapshot["formal_path_visibility"] = dict(
+        result_payload.get("formal_path_visibility")
+        or decision_card.get("formal_path_visibility")
+        or _classify_formal_path_visibility(
+            decision_card,
+            snapshot.get("refresh_summary"),
+            list(result_payload.get("audit_records") or decision_card.get("audit_records") or []),
+        )
+    )
+    snapshot["audit_records"] = list(
+        result_payload.get("audit_records")
+        or decision_card.get("audit_records")
+        or _normalize_audit_records(decision_card.get("input_provenance", {}) or {}, snapshot.get("refresh_summary"))
+    )
     return snapshot
 
 
@@ -1444,6 +1727,8 @@ def load_user_state(
     if snapshot is not None:
         user_state["refresh_summary"] = snapshot.get("refresh_summary")
         user_state["input_source_summary"] = snapshot.get("input_source_summary")
+        user_state["formal_path_visibility"] = snapshot.get("formal_path_visibility")
+        user_state["audit_records"] = snapshot.get("audit_records")
     return user_state
 
 

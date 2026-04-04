@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from shared.audit import DataStatus
 from snapshot_ingestion.adapters import (
     ExternalSnapshotAdapterError,
     FetchedSnapshotPayload,
@@ -58,6 +59,11 @@ def _coerce_inline_snapshot(config: dict[str, Any]) -> FetchedSnapshotPayload:
             "field": key,
             "label": key,
             "value": source_ref,
+            "source_ref": source_ref,
+            "as_of": config.get("as_of"),
+            "fetched_at": config.get("fetched_at"),
+            "data_status": DataStatus.SYNTHETIC_DEMO.value,
+            "audit_window": {},
             "note": f"provider={provider_name}; inline_snapshot",
             "freshness": dict(freshness["domains"].get(key) or {}),
         }

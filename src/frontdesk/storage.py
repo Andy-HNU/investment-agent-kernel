@@ -69,6 +69,9 @@ def _normalize_input_provenance(input_provenance: dict[str, Any] | None) -> dict
                 "source_type": source_type,
                 "source_label": _SOURCE_LABELS[source_type],
             }
+            for key in ("detail", "source_ref", "as_of", "fetched_at", "freshness_state", "data_status", "audit_window"):
+                if payload.get(key) is not None:
+                    rendered[key] = payload.get(key)
             normalized[source_type].append(rendered)
             normalized["items"].append(rendered)
         for source_type in _SOURCE_LABELS:
@@ -85,6 +88,9 @@ def _normalize_input_provenance(input_provenance: dict[str, Any] | None) -> dict
                 "source_type": source_type,
                 "source_label": _SOURCE_LABELS[source_type],
             }
+            for key in ("detail", "source_ref", "as_of", "fetched_at", "freshness_state", "data_status", "audit_window"):
+                if payload.get(key) is not None:
+                    rendered[key] = payload.get(key)
             normalized[source_type].append(rendered)
             normalized["items"].append(rendered)
         normalized["counts"][source_type] = len(normalized[source_type])

@@ -477,10 +477,11 @@ def _formal_path_visibility(
 def _render_formal_path_block(formal_path_visibility: dict[str, Any] | None) -> list[str]:
     if not formal_path_visibility:
         return []
-    return [
+    lines = [
         "formal_path: "
         + ", ".join(
             [
+                f"status={formal_path_visibility.get('status')}",
                 "degraded_scope=" + ",".join(formal_path_visibility.get("degraded_scope") or []),
                 f"fallback_used={'true' if formal_path_visibility.get('fallback_used') else 'false'}",
                 "fallback_scope=" + ",".join(formal_path_visibility.get("fallback_scope") or []),
@@ -489,22 +490,38 @@ def _render_formal_path_block(formal_path_visibility: dict[str, Any] | None) -> 
             ]
         )
     ]
+    if formal_path_visibility.get("missing_audit_fields"):
+        lines.append(
+            "formal_path_missing_audit_fields="
+            + ",".join(str(item) for item in formal_path_visibility.get("missing_audit_fields") or [])
+        )
+    return lines
 
 
 def _augment_formal_path_visibility(payload: dict[str, Any]) -> dict[str, Any]:
     result = dict(payload)
+    top_level_visibility = result.get("formal_path_visibility")
     if "user_state" in result:
         user_state = dict(result.get("user_state") or {})
         decision_card = dict(user_state.get("decision_card") or {})
         refresh_summary = dict(result.get("refresh_summary") or {})
-        visibility = _formal_path_visibility(decision_card, refresh_summary)
+        visibility = (
+            top_level_visibility
+            or user_state.get("formal_path_visibility")
+            or decision_card.get("formal_path_visibility")
+            or _formal_path_visibility(decision_card, refresh_summary)
+        )
         user_state["formal_path_visibility"] = visibility
         result["user_state"] = user_state
         result["formal_path_visibility"] = visibility
         return result
     decision_card = dict(result.get("decision_card") or {})
     refresh_summary = dict(result.get("refresh_summary") or {})
-    result["formal_path_visibility"] = _formal_path_visibility(decision_card, refresh_summary)
+    result["formal_path_visibility"] = (
+        top_level_visibility
+        or decision_card.get("formal_path_visibility")
+        or _formal_path_visibility(decision_card, refresh_summary)
+    )
     return result
 
 

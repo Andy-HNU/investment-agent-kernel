@@ -161,6 +161,72 @@ def test_frontdesk_followup_persists_decision_card_and_provenance(tmp_path):
 
 
 @pytest.mark.contract
+def test_frontdesk_external_snapshot_without_audit_window_is_non_formal(tmp_path):
+    profile = _profile(account_profile_id="formal_path_external")
+    db_path = tmp_path / "frontdesk.sqlite"
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "market_raw": {
+                    "expected_returns": {
+                        "equity_cn": 0.08,
+                        "bond_cn": 0.03,
+                        "gold": 0.04,
+                        "satellite": 0.10,
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    summary = run_frontdesk_onboarding(
+        profile,
+        db_path=db_path,
+        external_snapshot_source=snapshot_path,
+    )
+
+    visibility = summary["formal_path_visibility"]
+    assert visibility["status"] == "degraded"
+    assert visibility["execution_eligible"] is False
+    assert "market_raw.audit_window" in visibility["missing_audit_fields"]
+    assert summary["user_state"]["formal_path_visibility"]["status"] == "degraded"
+    assert any(record["field"] == "market_raw" and record["data_status"] == "observed" for record in summary["audit_records"])
+
+
+@pytest.mark.contract
+def test_frontdesk_inline_provider_marks_synthetic_demo_non_formal(tmp_path):
+    profile = _profile(account_profile_id="formal_path_inline")
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    summary = run_frontdesk_onboarding(
+        profile,
+        db_path=db_path,
+        external_data_config={
+            "adapter": "inline_snapshot",
+            "provider_name": "inline_acceptance",
+            "payload": {
+                "market_raw": {
+                    "expected_returns": {
+                        "equity_cn": 0.08,
+                        "bond_cn": 0.03,
+                        "gold": 0.04,
+                        "satellite": 0.10,
+                    }
+                }
+            },
+        },
+    )
+
+    visibility = summary["formal_path_visibility"]
+    assert visibility["status"] == "degraded"
+    assert visibility["execution_eligible"] is False
+    assert any("market_raw is backed by non-formal data_status=synthetic_demo" in reason for reason in visibility["reasons"])
+
+
+@pytest.mark.contract
 def test_frontdesk_execution_feedback_roundtrip_updates_snapshot(tmp_path):
     profile = _profile(account_profile_id="feedback_user")
     db_path = tmp_path / "frontdesk.sqlite"

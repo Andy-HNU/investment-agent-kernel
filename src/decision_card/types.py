@@ -133,6 +133,8 @@ class DecisionCard:
     input_provenance: dict[str, Any] = field(default_factory=dict)
     input_source_summary: list[str] = field(default_factory=list)
     input_source_sections: list[dict[str, Any]] = field(default_factory=list)
+    audit_records: list[dict[str, Any]] = field(default_factory=list)
+    formal_path_visibility: dict[str, Any] = field(default_factory=dict)
     candidate_options: list[dict[str, Any]] = field(default_factory=list)
     goal_alternatives: list[dict[str, Any]] = field(default_factory=list)
     goal_semantics: dict[str, Any] = field(default_factory=dict)

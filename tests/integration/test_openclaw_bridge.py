@@ -31,6 +31,24 @@ def test_bridge_handles_status_query(tmp_path):
     assert result['result']['user_state']['profile']['account_profile_id'] == 'status_user'
 
 
+def test_bridge_preserves_formal_path_visibility(tmp_path):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    result = handle_task(
+        "please onboard user bridge_user with current assets 50000, monthly 12000, goal 1000000 in 60 months, risk moderate",
+        db_path=str(db),
+    )
+
+    assert "formal_path_visibility" in result["result"]
+    assert result["result"]["formal_path_visibility"]["status"] in {
+        "formal",
+        "degraded",
+        "blocked",
+        "fallback_used_but_not_formal",
+    }
+
+
 def test_acceptance_cli_writes_logs(tmp_path, capsys):
     # Smoke test the CLI wrapper to ensure it writes a log file
     import sys
