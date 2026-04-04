@@ -336,6 +336,18 @@ def _render_execution_plan_block(
         lines.append(
             f"{label}_candidate_filter_drop_reasons={execution_plan.get('candidate_filter_dropped_reasons')}"
         )
+    proxy_universe_summary = execution_plan.get("proxy_universe_summary") or {}
+    if proxy_universe_summary:
+        lines.append(f"{label}_proxy_mode={proxy_universe_summary.get('solving_mode')}")
+        lines.append(
+            f"{label}_proxy_covered_buckets={proxy_universe_summary.get('covered_asset_buckets')}"
+        )
+        lines.append(
+            f"{label}_proxy_uncovered_buckets={proxy_universe_summary.get('uncovered_asset_buckets')}"
+        )
+        lines.append(
+            f"{label}_proxy_disclosure={proxy_universe_summary.get('disclosure')}"
+        )
     if execution_plan.get("valuation_audit_summary"):
         lines.append(f"{label}_valuation_audit={execution_plan.get('valuation_audit_summary')}")
     if execution_plan.get("policy_news_audit_summary"):

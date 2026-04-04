@@ -367,3 +367,31 @@ def test_build_execution_plan_limits_policy_news_to_mild_core_influence():
     assert equity_item.policy_news_audit is not None
     assert equity_item.policy_news_audit.influence_scope == "core_mild"
     assert plan.policy_news_audit_summary["core_influence_capped"] is True
+
+
+@pytest.mark.contract
+def test_build_execution_plan_summary_surfaces_proxy_universe_disclosure_and_specs():
+    plan = build_execution_plan(
+        source_run_id="run_proxy_universe_summary",
+        source_allocation_id="allocation_proxy_universe",
+        bucket_targets={
+            "equity_cn": 0.45,
+            "bond_cn": 0.25,
+            "gold": 0.10,
+            "cash_liquidity": 0.10,
+            "satellite": 0.10,
+        },
+        restrictions=[],
+    )
+
+    summary = plan.summary()
+
+    assert summary["proxy_universe_summary"]["solving_mode"] == "proxy_universe"
+    assert "equity_cn" in summary["proxy_universe_summary"]["covered_asset_buckets"]
+    assert "bond_cn" in summary["proxy_universe_summary"]["covered_asset_buckets"]
+    assert "gold" in summary["proxy_universe_summary"]["covered_asset_buckets"]
+    assert summary["proxy_universe_summary"]["product_proxy_count"] >= plan.runtime_candidate_count
+    assert "代理宇宙求解" in summary["proxy_universe_summary"]["disclosure"]
+    assert summary["product_proxy_specs"]
+    assert any(spec["product_id"] == "qdii_hk_tech_fund" for spec in summary["product_proxy_specs"])
+    assert all(spec["data_status"] == "manual_annotation" for spec in summary["product_proxy_specs"])

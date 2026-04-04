@@ -15,7 +15,9 @@ from product_mapping.types import (
     ExecutionPlanItem,
     ProductCandidate,
     ProductPolicyNewsAudit,
+    ProductProxySpec,
     ProductValuationAudit,
+    ProxyUniverseSummary,
     RuntimeProductCandidate,
 )
 
@@ -40,6 +42,14 @@ _WRAPPER_PRIORITY = {
 }
 _VALUATION_MAX_PE = 40.0
 _VALUATION_MAX_PERCENTILE = 0.30
+_PROXY_CONFIDENCE_BY_WRAPPER = {
+    "stock": 0.96,
+    "etf": 0.93,
+    "fund": 0.82,
+    "cash_mgmt": 0.88,
+    "bond": 0.90,
+    "other": 0.70,
+}
 
 
 @dataclass(frozen=True)
@@ -441,6 +451,68 @@ def _build_item(bucket: str, target_weight: float, candidates: list[RuntimeProdu
     )
 
 
+def _proxy_kind(candidate: ProductCandidate) -> str:
+    if candidate.wrapper_type == "stock":
+        return "single_stock_history"
+    if candidate.wrapper_type == "etf":
+        return "listed_fund_price_proxy"
+    if candidate.wrapper_type == "cash_mgmt":
+        return "cash_management_nav_proxy"
+    if candidate.wrapper_type == "fund" and ("qdii" in candidate.tags or candidate.region != "CN"):
+        return "qdii_nav_proxy"
+    if candidate.wrapper_type == "fund":
+        return "fund_nav_proxy"
+    if candidate.wrapper_type == "bond":
+        return "bond_price_proxy"
+    return "registered_proxy"
+
+
+def _build_product_proxy_spec(candidate: ProductCandidate) -> ProductProxySpec:
+    proxy_ref = f"{candidate.provider_source}:{candidate.provider_symbol or candidate.product_id}"
+    return ProductProxySpec(
+        product_id=candidate.product_id,
+        proxy_kind=_proxy_kind(candidate),
+        proxy_ref=proxy_ref,
+        confidence=_PROXY_CONFIDENCE_BY_WRAPPER.get(candidate.wrapper_type, 0.70),
+        source_ref=proxy_ref,
+        data_status="manual_annotation",
+    )
+
+
+def _attach_proxy_specs(runtime_candidates: list[RuntimeProductCandidate]) -> tuple[list[RuntimeProductCandidate], list[ProductProxySpec]]:
+    proxy_specs: list[ProductProxySpec] = []
+    enriched: list[RuntimeProductCandidate] = []
+    for runtime_candidate in runtime_candidates:
+        proxy_spec = _build_product_proxy_spec(runtime_candidate.candidate)
+        proxy_specs.append(proxy_spec)
+        enriched.append(replace(runtime_candidate, proxy_spec=proxy_spec))
+    return enriched, proxy_specs
+
+
+def _build_proxy_universe_summary(
+    *,
+    normalized_targets: dict[str, float],
+    runtime_candidates: list[RuntimeProductCandidate],
+    product_proxy_specs: list[ProductProxySpec],
+) -> ProxyUniverseSummary:
+    requested_buckets = sorted(bucket for bucket, weight in normalized_targets.items() if weight > 0)
+    covered_buckets = sorted({_normalize_bucket(item.candidate.asset_bucket) for item in runtime_candidates})
+    uncovered_buckets = [bucket for bucket in requested_buckets if bucket not in covered_buckets]
+    covered_regions = sorted({str(item.candidate.region or "CN") for item in runtime_candidates})
+    return ProxyUniverseSummary(
+        solving_mode="proxy_universe",
+        covered_asset_buckets=covered_buckets,
+        uncovered_asset_buckets=uncovered_buckets,
+        covered_regions=covered_regions,
+        product_proxy_count=len(product_proxy_specs),
+        claims_real_product_history=False,
+        disclosure=(
+            "当前仍是代理宇宙求解：产品层使用注册表与代理映射做筛选和披露，"
+            "不应解读为每个产品都已有独立历史序列进入求解器。"
+        ),
+    )
+
+
 def _apply_stage(
     stage_name: str,
     candidates: list[tuple[int, ProductCandidate]],
@@ -569,6 +641,12 @@ def build_execution_plan(
         valuation_result=valuation_result,
         policy_news_signals=policy_news_signals,
     )
+    runtime_candidate_pool, product_proxy_specs = _attach_proxy_specs(runtime_candidate_pool)
+    proxy_universe_summary = _build_proxy_universe_summary(
+        normalized_targets=normalized_targets,
+        runtime_candidates=runtime_candidate_pool,
+        product_proxy_specs=product_proxy_specs,
+    )
     grouped_candidates: dict[str, list[RuntimeProductCandidate]] = defaultdict(list)
 
     for runtime_candidate in runtime_candidate_pool:
@@ -601,6 +679,8 @@ def build_execution_plan(
         registry_candidate_count=len(registry),
         runtime_candidate_count=len(runtime_candidate_pool),
         runtime_candidates=runtime_candidate_pool,
+        product_proxy_specs=product_proxy_specs,
+        proxy_universe_summary=proxy_universe_summary,
         candidate_filter_breakdown=candidate_filter_breakdown,
         valuation_audit_summary=dict(candidate_filter_breakdown.valuation_audit_summary or {}),
         policy_news_audit_summary=dict(candidate_filter_breakdown.policy_news_audit_summary or {}),

@@ -170,6 +170,8 @@ def test_frontdesk_cli_text_summary_surfaces_readable_candidates_and_disclaimer(
     assert "profile_model:" in output
     assert "refresh:" in output
     assert "pending_execution_plan:" in output
+    assert "pending_execution_plan_proxy_mode=" in output
+    assert "pending_execution_plan_proxy_covered_buckets=" in output
     assert "execution_feedback:" in output
 
 

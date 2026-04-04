@@ -237,6 +237,8 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "superseded_by_plan_id": payload.get("superseded_by_plan_id"),
         "registry_candidate_count": payload.get("registry_candidate_count"),
         "runtime_candidate_count": payload.get("runtime_candidate_count"),
+        "product_proxy_specs": list(payload.get("product_proxy_specs") or []),
+        "proxy_universe_summary": dict(payload.get("proxy_universe_summary") or {}),
         "candidate_filter_dropped_reasons": dict(breakdown.get("dropped_reasons") or {}),
         "candidate_filter_stages": list(breakdown.get("stages") or []),
         "valuation_audit_summary": dict(

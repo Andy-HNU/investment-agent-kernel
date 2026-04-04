@@ -59,11 +59,39 @@ class ProductValuationAudit:
 
 
 @dataclass(frozen=True)
+class ProductProxySpec:
+    product_id: str
+    proxy_kind: str
+    proxy_ref: str
+    confidence: float
+    source_ref: str
+    data_status: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
+class ProxyUniverseSummary:
+    solving_mode: str
+    covered_asset_buckets: list[str] = field(default_factory=list)
+    uncovered_asset_buckets: list[str] = field(default_factory=list)
+    covered_regions: list[str] = field(default_factory=list)
+    product_proxy_count: int = 0
+    claims_real_product_history: bool = False
+    disclosure: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
 class RuntimeProductCandidate:
     candidate: ProductCandidate
     registry_index: int
     filter_stage: str = "runtime_pool"
     filter_reason: str | None = None
+    proxy_spec: ProductProxySpec | None = None
     valuation_audit: ProductValuationAudit | None = None
     policy_news_audit: "ProductPolicyNewsAudit | None" = None
 
@@ -147,6 +175,8 @@ class ExecutionPlan:
     registry_candidate_count: int = 0
     runtime_candidate_count: int = 0
     runtime_candidates: list[RuntimeProductCandidate] = field(default_factory=list)
+    product_proxy_specs: list[ProductProxySpec] = field(default_factory=list)
+    proxy_universe_summary: ProxyUniverseSummary | None = None
     candidate_filter_breakdown: CandidateFilterBreakdown | None = None
     valuation_audit_summary: dict[str, Any] = field(default_factory=dict)
     policy_news_audit_summary: dict[str, Any] = field(default_factory=dict)
@@ -175,6 +205,10 @@ class ExecutionPlan:
             "superseded_by_plan_id": self.superseded_by_plan_id,
             "registry_candidate_count": self.registry_candidate_count,
             "runtime_candidate_count": self.runtime_candidate_count,
+            "product_proxy_specs": [spec.to_dict() for spec in self.product_proxy_specs],
+            "proxy_universe_summary": (
+                self.proxy_universe_summary.to_dict() if self.proxy_universe_summary is not None else {}
+            ),
             "candidate_filter_dropped_reasons": dict(breakdown.dropped_reasons),
             "candidate_filter_stages": [stage.to_dict() for stage in breakdown.stages],
             "valuation_audit_summary": dict(self.valuation_audit_summary or breakdown.valuation_audit_summary or {}),
