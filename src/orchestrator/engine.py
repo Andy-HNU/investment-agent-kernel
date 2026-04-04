@@ -1550,6 +1550,26 @@ def _extract_execution_plan_restrictions(envelope: dict[str, Any]) -> list[str]:
     return []
 
 
+def _extract_execution_plan_valuation_context(
+    envelope: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    market_raw = _as_dict(envelope.get("market_raw"))
+    valuation_inputs = _as_dict(
+        market_raw.get("product_valuation_inputs")
+        or market_raw.get("valuation_inputs")
+        or {}
+    )
+    valuation_result = _as_dict(
+        market_raw.get("product_valuation_result")
+        or market_raw.get("valuation_result")
+        or {}
+    )
+    return (
+        valuation_inputs or None,
+        valuation_result or None,
+    )
+
+
 def _maybe_build_execution_plan(
     *,
     run_id: str,
@@ -1572,11 +1592,14 @@ def _maybe_build_execution_plan(
     )
     if not weights or allocation_name is None:
         return None
+    valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
     return build_execution_plan(
         source_run_id=run_id,
         source_allocation_id=allocation_name,
         bucket_targets={bucket: float(weight) for bucket, weight in weights.items()},
         restrictions=_extract_execution_plan_restrictions(envelope),
+        valuation_inputs=valuation_inputs,
+        valuation_result=valuation_result,
     )
 
 
