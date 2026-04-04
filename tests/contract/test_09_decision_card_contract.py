@@ -236,3 +236,209 @@ def test_goal_baseline_card_includes_model_disclaimer_and_input_source_summary()
     assert "用户提供 1 项" in card["input_source_summary"]
     assert "系统推断 1 项" in card["input_source_summary"]
     assert card["input_source_sections"][0]["source_label"] == "用户提供"
+
+
+@pytest.mark.contract
+def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidence_panel():
+    card = build_decision_card(
+        DecisionCardBuildInput(
+            card_type=DecisionCardType.GOAL_BASELINE,
+            workflow_type="onboarding",
+            run_id="decision_card_probability_explanation",
+            goal_solver_output={
+                "recommended_result": {
+                    "allocation_name": "balanced_progression__moderate__02",
+                    "success_probability": 0.68,
+                    "bucket_success_probability": 0.68,
+                    "product_adjusted_success_probability": 0.65,
+                    "product_probability_method": "product_proxy_adjustment_estimate",
+                    "implied_required_annual_return": 0.08,
+                    "expected_terminal_value": 1_030_000.0,
+                    "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
+                },
+                "candidate_menu": [
+                    {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "summary": "在提高达成率的同时，尽量守住波动体验。",
+                        "success_probability": 0.68,
+                        "bucket_success_probability": 0.68,
+                        "product_adjusted_success_probability": 0.65,
+                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "implied_required_annual_return": 0.08,
+                        "expected_terminal_value": 1_030_000.0,
+                        "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
+                        "weights": {"equity_cn": 0.55, "bond_cn": 0.25, "gold": 0.10, "satellite": 0.10},
+                        "is_feasible": True,
+                    },
+                    {
+                        "allocation_name": "goal_chasing__aggressive__01",
+                        "display_name": "冲目标方案",
+                        "summary": "达成率更高，但回撤和复杂度也更高。",
+                        "success_probability": 0.74,
+                        "bucket_success_probability": 0.74,
+                        "product_adjusted_success_probability": 0.70,
+                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "implied_required_annual_return": 0.08,
+                        "expected_terminal_value": 1_080_000.0,
+                        "risk_summary": {"max_drawdown_90pct": 0.29, "shortfall_probability": 0.26},
+                        "weights": {"equity_cn": 0.70, "bond_cn": 0.15, "gold": 0.05, "satellite": 0.10},
+                        "is_feasible": True,
+                    },
+                ],
+                "frontier_analysis": {
+                    "recommended": {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "product_adjusted_success_probability": 0.65,
+                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "expected_terminal_value": 1_030_000.0,
+                        "expected_annual_return": 0.061,
+                        "max_drawdown_90pct": 0.16,
+                        "why_selected": "当前推荐方案，同时权衡达成率、回撤和执行复杂度。",
+                    },
+                    "highest_probability": {
+                        "allocation_name": "goal_chasing__aggressive__01",
+                        "display_name": "冲目标方案",
+                        "product_adjusted_success_probability": 0.70,
+                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "expected_terminal_value": 1_080_000.0,
+                        "expected_annual_return": 0.079,
+                        "max_drawdown_90pct": 0.29,
+                        "why_selected": "当前候选里，这个方案的产品修正后达成率最高。",
+                    },
+                    "target_return_priority": {
+                        "allocation_name": "",
+                        "display_name": "",
+                        "why_selected": "当前候选里没有方案满足目标收益约束。",
+                    },
+                    "drawdown_priority": {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "product_adjusted_success_probability": 0.65,
+                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "expected_terminal_value": 1_030_000.0,
+                        "expected_annual_return": 0.061,
+                        "max_drawdown_90pct": 0.16,
+                        "why_selected": "如果优先守住回撤约束，这个方案更稳。",
+                    },
+                    "scenario_status": {
+                        "target_return_priority": {
+                            "available": False,
+                            "reason": "no_candidate_meets_required_annual_return",
+                        }
+                    },
+                },
+                "disclaimer": "以下为模型模拟结果，不是历史回测收益承诺。",
+            },
+            execution_plan_summary={
+                "product_evidence_panel": {
+                    "items": [
+                        {
+                            "asset_bucket": "equity_cn",
+                            "primary_product_name": "沪深300ETF",
+                            "primary_product_id": "cn_equity_csi300_etf",
+                            "recommended_products": [
+                                {"product_id": "cn_equity_csi300_etf", "product_name": "沪深300ETF"}
+                            ],
+                        }
+                    ]
+                },
+            },
+        )
+    )
+
+    assert card["key_metrics"]["bucket_success_probability"] == "68.00%"
+    assert card["key_metrics"]["product_adjusted_success_probability"] == "65.00%"
+    assert card["key_metrics"]["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert card["key_metrics"]["implied_required_annual_return"] == "8.00%"
+    assert card["probability_explanation"]["highest_probability_allocation_label"] == "冲目标方案"
+    assert card["probability_explanation"]["recommended_allocation_label"] == "平衡推进方案"
+    assert "不是最高达成率方案" in card["probability_explanation"]["why_not_highest_probability"]
+    assert card["probability_explanation"]["why_not_target_return_priority"] == "no_candidate_meets_required_annual_return"
+    assert card["probability_explanation"]["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert "代理修正" in card["probability_explanation"]["product_probability_disclosure"]
+    assert card["product_evidence_panel"]["items"][0]["primary_product_name"] == "沪深300ETF"
+
+
+@pytest.mark.contract
+def test_goal_baseline_card_surfaces_unavailable_frontier_reasons():
+    card = build_decision_card(
+        DecisionCardBuildInput(
+            card_type=DecisionCardType.GOAL_BASELINE,
+            workflow_type="onboarding",
+            run_id="decision_card_frontier_unavailable",
+            goal_solver_output={
+                "recommended_result": {
+                    "allocation_name": "balanced_progression__moderate__02",
+                    "success_probability": 0.68,
+                    "bucket_success_probability": 0.68,
+                    "product_adjusted_success_probability": 0.65,
+                    "product_probability_method": "product_proxy_adjustment_estimate",
+                    "implied_required_annual_return": 0.08,
+                    "expected_terminal_value": 1_030_000.0,
+                    "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
+                },
+                "candidate_menu": [
+                    {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "success_probability": 0.68,
+                        "bucket_success_probability": 0.68,
+                        "product_adjusted_success_probability": 0.65,
+                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "implied_required_annual_return": 0.08,
+                        "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
+                        "weights": {"equity_cn": 0.55, "bond_cn": 0.25, "gold": 0.10, "satellite": 0.10},
+                        "is_feasible": True,
+                    }
+                ],
+                "frontier_analysis": {
+                    "recommended": {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "product_adjusted_success_probability": 0.65,
+                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "expected_terminal_value": 1_030_000.0,
+                        "expected_annual_return": 0.061,
+                        "max_drawdown_90pct": 0.16,
+                        "why_selected": "当前推荐就是最高达成率方案。",
+                    },
+                    "highest_probability": {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "product_adjusted_success_probability": 0.65,
+                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "expected_terminal_value": 1_030_000.0,
+                        "expected_annual_return": 0.061,
+                        "max_drawdown_90pct": 0.16,
+                        "why_selected": "当前推荐就是最高达成率方案。",
+                    },
+                    "target_return_priority": {
+                        "allocation_name": "",
+                        "display_name": "",
+                        "why_selected": "当前候选里没有方案满足目标收益约束。",
+                    },
+                    "drawdown_priority": {
+                        "allocation_name": "",
+                        "display_name": "",
+                        "why_selected": "当前候选里没有方案满足最大回撤约束。",
+                    },
+                    "scenario_status": {
+                        "target_return_priority": {
+                            "available": False,
+                            "reason": "no_candidate_meets_required_annual_return",
+                        },
+                        "drawdown_priority": {
+                            "available": False,
+                            "reason": "no_candidate_meets_max_drawdown_tolerance",
+                        },
+                    },
+                },
+            },
+        )
+    )
+
+    assert card["probability_explanation"]["why_not_highest_probability"] == "当前推荐方案同时也是当前候选中的最高达成率方案。"
+    assert card["probability_explanation"]["why_not_target_return_priority"] == "no_candidate_meets_required_annual_return"
+    assert card["probability_explanation"]["why_not_drawdown_priority"] == "no_candidate_meets_max_drawdown_tolerance"

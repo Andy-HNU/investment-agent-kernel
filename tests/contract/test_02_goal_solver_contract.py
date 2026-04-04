@@ -192,6 +192,108 @@ def test_run_goal_solver_emits_context_and_threshold_gap_notes(goal_solver_input
 
 
 @pytest.mark.contract
+def test_run_goal_solver_threshold_warning_uses_effective_success_probability(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["goal"]["success_prob_threshold"] = 0.60
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "steady",
+            "weights": {"equity_cn": 0.55, "bond_cn": 0.30, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.12,
+            "description": "steady candidate",
+        }
+    ]
+
+    def _fake_run_monte_carlo(*_args, **_kwargs):
+        return (
+            0.64,
+            {"expected_terminal_value": 2_150_000.0},
+            RiskSummary(
+                max_drawdown_90pct=0.11,
+                terminal_value_tail_mean_95=1_600_000.0,
+                shortfall_probability=0.36,
+                terminal_shortfall_p5_vs_initial=0.07,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+    monkeypatch.setattr(goal_solver_engine, "_effective_success_probability", lambda _result: 0.58)
+
+    result = run_goal_solver(solver_input)
+
+    assert any(
+        note == "success_threshold threshold=0.6000 recommended=0.5800 gap=0.0200 met=false"
+        for note in result.solver_notes
+    )
+    assert any(
+        note == "warning=success_probability_below_threshold threshold=0.6000 recommended=0.5800"
+        for note in result.solver_notes
+    )
+
+
+@pytest.mark.contract
+def test_run_goal_solver_emits_dual_probability_and_frontier_diagnostics(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["goal"]["goal_amount"] = 2_500_000.0
+    solver_input["goal"]["success_prob_threshold"] = 0.80
+    solver_input["constraints"]["max_drawdown_tolerance"] = 0.05
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "defensive",
+            "weights": {"equity_cn": 0.30, "bond_cn": 0.55, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.08,
+            "description": "defensive candidate",
+        },
+        {
+            "name": "balanced",
+            "weights": {"equity_cn": 0.45, "bond_cn": 0.35, "gold": 0.10, "satellite": 0.10},
+            "complexity_score": 0.12,
+            "description": "balanced candidate",
+        },
+    ]
+
+    def _fake_run_monte_carlo(
+        weights: dict[str, float],
+        *_args,
+        **_kwargs,
+    ):
+        if weights["equity_cn"] == 0.30:
+            probability, terminal, drawdown = 0.42, 780_000.0, 0.09
+        else:
+            probability, terminal, drawdown = 0.48, 860_000.0, 0.12
+        return (
+            probability,
+            {"expected_terminal_value": terminal},
+            RiskSummary(
+                max_drawdown_90pct=drawdown,
+                terminal_value_tail_mean_95=terminal * 0.82,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.18,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert result.recommended_result.bucket_success_probability == pytest.approx(
+        result.recommended_result.success_probability
+    )
+    assert result.recommended_result.product_adjusted_success_probability is None
+    assert result.recommended_result.product_probability_method == "bucket_only_no_product_proxy_adjustment"
+    assert result.recommended_result.implied_required_annual_return is not None
+    assert result.frontier_analysis is not None
+    assert result.frontier_analysis.scenario_status["target_return_priority"]["available"] is False
+    assert result.frontier_analysis.scenario_status["drawdown_priority"]["available"] is False
+    assert result.frontier_analysis.target_return_priority.allocation_name == ""
+    assert result.frontier_analysis.drawdown_priority.allocation_name == ""
+    assert result.frontier_diagnostics["raw_candidate_count"] == 2
+    assert result.frontier_diagnostics["feasible_candidate_count"] == 0
+    assert result.frontier_diagnostics["frontier_max_expected_annual_return"] is not None
+    assert result.frontier_diagnostics["binding_constraints"]
+
+
+@pytest.mark.contract
 def test_run_goal_solver_emits_model_honesty_notes(goal_solver_input_base, monkeypatch):
     solver_input = deepcopy(goal_solver_input_base)
     solver_input["goal"]["goal_amount_basis"] = "real"

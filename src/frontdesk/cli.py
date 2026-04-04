@@ -185,6 +185,10 @@ def _render_candidate_lines(options: list[dict[str, Any]], *, prefix: str) -> li
         lines.append(
             f"{prefix}_{index}={option.get('label')} | {option.get('highlight')} | "
             f"success={option.get('success_probability')} "
+            f"bucket_success={option.get('bucket_success_probability')} "
+            f"product_success={option.get('product_adjusted_success_probability')} "
+            f"probability_method={option.get('product_probability_method')} "
+            f"required_return={option.get('implied_required_annual_return')} "
             f"dd90={option.get('max_drawdown_90pct')} "
             f"shortfall={option.get('shortfall_probability')}"
         )

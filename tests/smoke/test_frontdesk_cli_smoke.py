@@ -161,6 +161,9 @@ def test_frontdesk_cli_text_summary_surfaces_readable_candidates_and_disclaimer(
 
     assert exit_code == 0
     assert "candidate_1=" in output
+    assert "bucket_success=" in output
+    assert "product_success=" in output
+    assert "required_return=" in output
     assert "input_sources=" in output
     assert "model_disclaimer=" in output
     assert "goal_semantics:" in output

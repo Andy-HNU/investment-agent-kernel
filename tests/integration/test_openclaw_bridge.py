@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import os
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_bridge_handles_onboarding_from_natural_language(tmp_path):
@@ -49,11 +52,28 @@ def test_bridge_preserves_formal_path_visibility(tmp_path):
     }
 
 
+def test_bridge_preserves_probability_explanation_payload(tmp_path):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    result = handle_task(
+        "please onboard user bridge_probability_user with current assets 50000, monthly 12000, goal 1000000 in 60 months, risk moderate",
+        db_path=str(db),
+    )
+
+    decision_card = result["result"]["decision_card"]
+    assert "probability_explanation" in decision_card
+    assert "frontier_analysis" in decision_card
+    assert "product_evidence_panel" in decision_card
+    assert "bucket_success_probability" in decision_card["key_metrics"]
+    assert "product_adjusted_success_probability" in decision_card["key_metrics"]
+
+
 def test_acceptance_cli_writes_logs(tmp_path, capsys):
     # Smoke test the CLI wrapper to ensure it writes a log file
     import sys
     import subprocess
-    script = Path('scripts/openclaw_bridge_cli.py').resolve()
+    script = (REPO_ROOT / "scripts" / "openclaw_bridge_cli.py").resolve()
     db = tmp_path / 'frontdesk.sqlite'
     env = dict(**os.environ)
     env['OPENCLAW_BRIDGE_DB'] = str(db)
@@ -77,7 +97,7 @@ def test_acceptance_harness_reads_task_file_and_writes_jsonl_logs(tmp_path):
     import subprocess
     import sys
 
-    script = Path("scripts/accept_openclaw_bridge.py").resolve()
+    script = (REPO_ROOT / "scripts" / "accept_openclaw_bridge.py").resolve()
     db = tmp_path / "frontdesk.sqlite"
     tasks = tmp_path / "tasks.txt"
     tasks.write_text(
