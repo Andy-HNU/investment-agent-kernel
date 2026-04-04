@@ -45,6 +45,10 @@
   - 当前 `v1.2` 唯一正式执行地图
   - 覆盖真实源历史数据、产品选择/维护、观察持仓同步与 Claw 顾问壳升级
 
+- `handoff/CODEX_v1.2_patch_target_risk_frontier_2026-04-04.md`
+  - `v1.2` 的补丁任务书
+  - 覆盖收益目标优先、回撤约束优先、折中方案与双向反推能力
+
 ### v1.2 结论与验收
 
 - `handoff/CODEX_v1.2_phase_reports_2026-04-04.md`
