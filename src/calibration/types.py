@@ -4,11 +4,51 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 from datetime import datetime
 from typing import Any
 
+from shared.audit import AuditWindow, DataStatus
+
 
 def _as_dict(value: Any) -> Any:
     if is_dataclass(value):
         return asdict(value)
     return value
+
+
+@dataclass
+class ValuationObservation:
+    bucket: str
+    metric_name: str
+    current_value: float
+    history_values: list[float] = field(default_factory=list)
+    data_status: DataStatus = DataStatus.OBSERVED
+    source_ref: str = ""
+    as_of: str = ""
+    audit_window: AuditWindow | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["data_status"] = self.data_status.value
+        payload["audit_window"] = None if self.audit_window is None else self.audit_window.to_dict()
+        return payload
+
+
+@dataclass
+class ValuationPercentileResult:
+    bucket: str
+    metric_name: str
+    percentile: float
+    valuation_position: str
+    current_value: float | None = None
+    data_status: DataStatus = DataStatus.PRIOR_DEFAULT
+    source_ref: str = ""
+    as_of: str = ""
+    audit_window: AuditWindow | None = None
+    detail: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["data_status"] = self.data_status.value
+        payload["audit_window"] = None if self.audit_window is None else self.audit_window.to_dict()
+        return payload
 
 
 @dataclass
@@ -24,6 +64,7 @@ class MarketState:
     quality_flags: list[str] = field(default_factory=list)
     is_degraded: bool = False
     valuation_percentile: dict[str, float] = field(default_factory=dict)
+    valuation_percentile_results: dict[str, ValuationPercentileResult] = field(default_factory=dict)
     liquidity_flag: dict[str, bool] = field(default_factory=dict)
     policy_regime: str | None = None
     macro_uncertainty: str | None = None

@@ -17,6 +17,7 @@ from calibration.types import (
 from goal_solver.types import GoalSolverParams, MarketAssumptions, RankingMode
 from snapshot_ingestion.historical import build_historical_dataset_snapshot, summarize_historical_dataset
 from snapshot_ingestion.types import CompletenessLevel, SnapshotBundle
+from snapshot_ingestion.valuation import build_valuation_percentile_results
 
 
 def _obj(value: Any) -> Any:
@@ -165,13 +166,22 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
 
     liquidity_scores = market_raw.get("liquidity_scores", {}) or {}
     valuation_z_scores = market_raw.get("valuation_z_scores", {}) or {}
+    observed_valuation_inputs = market_raw.get("observed_valuation_inputs") or {}
     liquidity_status: dict[str, str] = {}
-    valuation_positions: dict[str, str] = {}
     quality_flags: list[str] = []
     policy_summary = _policy_signal_summary(bundle_data) or {}
     historical_metadata = _obj(
         bundle_data.get("historical_dataset_metadata") or _obj(market_raw.get("historical_dataset")) or {}
     )
+    valuation_percentile_results = build_valuation_percentile_results(
+        buckets=buckets,
+        observed_inputs=observed_valuation_inputs,
+        valuation_z_scores=valuation_z_scores,
+        as_of=created_at.isoformat().replace("+00:00", "Z"),
+    )
+    valuation_positions: dict[str, str] = {
+        bucket: valuation_percentile_results[bucket].valuation_position for bucket in buckets
+    }
 
     for bucket in buckets:
         liq = liquidity_scores.get(bucket)
@@ -186,22 +196,12 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
         else:
             liquidity_status[bucket] = "normal"
 
-        valuation = valuation_z_scores.get(bucket)
-        if valuation is None:
-            valuation_positions[bucket] = "fair"
-            if "market_valuation_z_scores_missing" not in quality_flags:
-                quality_flags.append("market_valuation_z_scores_missing")
-        elif valuation > 2.5:
-            valuation_positions[bucket] = "extreme"
-        elif valuation > 1.5:
-            valuation_positions[bucket] = "rich"
-        elif valuation < -1.5:
-            valuation_positions[bucket] = "cheap"
-        else:
-            valuation_positions[bucket] = "fair"
-
     if not raw_volatility:
         quality_flags.append("market_volatility_missing")
+    if not observed_valuation_inputs:
+        quality_flags.append("market_observed_valuation_inputs_missing")
+    if not valuation_z_scores:
+        quality_flags.append("market_valuation_z_scores_missing")
     if bool(policy_summary.get("manual_review_required")):
         quality_flags.append("policy_signal_manual_review_required")
     if str(policy_summary.get("macro_uncertainty") or "").lower() == "high":
@@ -231,10 +231,8 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
         ),
         quality_flags=quality_flags,
         is_degraded=not raw_volatility,
-        valuation_percentile={
-            bucket: 0.5 if valuation_positions[bucket] == "fair" else 0.8
-            for bucket in buckets
-        },
+        valuation_percentile={bucket: valuation_percentile_results[bucket].percentile for bucket in buckets},
+        valuation_percentile_results=valuation_percentile_results,
         liquidity_flag={
             bucket: liquidity_status[bucket] != "normal"
             for bucket in buckets
