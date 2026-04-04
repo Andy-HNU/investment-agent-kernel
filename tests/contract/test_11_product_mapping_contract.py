@@ -180,3 +180,93 @@ def test_build_execution_plan_filters_theme_without_collapsing_satellite_bucket(
     assert "technology" not in restricted_satellite.primary_product.tags
     assert restricted.runtime_candidate_count < unrestricted.runtime_candidate_count
     assert any("theme:technology" in reason for reason in restricted.candidate_filter_breakdown.dropped_reasons)
+
+
+@pytest.mark.contract
+def test_build_execution_plan_does_not_claim_low_valuation_filter_without_observed_source():
+    plan = build_execution_plan(
+        source_run_id="run_missing_valuation_source",
+        source_allocation_id="allocation_missing_valuation_source",
+        bucket_targets={"equity_cn": 0.60, "bond_cn": 0.40},
+        restrictions=[],
+        valuation_inputs={"requested": True, "require_observed_source": True},
+        valuation_result={
+            "source_status": "missing",
+            "source_name": "akshare_dynamic_valuation",
+            "source_ref": "akshare:valuation:missing",
+            "as_of": "2026-04-04",
+            "products": {},
+        },
+    )
+
+    assert "equity_cn" not in {item.asset_bucket for item in plan.items}
+    assert "bond_cn" in {item.asset_bucket for item in plan.items}
+    assert any(
+        "valuation:missing_observed_source" in reason
+        for reason in plan.candidate_filter_breakdown.dropped_reasons
+    )
+    assert plan.valuation_audit_summary["source_status"] == "missing"
+    assert plan.valuation_audit_summary["applicable_candidate_count"] >= 1
+    assert plan.valuation_audit_summary["non_applicable_candidate_count"] >= 1
+
+
+@pytest.mark.contract
+def test_build_execution_plan_filters_observed_valuation_by_pe_and_percentile_rules():
+    plan = build_execution_plan(
+        source_run_id="run_observed_valuation_filter",
+        source_allocation_id="allocation_observed_valuation_filter",
+        bucket_targets={"equity_cn": 1.0},
+        restrictions=[],
+        valuation_inputs={"requested": True, "require_observed_source": True},
+        valuation_result={
+            "source_status": "observed",
+            "source_name": "akshare_dynamic_valuation",
+            "source_ref": "akshare:valuation:equity_cn",
+            "as_of": "2026-04-04",
+            "products": {
+                "510880": {"status": "observed", "pe_ratio": 18.0, "percentile": 0.22},
+                "510300": {"status": "observed", "pe_ratio": 45.0, "percentile": 0.18},
+                "012390": {"status": "observed", "pe_ratio": 20.0, "percentile": 0.42},
+            },
+        },
+    )
+
+    equity_item = next(item for item in plan.items if item.asset_bucket == "equity_cn")
+
+    assert equity_item.primary_product_id == "cn_equity_dividend_etf"
+    assert equity_item.valuation_audit is not None
+    assert equity_item.valuation_audit.status == "observed"
+    assert equity_item.valuation_audit.passed_filters is True
+    assert any("valuation:pe_above_40" in reason for reason in plan.candidate_filter_breakdown.dropped_reasons)
+    assert any(
+        "valuation:percentile_above_0.30" in reason
+        for reason in plan.candidate_filter_breakdown.dropped_reasons
+    )
+    assert plan.valuation_audit_summary["passed_candidate_count"] == 1
+
+
+@pytest.mark.contract
+def test_build_execution_plan_marks_non_applicable_products_with_explicit_valuation_reason():
+    plan = build_execution_plan(
+        source_run_id="run_non_applicable_valuation",
+        source_allocation_id="allocation_non_applicable_valuation",
+        bucket_targets={"gold": 0.50, "cash_liquidity": 0.50},
+        restrictions=[],
+        valuation_inputs={"requested": True, "require_observed_source": True},
+        valuation_result={
+            "source_status": "observed",
+            "source_name": "akshare_dynamic_valuation",
+            "source_ref": "akshare:valuation:partial",
+            "as_of": "2026-04-04",
+            "products": {},
+        },
+    )
+
+    gold_item = next(item for item in plan.items if item.asset_bucket == "gold")
+    cash_item = next(item for item in plan.items if item.asset_bucket == "cash_liquidity")
+
+    assert gold_item.valuation_audit is not None
+    assert gold_item.valuation_audit.reason == "valuation:not_applicable"
+    assert cash_item.valuation_audit is not None
+    assert cash_item.valuation_audit.reason == "valuation:not_applicable"
+    assert plan.valuation_audit_summary["non_applicable_candidate_count"] >= 2

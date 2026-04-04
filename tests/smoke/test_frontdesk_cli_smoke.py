@@ -395,3 +395,54 @@ def test_frontdesk_cli_json_surfaces_formal_path_visibility(tmp_path, capsys, mo
     assert payload["formal_path_visibility"]["fallback_used"] is True
     assert payload["formal_path_visibility"]["execution_eligible"] is False
     assert payload["user_state"]["formal_path_visibility"]["degraded_scope"] == ["bundle", "market"]
+
+
+@pytest.mark.smoke
+def test_render_frontdesk_summary_surfaces_execution_plan_valuation_audit():
+    from frontdesk.cli import render_frontdesk_summary
+
+    output = render_frontdesk_summary(
+        {
+            "workflow": "status",
+            "status": "loaded",
+            "user_state": {
+                "profile": {
+                    "account_profile_id": "valuation_audit_user",
+                    "display_name": "Andy",
+                },
+                "decision_card": {
+                    "card_type": "goal_baseline",
+                    "summary": "估值筛选已进入产品层。",
+                    "primary_recommendation": "防守优先方案",
+                    "recommended_action": "review",
+                    "input_provenance": {},
+                },
+                "pending_execution_plan": {
+                    "plan_id": "run_val:allocation_val",
+                    "plan_version": 1,
+                    "status": "draft",
+                    "item_count": 2,
+                    "confirmation_required": True,
+                    "runtime_candidate_count": 4,
+                    "registry_candidate_count": 8,
+                    "candidate_filter_dropped_reasons": {
+                        "valuation:pe_above_40": 1,
+                        "valuation:percentile_above_0.30": 1,
+                    },
+                    "valuation_audit_summary": {
+                        "source_status": "observed",
+                        "source_name": "akshare_dynamic_valuation",
+                        "rule_max_pe": 40.0,
+                        "rule_max_percentile": 0.30,
+                        "applicable_candidate_count": 3,
+                        "passed_candidate_count": 1,
+                    },
+                },
+            },
+        }
+    )
+
+    assert "pending_execution_plan_candidate_filter_drop_reasons=" in output
+    assert "valuation:pe_above_40" in output
+    assert "pending_execution_plan_valuation_audit=" in output
+    assert "akshare_dynamic_valuation" in output

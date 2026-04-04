@@ -44,11 +44,27 @@ class ProductCandidate:
 
 
 @dataclass(frozen=True)
+class ProductValuationAudit:
+    status: Literal["observed", "missing_source", "missing_metrics", "not_applicable"]
+    source_name: str | None = None
+    source_ref: str | None = None
+    as_of: str | None = None
+    pe_ratio: float | None = None
+    percentile: float | None = None
+    passed_filters: bool | None = None
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
 class RuntimeProductCandidate:
     candidate: ProductCandidate
     registry_index: int
     filter_stage: str = "runtime_pool"
     filter_reason: str | None = None
+    valuation_audit: ProductValuationAudit | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -60,6 +76,7 @@ class CandidateFilterStage:
     input_count: int
     output_count: int
     dropped_reasons: dict[str, int] = field(default_factory=dict)
+    audit_fields: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -71,6 +88,7 @@ class CandidateFilterBreakdown:
     runtime_candidate_count: int
     stages: list[CandidateFilterStage] = field(default_factory=list)
     dropped_reasons: dict[str, int] = field(default_factory=dict)
+    valuation_audit_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -86,6 +104,7 @@ class ExecutionPlanItem:
     risk_labels: list[str]
     primary_product: ProductCandidate
     alternate_products: list[ProductCandidate] = field(default_factory=list)
+    valuation_audit: ProductValuationAudit | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -107,6 +126,7 @@ class ExecutionPlan:
     runtime_candidate_count: int = 0
     runtime_candidates: list[RuntimeProductCandidate] = field(default_factory=list)
     candidate_filter_breakdown: CandidateFilterBreakdown | None = None
+    valuation_audit_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -134,4 +154,5 @@ class ExecutionPlan:
             "runtime_candidate_count": self.runtime_candidate_count,
             "candidate_filter_dropped_reasons": dict(breakdown.dropped_reasons),
             "candidate_filter_stages": [stage.to_dict() for stage in breakdown.stages],
+            "valuation_audit_summary": dict(self.valuation_audit_summary or breakdown.valuation_audit_summary or {}),
         }

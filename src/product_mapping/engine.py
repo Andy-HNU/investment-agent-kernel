@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any
 
 from shared.profile_parser import parse_profile_semantics
 
@@ -12,6 +13,7 @@ from product_mapping.types import (
     ExecutionPlan,
     ExecutionPlanItem,
     ProductCandidate,
+    ProductValuationAudit,
     RuntimeProductCandidate,
 )
 
@@ -34,6 +36,8 @@ _WRAPPER_PRIORITY = {
     ("cash_liquidity", "cash_mgmt"): 0,
     ("cash_liquidity", "fund"): 1,
 }
+_VALUATION_MAX_PE = 40.0
+_VALUATION_MAX_PERCENTILE = 0.30
 
 
 @dataclass(frozen=True)
@@ -158,14 +162,228 @@ def _candidate_sort_key(candidate: ProductCandidate) -> tuple[int, int, int, str
     )
 
 
-def _build_item(bucket: str, target_weight: float, candidates: list[ProductCandidate]) -> ExecutionPlanItem:
-    ordered_candidates = sorted(candidates, key=_candidate_sort_key)
-    primary_product = ordered_candidates[0]
-    alternate_products = ordered_candidates[1:]
+def _is_valuation_applicable(candidate: ProductCandidate) -> bool:
+    return candidate.asset_bucket in {"equity_cn", "satellite"} or candidate.wrapper_type == "stock"
+
+
+def _resolve_valuation_payload(
+    candidate: ProductCandidate,
+    valuation_result: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not valuation_result:
+        return None
+    product_map = dict(valuation_result.get("products") or {})
+    for key in (
+        candidate.product_id,
+        str(candidate.provider_symbol or "").strip(),
+        str(candidate.provider_symbol or "").strip().lower(),
+    ):
+        if key and key in product_map:
+            payload = dict(product_map.get(key) or {})
+            payload.setdefault("product_key", key)
+            return payload
+    return None
+
+
+def _valuation_source_summary(
+    valuation_inputs: dict[str, Any] | None,
+    valuation_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    inputs = dict(valuation_inputs or {})
+    result = dict(valuation_result or {})
+    return {
+        "requested": bool(inputs.get("requested") or valuation_result is not None),
+        "require_observed_source": bool(inputs.get("require_observed_source", False)),
+        "source_status": str(result.get("source_status") or "missing"),
+        "source_name": result.get("source_name"),
+        "source_ref": result.get("source_ref"),
+        "as_of": result.get("as_of"),
+        "rule_max_pe": _VALUATION_MAX_PE,
+        "rule_max_percentile": _VALUATION_MAX_PERCENTILE,
+    }
+
+
+def _build_valuation_audit(
+    candidate: ProductCandidate,
+    valuation_inputs: dict[str, Any] | None,
+    valuation_result: dict[str, Any] | None,
+) -> tuple[ProductValuationAudit | None, str | None]:
+    summary = _valuation_source_summary(valuation_inputs, valuation_result)
+    if not summary["requested"]:
+        return None, None
+    if not _is_valuation_applicable(candidate):
+        return ProductValuationAudit(
+            status="not_applicable",
+            source_name=summary["source_name"],
+            source_ref=summary["source_ref"],
+            as_of=summary["as_of"],
+            passed_filters=None,
+            reason="valuation:not_applicable",
+        ), None
+
+    payload = _resolve_valuation_payload(candidate, valuation_result)
+    if (
+        summary["source_status"] != "observed"
+        or not payload
+        or str(payload.get("status") or "missing") != "observed"
+    ):
+        reason = "valuation:missing_observed_source"
+        audit = ProductValuationAudit(
+            status="missing_source",
+            source_name=summary["source_name"],
+            source_ref=summary["source_ref"],
+            as_of=summary["as_of"],
+            passed_filters=False,
+            reason=reason,
+        )
+        if summary["require_observed_source"]:
+            return audit, reason
+        return audit, None
+
+    pe_ratio = payload.get("pe_ratio")
+    percentile = payload.get("percentile")
+    if pe_ratio is None or percentile is None:
+        reason = "valuation:missing_metrics"
+        return ProductValuationAudit(
+            status="missing_metrics",
+            source_name=summary["source_name"],
+            source_ref=summary["source_ref"],
+            as_of=summary["as_of"],
+            pe_ratio=pe_ratio,
+            percentile=percentile,
+            passed_filters=False,
+            reason=reason,
+        ), reason
+
+    pe_ratio = float(pe_ratio)
+    percentile = float(percentile)
+    if pe_ratio > _VALUATION_MAX_PE:
+        reason = "valuation:pe_above_40"
+        return ProductValuationAudit(
+            status="observed",
+            source_name=summary["source_name"],
+            source_ref=summary["source_ref"],
+            as_of=summary["as_of"],
+            pe_ratio=pe_ratio,
+            percentile=percentile,
+            passed_filters=False,
+            reason=reason,
+        ), reason
+    if percentile > _VALUATION_MAX_PERCENTILE:
+        reason = "valuation:percentile_above_0.30"
+        return ProductValuationAudit(
+            status="observed",
+            source_name=summary["source_name"],
+            source_ref=summary["source_ref"],
+            as_of=summary["as_of"],
+            pe_ratio=pe_ratio,
+            percentile=percentile,
+            passed_filters=False,
+            reason=reason,
+        ), reason
+    return ProductValuationAudit(
+        status="observed",
+        source_name=summary["source_name"],
+        source_ref=summary["source_ref"],
+        as_of=summary["as_of"],
+        pe_ratio=pe_ratio,
+        percentile=percentile,
+        passed_filters=True,
+        reason="valuation:passed",
+    ), None
+
+
+def _apply_valuation_stage(
+    staged_candidates: list[tuple[int, ProductCandidate]],
+    *,
+    valuation_inputs: dict[str, Any] | None,
+    valuation_result: dict[str, Any] | None,
+) -> tuple[list[RuntimeProductCandidate], CandidateFilterStage, dict[str, Any]]:
+    summary = _valuation_source_summary(valuation_inputs, valuation_result)
+    if not summary["requested"]:
+        runtime_candidates = [
+            RuntimeProductCandidate(candidate=candidate, registry_index=registry_index)
+            for registry_index, candidate in staged_candidates
+        ]
+        return runtime_candidates, CandidateFilterStage(
+            stage_name="valuation_filters",
+            input_count=len(staged_candidates),
+            output_count=len(runtime_candidates),
+            dropped_reasons={},
+            audit_fields=summary,
+        ), {
+            **summary,
+            "applicable_candidate_count": 0,
+            "observed_candidate_count": 0,
+            "passed_candidate_count": 0,
+            "non_applicable_candidate_count": 0,
+            "dropped_candidate_count": 0,
+        }
+
+    dropped_reasons: dict[str, int] = {}
+    runtime_candidates: list[RuntimeProductCandidate] = []
+    applicable_count = 0
+    observed_count = 0
+    passed_count = 0
+    non_applicable_count = 0
+    dropped_count = 0
+
+    for registry_index, candidate in staged_candidates:
+        audit, drop_reason = _build_valuation_audit(candidate, valuation_inputs, valuation_result)
+        if audit is not None:
+            if audit.status == "not_applicable":
+                non_applicable_count += 1
+            else:
+                applicable_count += 1
+            if audit.status == "observed":
+                observed_count += 1
+            if audit.passed_filters:
+                passed_count += 1
+        if drop_reason:
+            dropped_reasons[drop_reason] = dropped_reasons.get(drop_reason, 0) + 1
+            dropped_count += 1
+            continue
+        runtime_candidates.append(
+            RuntimeProductCandidate(
+                candidate=candidate,
+                registry_index=registry_index,
+                valuation_audit=audit,
+            )
+        )
+
+    audit_summary = {
+        **summary,
+        "applicable_candidate_count": applicable_count,
+        "observed_candidate_count": observed_count,
+        "passed_candidate_count": passed_count,
+        "non_applicable_candidate_count": non_applicable_count,
+        "dropped_candidate_count": dropped_count,
+    }
+    return runtime_candidates, CandidateFilterStage(
+        stage_name="valuation_filters",
+        input_count=len(staged_candidates),
+        output_count=len(runtime_candidates),
+        dropped_reasons=dropped_reasons,
+        audit_fields=audit_summary,
+    ), audit_summary
+
+
+def _build_item(bucket: str, target_weight: float, candidates: list[RuntimeProductCandidate]) -> ExecutionPlanItem:
+    ordered_candidates = sorted(candidates, key=lambda item: _candidate_sort_key(item.candidate))
+    primary_runtime_candidate = ordered_candidates[0]
+    primary_product = primary_runtime_candidate.candidate
+    alternate_runtime_candidates = ordered_candidates[1:]
+    alternate_products = [item.candidate for item in alternate_runtime_candidates]
     rationale = [
         f"该执行项承接资金桶 {bucket} 的建议权重。",
         "主推产品按高流动性、低费用、低复杂度优先排序。",
     ]
+    if primary_runtime_candidate.valuation_audit is not None:
+        audit = primary_runtime_candidate.valuation_audit
+        if audit.status == "observed" and audit.passed_filters:
+            rationale.append("主推产品已基于真实估值结果通过正式筛选：PE<=40，估值分位<=30%。")
+        elif audit.status == "not_applicable":
+            rationale.append("该产品不适用 PE/估值分位筛选，已显式标记 valuation:not_applicable。")
     if alternate_products:
         rationale.append(f"同时保留 {len(alternate_products)} 个替代产品，避免把候选隐藏成黑箱答案。")
 
@@ -178,6 +396,7 @@ def _build_item(bucket: str, target_weight: float, candidates: list[ProductCandi
         risk_labels=sorted(set(primary_product.risk_labels)),
         primary_product=primary_product,
         alternate_products=alternate_products,
+        valuation_audit=primary_runtime_candidate.valuation_audit,
     )
 
 
@@ -207,6 +426,8 @@ def _build_runtime_candidate_pool(
     restriction_filter: _RestrictionFilter,
     *,
     runtime_candidates: list[ProductCandidate] | list[RuntimeProductCandidate] | None = None,
+    valuation_inputs: dict[str, Any] | None = None,
+    valuation_result: dict[str, Any] | None = None,
 ) -> tuple[list[RuntimeProductCandidate], CandidateFilterBreakdown]:
     if runtime_candidates is None:
         staged_candidates = list(enumerate(registry))
@@ -251,16 +472,20 @@ def _build_runtime_candidate_pool(
         for reason, count in stage.dropped_reasons.items():
             dropped_reasons[reason] = dropped_reasons.get(reason, 0) + count
 
-    runtime_candidates = [
-        RuntimeProductCandidate(candidate=candidate, registry_index=registry_index)
-        for registry_index, candidate in staged_candidates
-    ]
-    input_candidate_count = len(runtime_candidates) if runtime_candidates is not None else len(registry)
+    runtime_candidates, stage, valuation_audit_summary = _apply_valuation_stage(
+        staged_candidates,
+        valuation_inputs=valuation_inputs,
+        valuation_result=valuation_result,
+    )
+    stages.append(stage)
+    for reason, count in stage.dropped_reasons.items():
+        dropped_reasons[reason] = dropped_reasons.get(reason, 0) + count
     return runtime_candidates, CandidateFilterBreakdown(
         registry_candidate_count=len(registry),
         runtime_candidate_count=len(runtime_candidates),
         stages=stages,
         dropped_reasons=dropped_reasons,
+        valuation_audit_summary=valuation_audit_summary,
     )
 
 
@@ -273,6 +498,8 @@ def build_execution_plan(
     plan_version: int = 1,
     catalog: list[ProductCandidate] | None = None,
     runtime_candidates: list[ProductCandidate] | list[RuntimeProductCandidate] | None = None,
+    valuation_inputs: dict[str, Any] | None = None,
+    valuation_result: dict[str, Any] | None = None,
 ) -> ExecutionPlan:
     normalized_targets = _normalize_bucket_targets(bucket_targets)
     restriction_filter = _compile_restrictions(restrictions)
@@ -281,12 +508,13 @@ def build_execution_plan(
         registry,
         restriction_filter,
         runtime_candidates=runtime_candidates,
+        valuation_inputs=valuation_inputs,
+        valuation_result=valuation_result,
     )
-    grouped_candidates: dict[str, list[ProductCandidate]] = defaultdict(list)
+    grouped_candidates: dict[str, list[RuntimeProductCandidate]] = defaultdict(list)
 
     for runtime_candidate in runtime_candidate_pool:
-        candidate = runtime_candidate.candidate
-        grouped_candidates[_normalize_bucket(candidate.asset_bucket)].append(candidate)
+        grouped_candidates[_normalize_bucket(runtime_candidate.candidate.asset_bucket)].append(runtime_candidate)
 
     items: list[ExecutionPlanItem] = []
     warnings = list(restriction_filter.warnings)
@@ -316,4 +544,5 @@ def build_execution_plan(
         runtime_candidate_count=len(runtime_candidate_pool),
         runtime_candidates=runtime_candidate_pool,
         candidate_filter_breakdown=candidate_filter_breakdown,
+        valuation_audit_summary=dict(candidate_filter_breakdown.valuation_audit_summary or {}),
     )
