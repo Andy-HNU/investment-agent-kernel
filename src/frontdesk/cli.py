@@ -383,7 +383,133 @@ def _render_execution_plan_guidance_block(guidance: dict[str, Any] | None) -> li
     return lines
 
 
+def _unique_text_items(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        rendered = str(item).strip()
+        if not rendered or rendered in seen:
+            continue
+        seen.add(rendered)
+        ordered.append(rendered)
+    return ordered
+
+
+def _append_scope(scope: list[str], value: str | None) -> None:
+    rendered = str(value or "").strip()
+    if rendered:
+        scope.append(rendered)
+
+
+def _formal_path_visibility(
+    decision_card: dict[str, Any] | None,
+    refresh_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    card = decision_card or {}
+    refresh = refresh_summary or {}
+    degraded_scope: list[str] = []
+    fallback_scope: list[str] = []
+
+    for item in list(card.get("guardrails") or []) + list(card.get("execution_notes") or []):
+        text = str(item).strip()
+        if text.startswith("bundle_quality="):
+            _append_scope(degraded_scope, "bundle")
+        elif text.startswith("calibration_quality="):
+            _append_scope(degraded_scope, "calibration")
+        elif text.startswith("candidate_poverty="):
+            _append_scope(degraded_scope, "runtime_candidates")
+        elif text.startswith("cooldown_active=") or text.startswith("high_risk_request="):
+            _append_scope(degraded_scope, "runtime_controls")
+
+    refresh_state = str(refresh.get("freshness_state") or "").strip().lower()
+    external_status = str(refresh.get("external_status") or "").strip().lower()
+    if refresh_state in {"fallback", "degraded", "stale"} or external_status == "fallback":
+        _append_scope(fallback_scope, "external_snapshot")
+    for item in refresh.get("domain_details") or []:
+        detail = item or {}
+        domain = str(detail.get("domain") or "").strip()
+        state = str(detail.get("freshness_state") or detail.get("source_type") or "").strip().lower()
+        if state in {"fallback", "degraded", "stale"}:
+            _append_scope(degraded_scope, domain)
+            if state == "fallback":
+                _append_scope(fallback_scope, domain)
+
+    combined_text = " ".join(
+        [
+            str(card.get("summary") or "").strip(),
+            *[str(item).strip() for item in card.get("recommendation_reason") or []],
+        ]
+    )
+    if any(marker in combined_text for marker in ("临时参考", "不存在满足", "候选方案不足")):
+        _append_scope(fallback_scope, "goal_solver")
+
+    degraded_scope = _unique_text_items(degraded_scope)
+    fallback_scope = _unique_text_items(fallback_scope)
+
+    recommended_action = str(card.get("recommended_action") or "").strip()
+    execution_eligible = True
+    execution_eligibility_reason = "eligible"
+    if str(card.get("card_type") or "") == "blocked":
+        execution_eligible = False
+        execution_eligibility_reason = "blocked_card"
+    elif str(card.get("status_badge") or "") == "degraded":
+        execution_eligible = False
+        execution_eligibility_reason = "degraded_card"
+    elif fallback_scope:
+        execution_eligible = False
+        execution_eligibility_reason = "fallback_used"
+    elif any(item == "manual_review_required" for item in card.get("execution_notes") or []):
+        execution_eligible = False
+        execution_eligibility_reason = "manual_review_required"
+    elif recommended_action in {"", "blocked", "review", "observe", "freeze"}:
+        execution_eligible = False
+        execution_eligibility_reason = "non_executable_recommendation"
+
+    return {
+        "degraded_scope": degraded_scope,
+        "fallback_used": bool(fallback_scope),
+        "fallback_scope": fallback_scope,
+        "execution_eligible": execution_eligible,
+        "execution_eligibility_reason": execution_eligibility_reason,
+    }
+
+
+def _render_formal_path_block(formal_path_visibility: dict[str, Any] | None) -> list[str]:
+    if not formal_path_visibility:
+        return []
+    return [
+        "formal_path: "
+        + ", ".join(
+            [
+                "degraded_scope=" + ",".join(formal_path_visibility.get("degraded_scope") or []),
+                f"fallback_used={'true' if formal_path_visibility.get('fallback_used') else 'false'}",
+                "fallback_scope=" + ",".join(formal_path_visibility.get("fallback_scope") or []),
+                f"execution_eligible={'true' if formal_path_visibility.get('execution_eligible') else 'false'}",
+                f"execution_eligibility_reason={formal_path_visibility.get('execution_eligibility_reason')}",
+            ]
+        )
+    ]
+
+
+def _augment_formal_path_visibility(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    if "user_state" in result:
+        user_state = dict(result.get("user_state") or {})
+        decision_card = dict(user_state.get("decision_card") or {})
+        refresh_summary = dict(result.get("refresh_summary") or {})
+        visibility = _formal_path_visibility(decision_card, refresh_summary)
+        user_state["formal_path_visibility"] = visibility
+        result["user_state"] = user_state
+        result["formal_path_visibility"] = visibility
+        return result
+    decision_card = dict(result.get("decision_card") or {})
+    refresh_summary = dict(result.get("refresh_summary") or {})
+    result["formal_path_visibility"] = _formal_path_visibility(decision_card, refresh_summary)
+    return result
+
+
 def render_frontdesk_summary(payload: dict[str, Any]) -> str:
+    payload = _augment_formal_path_visibility(payload)
     external_lines = []
     if payload.get("external_snapshot_source") is not None:
         external_lines.append(f"external_snapshot_source={payload.get('external_snapshot_source')}")
@@ -430,6 +556,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         lines.extend(_render_execution_plan_block(pending_execution_plan, label="pending_execution_plan"))
         lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison") or user_state.get("execution_plan_comparison")))
         lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
+        lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
         lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
         lines.extend(
             _render_feedback_block(
@@ -471,6 +598,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
         lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
         lines.extend(_render_execution_plan_guidance_block((payload.get("user_state") or {}).get("decision_card", {}).get("execution_plan_guidance")))
+        lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
         lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
         return "\n".join(lines)
 
@@ -503,6 +631,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
     lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
     lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
+    lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
     lines.extend(
         _render_feedback_block(
             payload.get("execution_feedback"),
@@ -520,6 +649,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
 
 
 def render_frontdesk_snapshot(payload: dict[str, Any]) -> str:
+    payload = _augment_formal_path_visibility(payload)
     profile = payload.get("profile") or {}
     latest_run = payload.get("latest_run") or {}
     latest_baseline = payload.get("latest_baseline") or {}
@@ -543,6 +673,7 @@ def render_frontdesk_snapshot(payload: dict[str, Any]) -> str:
     lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
     lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
+    lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
     lines.extend(
         _render_feedback_block(
             payload.get("execution_feedback"),
@@ -676,6 +807,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "status": payload["status"],
                 "run_id": payload["run_id"],
                 "user_state": payload["user_state"],
+                "refresh_summary": payload.get("refresh_summary"),
                 "external_snapshot_source": payload.get("external_snapshot_source"),
                 "external_snapshot_config": payload.get("external_snapshot_config"),
                 "external_snapshot_status": payload.get("external_snapshot_status"),
@@ -731,6 +863,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             external_snapshot_source=external_snapshot_source,
             external_data_config=external_data_config,
         )
+
+    payload = _augment_formal_path_visibility(payload)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))

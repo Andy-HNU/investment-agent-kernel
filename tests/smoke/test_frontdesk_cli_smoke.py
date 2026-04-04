@@ -290,3 +290,106 @@ def test_frontdesk_cli_show_user_surfaces_execution_plan_comparison(tmp_path, ca
     assert "execution_plan_comparison:" in output
     assert "recommendation=replace_active" in output
     assert "bucket=equity_cn" in output
+
+
+@pytest.mark.smoke
+def test_render_frontdesk_summary_surfaces_degraded_scope_and_execution_eligibility():
+    from frontdesk.cli import render_frontdesk_summary
+
+    output = render_frontdesk_summary(
+        {
+            "workflow": "onboard",
+            "status": "completed",
+            "refresh_summary": {
+                "external_status": "fallback",
+                "freshness_state": "fallback",
+                "domain_details": [
+                    {"domain": "market", "freshness_state": "fallback", "source_label": "外部抓取"},
+                ],
+            },
+            "user_state": {
+                "profile": {
+                    "account_profile_id": "formal_path_user",
+                    "display_name": "Andy",
+                },
+                "decision_card": {
+                    "card_type": "goal_baseline",
+                    "status_badge": "degraded",
+                    "summary": "下面先展示临时参考，不应当作正式推荐。",
+                    "primary_recommendation": "流动性缓冲方案",
+                    "recommended_action": "adopt_recommended_plan",
+                    "guardrails": ["calibration_quality=partial", "candidate_poverty=true"],
+                    "recommendation_reason": [
+                        "当前不存在满足你回撤约束的配置。",
+                        "下面展示的是最接近可行的临时参考，不是正式推荐。",
+                    ],
+                    "execution_notes": ["manual_review_required"],
+                    "input_provenance": {},
+                },
+            },
+        }
+    )
+
+    assert "formal_path:" in output
+    assert "degraded_scope=" in output
+    assert "calibration" in output
+    assert "market" in output
+    assert "runtime_candidates" in output
+    assert "fallback_used=true" in output
+    assert "fallback_scope=" in output
+    assert "external_snapshot" in output
+    assert "goal_solver" in output
+    assert "execution_eligible=false" in output
+
+
+@pytest.mark.smoke
+def test_frontdesk_cli_json_surfaces_formal_path_visibility(tmp_path, capsys, monkeypatch):
+    from frontdesk import cli
+
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    monkeypatch.setattr(
+        cli,
+        "run_frontdesk_onboarding",
+        lambda *args, **kwargs: {
+            "status": "completed",
+            "run_id": "run_formal_path_cli",
+            "user_state": {
+                "profile": {"account_profile_id": "andy_cli", "display_name": "Andy"},
+                "decision_card": {
+                    "card_type": "goal_baseline",
+                    "status_badge": "degraded",
+                    "summary": "下面先展示临时参考，不应当作正式推荐。",
+                    "primary_recommendation": "流动性缓冲方案",
+                    "recommended_action": "adopt_recommended_plan",
+                    "guardrails": ["bundle_quality=partial"],
+                    "recommendation_reason": ["下面展示的是最接近可行的临时参考，不是正式推荐。"],
+                    "input_provenance": {},
+                },
+            },
+            "refresh_summary": {
+                "external_status": "fallback",
+                "freshness_state": "fallback",
+                "domain_details": [{"domain": "market", "freshness_state": "fallback"}],
+            },
+            "external_snapshot_status": "fallback",
+        },
+    )
+
+    exit_code = cli.main(
+        [
+            "onboard",
+            "--db",
+            str(db_path),
+            "--profile-json",
+            json.dumps(_profile().to_dict(), ensure_ascii=False),
+            "--non-interactive",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["formal_path_visibility"]["fallback_used"] is True
+    assert payload["formal_path_visibility"]["execution_eligible"] is False
+    assert payload["user_state"]["formal_path_visibility"]["degraded_scope"] == ["bundle", "market"]
