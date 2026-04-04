@@ -139,6 +139,7 @@ class DecisionCard:
     profile_dimensions: dict[str, Any] = field(default_factory=dict)
     execution_plan_summary: dict[str, Any] = field(default_factory=dict)
     probability_explanation: dict[str, Any] = field(default_factory=dict)
+    frontier_analysis: dict[str, Any] = field(default_factory=dict)
     product_evidence_panel: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

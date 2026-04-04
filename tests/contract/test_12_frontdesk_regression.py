@@ -10,9 +10,12 @@ import pytest
 
 from frontdesk.service import (
     approve_frontdesk_execution_plan,
+    load_frontdesk_snapshot,
+    load_user_state,
     run_frontdesk_followup,
     run_frontdesk_onboarding,
 )
+from frontdesk.cli import render_frontdesk_snapshot, render_frontdesk_summary
 from frontdesk.storage import FrontdeskStore
 from orchestrator.engine import run_orchestrator
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
@@ -380,3 +383,189 @@ def test_frontdesk_monthly_rejects_goal_profile_updates(tmp_path):
             db_path=db_path,
             profile=updated_profile,
         )
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_show_user_and_status_expose_frontier_analysis(tmp_path):
+    profile = _profile(account_profile_id="frontier_user")
+    db_path = tmp_path / "frontier.sqlite"
+
+    onboarding_summary = run_frontdesk_onboarding(profile, db_path=db_path)
+    snapshot = load_frontdesk_snapshot(profile.account_profile_id, db_path=db_path)
+    user_state = load_user_state(profile.account_profile_id, db_path=db_path)
+
+    assert onboarding_summary["frontier_analysis"]["recommended_plan"]["label"]
+    assert onboarding_summary["frontier_analysis"]["highest_probability_plan"]["label"]
+    assert onboarding_summary["decision_card"]["frontier_analysis"]["recommended_plan"]["label"]
+
+    assert snapshot is not None
+    assert snapshot["frontier_analysis"]["recommended_plan"]["label"]
+    assert snapshot["latest_run"]["decision_card"]["frontier_analysis"]["recommended_plan"]["label"]
+
+    assert user_state is not None
+    assert user_state["frontier_analysis"]["recommended_plan"]["label"]
+    assert user_state["decision_card"]["frontier_analysis"]["recommended_plan"]["label"]
+
+    rendered_summary = render_frontdesk_summary(onboarding_summary)
+    rendered_snapshot = render_frontdesk_snapshot(snapshot)
+    assert "frontier_recommended=" in rendered_summary
+    assert "frontier_highest_probability=" in rendered_summary
+    assert "frontier_target_return_priority_status=" in rendered_summary
+    assert "frontier_recommended=" in rendered_snapshot
+
+
+@pytest.mark.contract
+def test_frontdesk_renders_unavailable_frontier_status_and_reasons(tmp_path):
+    profile = _profile(account_profile_id="frontier_unavailable_user")
+    db_path = tmp_path / "frontier_unavailable.sqlite"
+
+    onboarding_summary = run_frontdesk_onboarding(profile, db_path=db_path)
+    decision_card = deepcopy(onboarding_summary["decision_card"])
+    decision_card["frontier_analysis"] = {
+        "recommended_plan": {
+            "label": "平衡推进方案",
+            "success_probability": "50.00%",
+            "expected_terminal_value": "980,000",
+            "expected_annual_return": "7.20%",
+            "implied_required_annual_return": "8.00%",
+            "max_drawdown_90pct": "11.00%",
+            "why_selected": "这是当前唯一可执行的候选。",
+        },
+        "scenario_status": {
+            "target_return_priority": {
+                "available": False,
+                "constraint_met": False,
+                "reason": "no_candidate_meets_required_annual_return",
+            },
+            "drawdown_priority": {
+                "available": False,
+                "constraint_met": False,
+                "reason": "no_candidate_meets_max_drawdown_tolerance",
+            },
+        },
+    }
+    decision_card["probability_explanation"] = {
+        **decision_card.get("probability_explanation", {}),
+        "target_return_priority_explanation": "当前候选里没有方案满足目标收益约束。",
+        "why_not_target_return_priority": "no_candidate_meets_required_annual_return",
+        "drawdown_priority_explanation": "当前候选里没有方案满足最大回撤约束。",
+        "why_not_drawdown_priority": "no_candidate_meets_max_drawdown_tolerance",
+    }
+
+    snapshot = load_frontdesk_snapshot(profile.account_profile_id, db_path=db_path)
+    snapshot["frontier_analysis"] = decision_card["frontier_analysis"]
+    snapshot["decision_card"] = decision_card
+    snapshot["latest_run"]["decision_card"] = decision_card
+    rendered_snapshot = render_frontdesk_snapshot(snapshot)
+
+    assert "frontier_target_return_priority_status=available=False constraint_met=False reason=no_candidate_meets_required_annual_return" in rendered_snapshot
+    assert "frontier_drawdown_priority_status=available=False constraint_met=False reason=no_candidate_meets_max_drawdown_tolerance" in rendered_snapshot
+    assert "frontier_target_return_priority_explanation=当前候选里没有方案满足目标收益约束。" in rendered_snapshot
+    assert "frontier_why_not_target_return_priority=no_candidate_meets_required_annual_return" in rendered_snapshot
+    assert "frontier_drawdown_priority_explanation=当前候选里没有方案满足最大回撤约束。" in rendered_snapshot
+    assert "frontier_why_not_drawdown_priority=no_candidate_meets_max_drawdown_tolerance" in rendered_snapshot
+    assert "frontier_recommended_expected_annual_return=7.20%" in rendered_snapshot
+    assert "frontier_recommended_implied_required_annual_return=8.00%" in rendered_snapshot
+
+
+@pytest.mark.contract
+def test_frontdesk_blocks_pseudo_improvement_suggestions_when_deterministic_contributions_cover_goal(tmp_path):
+    profile = UserOnboardingProfile(
+        account_profile_id="pseudo_improvement_user",
+        display_name="Andy",
+        current_total_assets=35_000.0,
+        monthly_contribution=5_000.0,
+        goal_amount=210_000.0,
+        goal_horizon_months=36,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.08,
+        current_holdings="cash 25000, gold 10000",
+        restrictions=["no_stock_picking"],
+        current_weights={"cash": 0.7143, "gold": 0.2857},
+    )
+    db_path = tmp_path / "pseudo-guard.sqlite"
+    onboarding_summary = run_frontdesk_onboarding(profile, db_path=db_path)
+    store = FrontdeskStore(db_path)
+    seeded_snapshot = store.get_frontdesk_snapshot(profile.account_profile_id)
+    assert seeded_snapshot is not None
+
+    decision_card = deepcopy(onboarding_summary["decision_card"])
+    pseudo_suggestions = [
+        {
+            "label": "延长期限到 48 个月",
+            "description": "通过延长期限提高成功率",
+            "why_selected": "延长期限",
+            "action_type": "extend_horizon",
+        },
+        {
+            "label": "提高每月投入到 6000",
+            "description": "通过增加月投入提高成功率",
+            "why_selected": "增加月投入",
+            "action_type": "increase_monthly_contribution",
+        },
+        {
+            "label": "维持当前期限但上调目标",
+            "description": "本金和确定性投入已覆盖目标，可上调目标口径",
+            "why_selected": "raise_goal",
+            "action_type": "raise_goal",
+        },
+    ]
+    decision_card["goal_alternatives"] = pseudo_suggestions
+    decision_card["alternatives"] = pseudo_suggestions
+
+    result_payload = deepcopy(seeded_snapshot["latest_run"]["result_payload"])
+    result_payload["decision_card"] = decision_card
+
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE workflow_runs SET decision_card_json = ?, result_payload_json = ? WHERE run_id = ?",
+            (
+                json.dumps(decision_card, ensure_ascii=False, sort_keys=True),
+                json.dumps(result_payload, ensure_ascii=False, sort_keys=True),
+                onboarding_summary["run_id"],
+            ),
+        )
+        conn.execute(
+            "UPDATE decision_cards SET payload_json = ?, summary = ? WHERE run_id = ?",
+            (
+                json.dumps(decision_card, ensure_ascii=False, sort_keys=True),
+                str(decision_card.get("summary") or ""),
+                onboarding_summary["run_id"],
+            ),
+        )
+        conn.execute(
+            "UPDATE frontdesk_baselines SET decision_card_json = ?, result_payload_json = ? WHERE run_id = ?",
+            (
+                json.dumps(decision_card, ensure_ascii=False, sort_keys=True),
+                json.dumps(result_payload, ensure_ascii=False, sort_keys=True),
+                onboarding_summary["run_id"],
+            ),
+        )
+
+    snapshot = load_frontdesk_snapshot(profile.account_profile_id, db_path=db_path)
+    user_state = load_user_state(profile.account_profile_id, db_path=db_path)
+
+    for payload in (snapshot, user_state):
+        assert payload is not None
+        alternatives = (
+            payload.get("goal_alternatives")
+            or (payload.get("latest_run") or {}).get("decision_card", {}).get("goal_alternatives")
+            or payload.get("decision_card", {}).get("goal_alternatives")
+            or []
+        )
+        labels = {str(item.get("label")) for item in alternatives}
+        assert "延长期限到 48 个月" not in labels
+        assert "提高每月投入到 6000" not in labels
+        assert "维持当前期限但上调目标" in labels
+
+        guard = (
+            payload.get("frontier_analysis", {}).get("deterministic_goal_guard")
+            or (payload.get("latest_run") or {}).get("decision_card", {}).get("frontier_analysis", {}).get("deterministic_goal_guard")
+            or payload.get("decision_card", {}).get("frontier_analysis", {}).get("deterministic_goal_guard")
+        )
+        assert guard is not None
+        assert guard["principal_plus_deterministic_contributions_cover_goal"] is True
+        assert set(guard["blocked_suggestion_types"]) == {"extend_horizon", "increase_monthly_contribution"}
+
+    rendered_snapshot = render_frontdesk_snapshot(snapshot)
+    assert "blocked_pseudo_improvements=extend_horizon,increase_monthly_contribution" in rendered_snapshot

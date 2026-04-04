@@ -196,11 +196,10 @@ class FrontierScenario:
 class FrontierAnalysis:
     recommended: FrontierScenario
     highest_probability: FrontierScenario
-    target_return_priority: FrontierScenario | None
-    drawdown_priority: FrontierScenario | None
-    balanced_tradeoff: FrontierScenario | None
-    frontier_notes: list[str]
-    blocker_flags: list[str]
+    target_return_priority: FrontierScenario
+    drawdown_priority: FrontierScenario
+    balanced_tradeoff: FrontierScenario
+    scenario_status: dict[str, dict[str, Any]]
 ```
 
 ### 3. New Decision Card Surface
@@ -211,6 +210,8 @@ class FrontierAnalysis:
 - `why_not_highest_probability`
 - `why_not_target_return_priority`
 - `why_not_drawdown_priority`
+- `target_return_priority_explanation`
+- `drawdown_priority_explanation`
 
 ## 实现方案
 
@@ -228,7 +229,7 @@ class FrontierAnalysis:
 交付：
 
 - 从现有候选结果中生成 5 类 frontier 场景
-- 若场景不存在，必须返回 `None + 明确理由`
+- 若场景不可用，保留 `scenario_status` 并输出明确理由
 - 反推逻辑必须使用真实当前约束，不允许硬编码
 
 ### Wave P2：Decision Card / Frontdesk 展示

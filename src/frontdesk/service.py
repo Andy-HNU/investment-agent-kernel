@@ -383,6 +383,210 @@ def _build_input_source_summary(input_provenance: dict[str, Any]) -> dict[str, A
     }
 
 
+def _metric_as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    rendered = str(value).strip().replace(",", "")
+    if not rendered:
+        return None
+    if rendered.endswith("%"):
+        rendered = rendered[:-1]
+    try:
+        return float(rendered)
+    except ValueError:
+        return None
+
+
+def _candidate_surface(decision_card: dict[str, Any]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for option in list(decision_card.get("candidate_options") or []) + list(decision_card.get("goal_alternatives") or []):
+        label = str(option.get("label") or "").strip()
+        if not label:
+            continue
+        deduped.setdefault(label, dict(option))
+    return list(deduped.values())
+
+
+def _frontier_entry(option: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not option:
+        return None
+    if not option.get("label") and not option.get("allocation_name"):
+        return None
+    return {
+        "label": option.get("label"),
+        "highlight": option.get("highlight"),
+        "success_probability": option.get("success_probability"),
+        "max_drawdown_90pct": option.get("max_drawdown_90pct"),
+        "expected_terminal_value": option.get("expected_terminal_value"),
+        "expected_annual_return": option.get("expected_annual_return"),
+        "implied_required_annual_return": option.get("implied_required_annual_return"),
+        "why_selected": option.get("why_selected") or option.get("description"),
+    }
+
+
+def _build_frontier_analysis(decision_card: dict[str, Any]) -> dict[str, Any]:
+    explicit = _as_dict(decision_card.get("frontier_analysis"))
+    if explicit:
+        summary = {
+            "analysis_basis": "decision_card_frontier_analysis",
+            "recommended_plan": _frontier_entry(_as_dict(explicit.get("recommended"))),
+            "highest_probability_plan": _frontier_entry(_as_dict(explicit.get("highest_probability"))),
+            "target_return_priority_plan": _frontier_entry(_as_dict(explicit.get("target_return_priority"))),
+            "drawdown_priority_plan": _frontier_entry(_as_dict(explicit.get("drawdown_priority"))),
+            "balanced_tradeoff_plan": _frontier_entry(_as_dict(explicit.get("balanced_tradeoff"))),
+            "why_not_highest_probability": _as_dict(decision_card.get("probability_explanation")).get(
+                "why_not_highest_probability"
+            ),
+        }
+        deterministic_goal_guard = _as_dict(explicit.get("deterministic_goal_guard"))
+        if deterministic_goal_guard:
+            summary["deterministic_goal_guard"] = deterministic_goal_guard
+        scenario_status = _as_dict(explicit.get("scenario_status"))
+        if scenario_status:
+            summary["scenario_status"] = scenario_status
+        return summary
+
+    probability = _as_dict(decision_card.get("probability_explanation"))
+    options = _candidate_surface(decision_card)
+    by_label = {str(item.get("label")): item for item in options if item.get("label")}
+
+    recommended_label = str(
+        probability.get("recommended_allocation_label")
+        or decision_card.get("primary_recommendation")
+        or ""
+    ).strip()
+    highest_label = str(probability.get("highest_probability_allocation_label") or "").strip()
+
+    recommended = by_label.get(recommended_label) or (options[0] if options else {})
+    highest_probability = by_label.get(highest_label) or recommended
+    def _option_expected_annual_return(item: dict[str, Any]) -> float:
+        return _metric_as_float(item.get("expected_annual_return")) or float("-inf")
+
+    def _option_effective_probability(item: dict[str, Any]) -> float:
+        return _metric_as_float(item.get("product_adjusted_success_probability")) or _metric_as_float(item.get("success_probability")) or float("-inf")
+
+    target_return_priority = max(
+        options,
+        key=lambda item: (
+            _option_expected_annual_return(item),
+            _option_effective_probability(item),
+        ),
+        default=recommended,
+    )
+    drawdown_priority = min(
+        options,
+        key=lambda item: (
+            _metric_as_float(item.get("max_drawdown_90pct")) if _metric_as_float(item.get("max_drawdown_90pct")) is not None else float("inf"),
+            -_option_effective_probability(item),
+        ),
+        default=recommended,
+    )
+    balanced_tradeoff = max(
+        options,
+        key=lambda item: (
+            _option_effective_probability(item)
+            - 0.35 * (_metric_as_float(item.get("max_drawdown_90pct")) or 0.0)
+        ),
+        default=recommended,
+    )
+
+    return {
+        "analysis_basis": "frontdesk_candidate_surface",
+        "recommended_plan": _frontier_entry(recommended),
+        "highest_probability_plan": _frontier_entry(highest_probability),
+        "target_return_priority_plan": _frontier_entry(target_return_priority),
+        "drawdown_priority_plan": _frontier_entry(drawdown_priority),
+        "balanced_tradeoff_plan": _frontier_entry(balanced_tradeoff),
+        "why_not_highest_probability": probability.get("why_not_highest_probability"),
+    }
+
+
+def _deterministic_goal_guard(
+    profile_payload: dict[str, Any],
+    *,
+    goal_solver_input: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    goal_solver_input = _as_dict(goal_solver_input)
+    goal_payload = _as_dict(goal_solver_input.get("goal"))
+    cashflow_payload = _as_dict(goal_solver_input.get("cashflow_plan"))
+    current_total_assets = _metric_as_float(profile_payload.get("current_total_assets"))
+    if current_total_assets is None:
+        current_total_assets = _metric_as_float(goal_solver_input.get("current_portfolio_value"))
+    monthly_contribution = _metric_as_float(profile_payload.get("monthly_contribution"))
+    if monthly_contribution is None:
+        monthly_contribution = _metric_as_float(cashflow_payload.get("monthly_contribution"))
+    goal_amount = _metric_as_float(profile_payload.get("goal_amount"))
+    if goal_amount is None:
+        goal_amount = _metric_as_float(goal_payload.get("goal_amount"))
+    goal_horizon_months = _metric_as_float(profile_payload.get("goal_horizon_months"))
+    if goal_horizon_months is None:
+        goal_horizon_months = _metric_as_float(goal_payload.get("horizon_months"))
+    goal_scope = str(
+        (profile_payload.get("goal_semantics") or {}).get("goal_amount_scope")
+        or profile_payload.get("goal_amount_scope")
+        or goal_payload.get("goal_amount_scope")
+        or "total_assets"
+    )
+    if None in {current_total_assets, monthly_contribution, goal_amount, goal_horizon_months}:
+        return None
+    if goal_scope != "total_assets":
+        return None
+    deterministic_terminal_value = current_total_assets + monthly_contribution * goal_horizon_months
+    covers_goal = deterministic_terminal_value >= goal_amount
+    if not covers_goal:
+        return None
+    return {
+        "principal_plus_deterministic_contributions_cover_goal": True,
+        "deterministic_terminal_value": round(deterministic_terminal_value, 2),
+        "goal_amount": round(goal_amount, 2),
+        "blocked_suggestion_types": ["extend_horizon", "increase_monthly_contribution"],
+        "note": "当前本金加上确定性投入已覆盖目标，不再展示延长期限或增加月投这类伪改善建议。",
+    }
+
+
+def _is_blocked_pseudo_improvement(item: dict[str, Any], blocked_types: set[str]) -> bool:
+    action_type = str(item.get("action_type") or "").strip().lower()
+    if action_type in {"raise_goal", "goal_upsize", "reframe_goal"}:
+        return False
+    if action_type in blocked_types:
+        return True
+    text = " ".join(
+        str(item.get(field) or "").strip().lower()
+        for field in ("label", "description", "why_selected", "headline")
+    )
+    return (
+        "延长" in text
+        or "期限" in text
+        or "月投入" in text
+        or "increase monthly" in text
+        or "extend horizon" in text
+    )
+
+
+def _sanitize_frontdesk_decision_card(
+    decision_card: dict[str, Any],
+    *,
+    profile_payload: dict[str, Any],
+    goal_solver_input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    card = deepcopy(decision_card or {})
+    frontier_analysis = _build_frontier_analysis(card)
+    guard = _deterministic_goal_guard(profile_payload, goal_solver_input=goal_solver_input)
+    if guard:
+        blocked_types = {item.lower() for item in guard["blocked_suggestion_types"]}
+        for field in ("goal_alternatives", "alternatives"):
+            entries = list(card.get(field) or [])
+            if entries:
+                card[field] = [
+                    item for item in entries if not _is_blocked_pseudo_improvement(_as_dict(item), blocked_types)
+                ]
+        frontier_analysis["deterministic_goal_guard"] = guard
+    card["frontier_analysis"] = frontier_analysis
+    return card
+
+
 def _build_refresh_summary(
     *,
     workflow_type: str,
@@ -1044,10 +1248,18 @@ def _frontdesk_summary(
     user_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     user_state = user_state or {}
+    profile_payload = _as_dict(user_state.get("profile"))
+    if isinstance(profile_payload.get("profile"), dict):
+        profile_payload = _as_dict(profile_payload.get("profile"))
     decision_card = _apply_execution_plan_guidance(
         dict(result_payload.get("decision_card") or {}),
         workflow_type=str(result_payload.get("workflow_type") or ""),
         comparison=_as_dict(user_state.get("execution_plan_comparison")),
+    )
+    decision_card = _sanitize_frontdesk_decision_card(
+        decision_card,
+        profile_payload=profile_payload,
+        goal_solver_input=_as_dict(raw_inputs).get("goal_solver_input"),
     )
     refresh_summary = dict(
         result_payload.get("refresh_summary")
@@ -1066,9 +1278,6 @@ def _frontdesk_summary(
         result_payload.get("input_source_summary")
         or _build_input_source_summary(decision_card.get("input_provenance", {}) or {})
     )
-    profile_payload = _as_dict(user_state.get("profile"))
-    if isinstance(profile_payload.get("profile"), dict):
-        profile_payload = _as_dict(profile_payload.get("profile"))
     summary = {
         "account_profile_id": account_profile_id,
         "display_name": display_name,
@@ -1082,6 +1291,7 @@ def _frontdesk_summary(
         "input_source_summary": input_source_summary,
         "candidate_options": decision_card.get("candidate_options", []),
         "goal_alternatives": decision_card.get("goal_alternatives", []),
+        "frontier_analysis": decision_card.get("frontier_analysis", {}),
         "refresh_summary": refresh_summary,
         "active_execution_plan": user_state.get("active_execution_plan"),
         "pending_execution_plan": user_state.get("pending_execution_plan"),
@@ -1284,7 +1494,11 @@ def run_frontdesk_onboarding(
         user_state=user_state,
     )
     summary["workflow"] = "onboard"
-    summary["user_state"] = user_state
+    if user_state is not None:
+        summary["user_state"] = dict(user_state)
+        if isinstance(summary["user_state"].get("decision_card"), dict):
+            summary["user_state"]["decision_card"] = deepcopy(summary.get("decision_card") or {})
+        summary["user_state"]["frontier_analysis"] = deepcopy(summary.get("frontier_analysis") or {})
     return summary
 
 
@@ -1514,7 +1728,22 @@ def load_frontdesk_snapshot(
         return None
     latest_run = dict(snapshot.get("latest_run") or {})
     result_payload = dict(latest_run.get("result_payload") or {})
-    decision_card = dict(latest_run.get("decision_card") or {})
+    profile_payload = _as_dict((snapshot.get("profile") or {}).get("profile"))
+    decision_card = _sanitize_frontdesk_decision_card(
+        dict(latest_run.get("decision_card") or {}),
+        profile_payload=profile_payload,
+        goal_solver_input=_as_dict((snapshot.get("latest_baseline") or {}).get("goal_solver_input")),
+    )
+    latest_run["decision_card"] = decision_card
+    snapshot["latest_run"] = latest_run
+    latest_baseline = dict(snapshot.get("latest_baseline") or {})
+    baseline_decision_card = _sanitize_frontdesk_decision_card(
+        dict(latest_baseline.get("decision_card") or {}),
+        profile_payload=profile_payload,
+        goal_solver_input=_as_dict(latest_baseline.get("goal_solver_input")),
+    )
+    latest_baseline["decision_card"] = baseline_decision_card
+    snapshot["latest_baseline"] = latest_baseline
     snapshot["refresh_summary"] = dict(
         result_payload.get("refresh_summary")
         or _build_refresh_summary(
@@ -1532,6 +1761,8 @@ def load_frontdesk_snapshot(
         result_payload.get("input_source_summary")
         or _build_input_source_summary(decision_card.get("input_provenance", {}) or {})
     )
+    snapshot["goal_alternatives"] = decision_card.get("goal_alternatives", [])
+    snapshot["frontier_analysis"] = decision_card.get("frontier_analysis", {})
     return snapshot
 
 
@@ -1545,10 +1776,24 @@ def load_user_state(
     user_state = store.load_user_state(account_profile_id)
     if user_state is None:
         return None
+    profile_payload = _as_dict((user_state.get("profile") or {}).get("profile"))
+    decision_card = _sanitize_frontdesk_decision_card(
+        dict(user_state.get("decision_card") or {}),
+        profile_payload=profile_payload,
+        goal_solver_input=_as_dict(((user_state.get("latest_baseline") or {}) if isinstance(user_state.get("latest_baseline"), dict) else {}).get("goal_solver_input")),
+    )
+    user_state["decision_card"] = decision_card
+    user_state["goal_alternatives"] = decision_card.get("goal_alternatives", [])
+    user_state["frontier_analysis"] = decision_card.get("frontier_analysis", {})
     snapshot = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
     if snapshot is not None:
         user_state["refresh_summary"] = snapshot.get("refresh_summary")
         user_state["input_source_summary"] = snapshot.get("input_source_summary")
+        user_state["goal_alternatives"] = snapshot.get("goal_alternatives", user_state.get("goal_alternatives", []))
+        user_state["frontier_analysis"] = snapshot.get("frontier_analysis", user_state.get("frontier_analysis", {}))
+        if isinstance(user_state.get("decision_card"), dict):
+            user_state["decision_card"]["frontier_analysis"] = deepcopy(snapshot.get("frontier_analysis") or user_state["decision_card"].get("frontier_analysis") or {})
+            user_state["decision_card"]["goal_alternatives"] = deepcopy(snapshot.get("goal_alternatives") or user_state["decision_card"].get("goal_alternatives") or [])
     return user_state
 
 

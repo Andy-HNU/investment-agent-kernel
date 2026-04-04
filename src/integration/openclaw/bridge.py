@@ -14,7 +14,7 @@ from agent.explainability import (
     build_plan_change_explanation,
     build_probability_explanation,
 )
-from agent.nli_router import Intent, parse_followup, parse_onboarding, parse_status, route
+from agent.nli_router import Intent, parse_followup, parse_onboarding, parse_probability_request, parse_status, route
 from frontdesk.service import (
     DEFAULT_DB_PATH,
     load_frontdesk_snapshot,
@@ -154,10 +154,17 @@ def handle_task(task: str, *, db_path: str | Path = DEFAULT_DB_PATH, now: Option
         invocation = {"tool": "frontdesk.sync_portfolio_ocr", **args, "holding_count": len(holdings)}
         result = dict(summary)
     elif intent.name == "explain_probability":
-        args = parse_status(task)
+        args = parse_probability_request(task)
         snapshot = load_frontdesk_snapshot(args["account_profile_id"], db_path=db_path) or {}
         invocation = {"tool": "frontdesk.explain_probability", **args}
-        result = {"workflow": "explain_probability", "explanation": build_probability_explanation(snapshot)}
+        result = {
+            "workflow": "explain_probability",
+            "explanation": build_probability_explanation(
+                snapshot,
+                requested_annual_return=args.get("requested_annual_return"),
+                requested_max_drawdown=args.get("requested_max_drawdown"),
+            ),
+        }
     elif intent.name == "explain_plan_change":
         args = parse_status(task)
         user_state = load_user_state(args["account_profile_id"], db_path=db_path) or {}

@@ -494,31 +494,86 @@ def _build_probability_explanation(
     goal_output: dict[str, Any],
     candidate_options: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    frontier_analysis = _build_frontier_analysis(goal_output, candidate_options)
+    scenario_status = _obj(frontier_analysis.get("scenario_status", {}))
     recommended_result = _obj(goal_output.get("recommended_result", {}))
     recommended_name = _metric(recommended_result.get("allocation_name"))
-    recommended_label = _metric(candidate_options[0].get("label")) if candidate_options else _candidate_label(recommended_name)
+    recommended_label = (
+        frontier_analysis.get("recommended", {}).get("label")
+        or (_metric(candidate_options[0].get("label")) if candidate_options else _candidate_label(recommended_name))
+    )
     recommended_probability = _percent_metric(
-        recommended_result.get("bucket_success_probability", recommended_result.get("success_probability"))
+        recommended_result.get(
+            "product_adjusted_success_probability",
+            recommended_result.get("bucket_success_probability", recommended_result.get("success_probability")),
+        )
     )
-    highest_candidate = max(
-        [_obj(item) for item in goal_output.get("candidate_menu", []) or goal_output.get("all_results", [])],
-        key=lambda item: _coalesce_metric(item.get("success_probability"), float("-inf")),
-        default=recommended_result,
-    )
-    highest_name = _metric(highest_candidate.get("allocation_name"))
-    highest_label = next(
-        (
-            _metric(item.get("label"))
-            for item in candidate_options
-            if _metric(item.get("label")) and _metric(item.get("allocation_name")) == highest_name
-        ),
-        _metric(highest_candidate.get("display_name")) or _candidate_label(highest_name),
-    )
-    highest_probability = _percent_metric(highest_candidate.get("success_probability"))
+    highest_frontier = frontier_analysis.get("highest_probability", {})
+    if highest_frontier:
+        highest_name = _metric(highest_frontier.get("allocation_name"))
+        highest_label = _metric(highest_frontier.get("label")) or _candidate_label(highest_name)
+        highest_probability = _metric(highest_frontier.get("success_probability")) or ""
+    else:
+        highest_candidate = max(
+            [_obj(item) for item in goal_output.get("candidate_menu", []) or goal_output.get("all_results", [])],
+            key=lambda item: _coalesce_metric(
+                item.get("product_adjusted_success_probability", item.get("success_probability")),
+                float("-inf"),
+            ),
+            default=recommended_result,
+        )
+        highest_name = _metric(highest_candidate.get("allocation_name"))
+        highest_label = next(
+            (
+                _metric(item.get("label"))
+                for item in candidate_options
+                if _metric(item.get("label")) and _metric(item.get("allocation_name")) == highest_name
+            ),
+            _metric(highest_candidate.get("display_name")) or _candidate_label(highest_name),
+        )
+        highest_probability = _percent_metric(
+            highest_candidate.get("product_adjusted_success_probability", highest_candidate.get("success_probability"))
+        )
     if highest_name and recommended_name and highest_name != recommended_name:
         why_not = "当前推荐不是最高达成率方案，因为排序会同时权衡回撤、短缺风险和执行复杂度。"
     else:
         why_not = "当前推荐方案同时也是当前候选中的最高达成率方案。"
+    target_return_priority = frontier_analysis.get("target_return_priority", {})
+    drawdown_priority = frontier_analysis.get("drawdown_priority", {})
+    target_label = _metric(target_return_priority.get("label")) or ""
+    drawdown_label = _metric(drawdown_priority.get("label")) or ""
+    target_status = _obj(scenario_status.get("target_return_priority", {}))
+    drawdown_status = _obj(scenario_status.get("drawdown_priority", {}))
+    if target_label:
+        if target_label == recommended_label:
+            target_explanation = f"坚持目标收益时，当前推荐方案“{recommended_label}”已经是最接近收益目标的选择。"
+        else:
+            target_explanation = (
+                f"如果坚持目标收益，系统会更偏向“{target_label}”；"
+                f"当前仍推荐“{recommended_label}”，因为还要同时权衡回撤和执行复杂度。"
+            )
+        why_not_target = ""
+    elif target_status and target_status.get("available") is False:
+        target_explanation = "当前候选里没有方案满足目标收益约束。"
+        why_not_target = _metric(target_status.get("reason")) or "no_candidate_meets_required_annual_return"
+    else:
+        target_explanation = ""
+        why_not_target = ""
+    if drawdown_label:
+        if drawdown_label == recommended_label:
+            drawdown_explanation = f"优先压低回撤时，当前推荐方案“{recommended_label}”已经是更稳的选择。"
+        else:
+            drawdown_explanation = (
+                f"如果优先压低回撤，系统会更偏向“{drawdown_label}”；"
+                f"当前推荐“{recommended_label}”意味着系统接受了更高回撤来换取更高达成率。"
+            )
+        why_not_drawdown = ""
+    elif drawdown_status and drawdown_status.get("available") is False:
+        drawdown_explanation = "当前候选里没有方案满足最大回撤约束。"
+        why_not_drawdown = _metric(drawdown_status.get("reason")) or "no_candidate_meets_max_drawdown_tolerance"
+    else:
+        drawdown_explanation = ""
+        why_not_drawdown = ""
     return {
         "recommended_allocation_name": recommended_name,
         "recommended_allocation_label": recommended_label,
@@ -527,12 +582,86 @@ def _build_probability_explanation(
         "highest_probability_allocation_label": highest_label,
         "highest_probability_success_probability": highest_probability,
         "why_not_highest_probability": why_not,
+        "target_return_priority_allocation_name": _metric(target_return_priority.get("allocation_name")) or "",
+        "target_return_priority_allocation_label": target_label,
+        "target_return_priority_success_probability": _metric(target_return_priority.get("success_probability")) or "",
+        "target_return_priority_explanation": target_explanation,
+        "why_not_target_return_priority": why_not_target,
+        "drawdown_priority_allocation_name": _metric(drawdown_priority.get("allocation_name")) or "",
+        "drawdown_priority_allocation_label": drawdown_label,
+        "drawdown_priority_success_probability": _metric(drawdown_priority.get("success_probability")) or "",
+        "drawdown_priority_explanation": drawdown_explanation,
+        "why_not_drawdown_priority": why_not_drawdown,
     }
 
 
 def _product_evidence_panel(inp: DecisionCardBuildInput) -> dict[str, Any]:
     summary = _execution_plan_summary(inp)
     return dict(_obj(summary.get("product_evidence_panel", {})))
+
+
+def _frontier_scenario(
+    raw: Any,
+    *,
+    candidate_options: list[dict[str, Any]],
+) -> dict[str, Any]:
+    data = _obj(raw)
+    if not isinstance(data, dict) or not data:
+        return {}
+    allocation_name = _metric(data.get("allocation_name"))
+    explicit_label = _metric(data.get("display_name")) or _metric(data.get("label"))
+    if not allocation_name and not explicit_label:
+        return {}
+    label = next(
+        (
+            _metric(item.get("label"))
+            for item in candidate_options
+            if allocation_name and _metric(item.get("allocation_name")) == allocation_name
+        ),
+        explicit_label or _candidate_label(allocation_name),
+    )
+    risk_summary = _obj(data.get("risk_summary", {}))
+    return {
+        "allocation_name": allocation_name,
+        "label": label,
+        "success_probability": _percent_metric(
+            data.get("product_adjusted_success_probability", data.get("success_probability"))
+        ),
+        "expected_terminal_value": _currency_metric(data.get("expected_terminal_value")),
+        "expected_annual_return": _percent_metric(
+            data.get("expected_annual_return", data.get("scenario_expected_annual_return"))
+        ),
+        "implied_required_annual_return": _percent_metric(data.get("implied_required_annual_return")),
+        "max_drawdown_90pct": _percent_metric(risk_summary.get("max_drawdown_90pct")),
+        "why_selected": _metric(data.get("why_selected")) or _metric(data.get("rationale")) or "",
+    }
+
+
+def _build_frontier_analysis(
+    goal_output: dict[str, Any],
+    candidate_options: list[dict[str, Any]],
+) -> dict[str, Any]:
+    raw = _obj(goal_output.get("frontier_analysis", {}))
+    if not isinstance(raw, dict):
+        return {}
+    scenarios: dict[str, Any] = {}
+    for key in (
+        "recommended",
+        "highest_probability",
+        "target_return_priority",
+        "drawdown_priority",
+        "balanced_tradeoff",
+    ):
+        scenario = _frontier_scenario(raw.get(key), candidate_options=candidate_options)
+        if scenario:
+            scenarios[key] = scenario
+    deterministic_goal_guard = _obj(raw.get("deterministic_goal_guard"))
+    if isinstance(deterministic_goal_guard, dict) and deterministic_goal_guard:
+        scenarios["deterministic_goal_guard"] = deterministic_goal_guard
+    scenario_status = _obj(raw.get("scenario_status"))
+    if isinstance(scenario_status, dict) and scenario_status:
+        scenarios["scenario_status"] = scenario_status
+    return scenarios
 
 
 def _sanitize_user_visible_candidate_option(option: dict[str, Any]) -> dict[str, Any]:
@@ -1054,6 +1183,7 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     risk_summary = _obj(result.get("risk_summary", {}))
     candidate_options = _build_goal_candidate_options(inp, goal_output)
     probability_explanation = _build_probability_explanation(goal_output, candidate_options)
+    frontier_analysis = _build_frontier_analysis(goal_output, candidate_options)
     execution_plan_summary = _execution_plan_summary(inp)
     product_evidence_panel = _product_evidence_panel(inp)
     fallback_options = _build_goal_fallback_options(goal_output)
@@ -1161,6 +1291,7 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         goal_semantics=goal_semantics,
         execution_plan_summary=execution_plan_summary,
         probability_explanation=probability_explanation,
+        frontier_analysis=frontier_analysis,
         product_evidence_panel=product_evidence_panel,
     )
     return _finalize_card(card)
@@ -1245,6 +1376,7 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     risk_summary = _obj(result.get("risk_summary", {}))
     candidate_options = _build_goal_candidate_options(inp, goal_output)
     probability_explanation = _build_probability_explanation(goal_output, candidate_options)
+    frontier_analysis = _build_frontier_analysis(goal_output, candidate_options)
     execution_plan_summary = _execution_plan_summary(inp)
     product_evidence_panel = _product_evidence_panel(inp)
     model_disclaimer = _model_disclaimer(goal_output)
@@ -1303,6 +1435,7 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         low_confidence=low_confidence,
         execution_plan_summary=execution_plan_summary,
         probability_explanation=probability_explanation,
+        frontier_analysis=frontier_analysis,
         product_evidence_panel=product_evidence_panel,
     )
     return _finalize_card(card)

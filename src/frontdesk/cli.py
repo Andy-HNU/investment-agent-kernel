@@ -200,6 +200,88 @@ def _render_candidate_lines(options: list[dict[str, Any]], *, prefix: str) -> li
     return lines
 
 
+def _render_frontier_analysis_block(
+    frontier: dict[str, Any] | None,
+    probability_explanation: dict[str, Any] | None = None,
+) -> list[str]:
+    if not frontier:
+        return []
+    lines: list[str] = []
+    scenario_keys = (
+        ("recommended", "recommended_plan"),
+        ("highest_probability", "highest_probability_plan"),
+        ("target_return_priority", "target_return_priority_plan"),
+        ("drawdown_priority", "drawdown_priority_plan"),
+        ("balanced_tradeoff", "balanced_tradeoff_plan"),
+    )
+    for label, key in scenario_keys:
+        scenario = frontier.get(key) or {}
+        if not scenario:
+            continue
+        lines.append(
+            f"frontier_{label}="
+            f"{scenario.get('label')} | success={scenario.get('success_probability')} "
+            f"dd90={scenario.get('max_drawdown_90pct')} "
+            f"terminal={scenario.get('expected_terminal_value')}"
+        )
+        if scenario.get("expected_annual_return"):
+            lines.append(f"frontier_{label}_expected_annual_return={scenario.get('expected_annual_return')}")
+        if scenario.get("implied_required_annual_return"):
+            lines.append(
+                f"frontier_{label}_implied_required_annual_return={scenario.get('implied_required_annual_return')}"
+            )
+        if scenario.get("why_selected"):
+            lines.append(f"frontier_{label}_why={scenario.get('why_selected')}")
+    if frontier.get("why_not_highest_probability"):
+        lines.append(f"frontier_why_not_highest_probability={frontier.get('why_not_highest_probability')}")
+    scenario_status = frontier.get("scenario_status") or {}
+    if scenario_status:
+        for key, item in scenario_status.items():
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"frontier_{key}_status="
+                f"available={item.get('available')} "
+                f"constraint_met={item.get('constraint_met')} "
+                f"reason={item.get('reason')}"
+            )
+    probability_explanation = probability_explanation or {}
+    if probability_explanation.get("target_return_priority_explanation"):
+        lines.append(
+            "frontier_target_return_priority_explanation="
+            f"{probability_explanation.get('target_return_priority_explanation')}"
+        )
+    if probability_explanation.get("why_not_target_return_priority"):
+        lines.append(
+            "frontier_why_not_target_return_priority="
+            f"{probability_explanation.get('why_not_target_return_priority')}"
+        )
+    if probability_explanation.get("drawdown_priority_explanation"):
+        lines.append(
+            "frontier_drawdown_priority_explanation="
+            f"{probability_explanation.get('drawdown_priority_explanation')}"
+        )
+    if probability_explanation.get("why_not_drawdown_priority"):
+        lines.append(
+            "frontier_why_not_drawdown_priority="
+            f"{probability_explanation.get('why_not_drawdown_priority')}"
+        )
+    guard = frontier.get("deterministic_goal_guard") or {}
+    if guard:
+        lines.append(
+            "deterministic_goal_guard="
+            f"covered={guard.get('principal_plus_deterministic_contributions_cover_goal')} "
+            f"deterministic_terminal_value={guard.get('deterministic_terminal_value')} "
+            f"goal_amount={guard.get('goal_amount')}"
+        )
+        blocked_types = list(guard.get("blocked_suggestion_types") or [])
+        if blocked_types:
+            lines.append("blocked_pseudo_improvements=" + ",".join(str(item) for item in blocked_types))
+        if guard.get("note"):
+            lines.append(f"deterministic_goal_guard_note={guard.get('note')}")
+    return lines
+
+
 def _render_refresh_block(refresh_summary: dict[str, Any]) -> list[str]:
     if not refresh_summary:
         return []
@@ -422,6 +504,12 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         lines.extend(_render_input_source_summary(decision_card.get("input_provenance") or {}))
         lines.extend(_render_candidate_lines(decision_card.get("candidate_options") or [], prefix="candidate"))
         lines.extend(_render_candidate_lines(decision_card.get("goal_alternatives") or [], prefix="alternative"))
+        lines.extend(
+            _render_frontier_analysis_block(
+                decision_card.get("frontier_analysis") or payload.get("frontier_analysis") or user_state.get("frontier_analysis"),
+                decision_card.get("probability_explanation"),
+            )
+        )
         lines.extend(_render_goal_semantics_block(goal_semantics_payload))
         lines.extend(_render_profile_dimensions_block(profile_dimensions_payload))
         if decision_card.get("model_disclaimer"):
@@ -514,6 +602,12 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
     lines.extend(external_lines)
     lines.extend(_render_candidate_lines(payload.get("candidate_options") or [], prefix="candidate"))
     lines.extend(_render_candidate_lines(payload.get("goal_alternatives") or [], prefix="alternative"))
+    lines.extend(
+        _render_frontier_analysis_block(
+            payload.get("frontier_analysis") or decision_card.get("frontier_analysis"),
+            decision_card.get("probability_explanation"),
+        )
+    )
     if decision_card.get("model_disclaimer"):
         lines.append(f"model_disclaimer={decision_card.get('model_disclaimer')}")
     return "\n".join(lines)
@@ -536,6 +630,12 @@ def render_frontdesk_snapshot(payload: dict[str, Any]) -> str:
     if decision_card:
         lines.append(f"latest_summary={decision_card.get('summary')}")
         lines.extend(_render_provenance_block(decision_card.get("input_provenance") or {}))
+        lines.extend(
+            _render_frontier_analysis_block(
+                decision_card.get("frontier_analysis") or payload.get("frontier_analysis"),
+                decision_card.get("probability_explanation"),
+            )
+        )
     lines.extend(_render_goal_semantics_block((profile.get("profile") or {}).get("goal_semantics")))
     lines.extend(_render_profile_dimensions_block((profile.get("profile") or {}).get("profile_dimensions")))
     lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))

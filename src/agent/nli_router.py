@@ -60,7 +60,22 @@ def route(text: str) -> Intent:
         ("explain_data_basis", [r"历史数据", r"推算历史", r"数据依据", r"数据基础", r"explain\s+data\s+basis", r"data\s+basis", r"historical\s+data"], 0.94),
         ("explain_execution_policy", [r"执行策略", r"季度执行策略", r"止盈止损规则", r"explain\s+execution\s+policy", r"execution\s+policy"], 0.92),
         ("explain_plan_change", [r"计划变化", r"为什么.*替换.*计划", r"plan change", r"replace.*plan"], 0.9),
-        ("explain_probability", [r"目标达成率", r"成功率", r"概率.*怎么", r"why.*probability", r"explain\s+probability", r"success\s+probability"], 0.92),
+        (
+            "explain_probability",
+            [
+                r"目标达成率",
+                r"成功率",
+                r"概率.*怎么",
+                r"why.*probability",
+                r"explain\s+probability",
+                r"success\s+probability",
+                r"坚持.*年化.*回撤",
+                r"坚持.*回撤.*收益率",
+                r"回撤不超过.*收益率",
+                r"收益率能到多少",
+            ],
+            0.92,
+        ),
         ("feedback", [r"已执行", r"已跳过", r"\bexecuted\b", r"\bskipped\b", r"\bi did\b", r"执行反馈"], 0.8),
     ]
     for name, patterns, confidence in rules:
@@ -137,6 +152,30 @@ def parse_onboarding(text: str) -> dict[str, Any]:
 
 def parse_status(text: str) -> dict[str, Any]:
     return {"account_profile_id": _extract_account_profile_id(text)}
+
+
+def _normalize_ratio(value: float | None) -> float | None:
+    if value is None:
+        return None
+    if value > 1.0:
+        return value / 100.0
+    return value
+
+
+def parse_probability_request(text: str) -> dict[str, Any]:
+    requested_annual_return = (
+        _extract_number(r"坚持\s*([0-9]+(?:\.[0-9]+)?)\s*%?\s*年化", text)
+        or _extract_number(r"年化(?:收益率)?(?:达到|到)?\s*([0-9]+(?:\.[0-9]+)?)\s*%", text)
+    )
+    requested_max_drawdown = (
+        _extract_number(r"回撤(?:不超过|控制在)\s*([0-9]+(?:\.[0-9]+)?)\s*%", text)
+        or _extract_number(r"回撤.*?([0-9]+(?:\.[0-9]+)?)\s*%", text)
+    )
+    return {
+        "account_profile_id": _extract_account_profile_id(text),
+        "requested_annual_return": _normalize_ratio(requested_annual_return),
+        "requested_max_drawdown": _normalize_ratio(requested_max_drawdown),
+    }
 
 
 def parse_followup(text: str) -> dict[str, Any]:

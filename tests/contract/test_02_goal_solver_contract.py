@@ -192,6 +192,98 @@ def test_run_goal_solver_emits_context_and_threshold_gap_notes(goal_solver_input
 
 
 @pytest.mark.contract
+def test_run_goal_solver_threshold_warning_uses_effective_success_probability(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["goal"]["success_prob_threshold"] = 0.60
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "steady",
+            "weights": {"equity_cn": 0.55, "bond_cn": 0.30, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.12,
+            "description": "steady candidate",
+        }
+    ]
+
+    def _fake_run_monte_carlo(*_args, **_kwargs):
+        return (
+            0.64,
+            {"expected_terminal_value": 2_150_000.0},
+            RiskSummary(
+                max_drawdown_90pct=0.11,
+                terminal_value_tail_mean_95=1_600_000.0,
+                shortfall_probability=0.36,
+                terminal_shortfall_p5_vs_initial=0.07,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+    monkeypatch.setattr(goal_solver_engine, "_effective_success_probability", lambda _result: 0.58)
+
+    result = run_goal_solver(solver_input)
+
+    assert any(
+        note == "success_threshold threshold=0.6000 recommended=0.5800 gap=0.0200 met=false"
+        for note in result.solver_notes
+    )
+    assert any(
+        note == "warning=success_probability_below_threshold threshold=0.6000 recommended=0.5800"
+        for note in result.solver_notes
+    )
+
+
+@pytest.mark.contract
+def test_run_goal_solver_marks_unavailable_frontier_constraints(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["goal"]["goal_amount"] = 2_500_000.0
+    solver_input["goal"]["success_prob_threshold"] = 0.80
+    solver_input["constraints"]["max_drawdown_tolerance"] = 0.05
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "defensive",
+            "weights": {"equity_cn": 0.30, "bond_cn": 0.55, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.08,
+            "description": "defensive candidate",
+        },
+        {
+            "name": "balanced",
+            "weights": {"equity_cn": 0.45, "bond_cn": 0.35, "gold": 0.10, "satellite": 0.10},
+            "complexity_score": 0.12,
+            "description": "balanced candidate",
+        },
+    ]
+
+    def _fake_run_monte_carlo(
+        weights: dict[str, float],
+        *_args,
+        **_kwargs,
+    ):
+        if weights["equity_cn"] == 0.30:
+            probability, terminal, drawdown = 0.42, 780_000.0, 0.09
+        else:
+            probability, terminal, drawdown = 0.48, 860_000.0, 0.12
+        return (
+            probability,
+            {"expected_terminal_value": terminal},
+            RiskSummary(
+                max_drawdown_90pct=drawdown,
+                terminal_value_tail_mean_95=terminal * 0.82,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.18,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert result.frontier_analysis is not None
+    assert result.frontier_analysis.scenario_status["target_return_priority"]["available"] is False
+    assert result.frontier_analysis.scenario_status["drawdown_priority"]["available"] is False
+    assert result.frontier_analysis.target_return_priority.allocation_name == ""
+    assert result.frontier_analysis.drawdown_priority.allocation_name == ""
+
+
+@pytest.mark.contract
 def test_run_goal_solver_emits_model_honesty_notes(goal_solver_input_base, monkeypatch):
     solver_input = deepcopy(goal_solver_input_base)
     solver_input["goal"]["goal_amount_basis"] = "real"
@@ -407,3 +499,99 @@ def test_run_monte_carlo_handles_empty_weight_set_in_advanced_mode(goal_solver_i
     assert probability == 0.0
     assert extra["expected_terminal_value"] == pytest.approx(35_000.0 + sum(schedule))
     assert risk.max_drawdown_90pct == pytest.approx(0.0)
+
+
+@pytest.mark.contract
+def test_run_goal_solver_builds_frontier_analysis_scenarios(goal_solver_input_base, monkeypatch):
+    solver_input = _mode_test_input(goal_solver_input_base)
+    solver_input["goal"]["goal_amount"] = 590_000.0
+    solver_input["goal"]["success_prob_threshold"] = 0.60
+    solver_input["constraints"]["max_drawdown_tolerance"] = 0.10
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "defensive",
+            "weights": {"equity_cn": 0.30, "bond_cn": 0.55, "gold": 0.15, "satellite": 0.0},
+            "complexity_score": 0.10,
+            "description": "defensive candidate",
+        },
+        {
+            "name": "balanced",
+            "weights": {"equity_cn": 0.45, "bond_cn": 0.35, "gold": 0.15, "satellite": 0.05},
+            "complexity_score": 0.15,
+            "description": "balanced candidate",
+        },
+        {
+            "name": "growth",
+            "weights": {"equity_cn": 0.70, "bond_cn": 0.10, "gold": 0.05, "satellite": 0.15},
+            "complexity_score": 0.20,
+            "description": "growth candidate",
+        },
+    ]
+
+    result_map = {
+        "defensive": (
+            0.62,
+            530_000.0,
+            0.07,
+        ),
+        "balanced": (
+            0.66,
+            575_000.0,
+            0.11,
+        ),
+        "growth": (
+            0.69,
+            610_000.0,
+            0.23,
+        ),
+    }
+
+    def _fake_run_monte_carlo(
+        weights: dict[str, float],
+        cashflow_schedule: list[float],
+        initial_value: float,
+        goal_amount: float,
+        market_state,
+        n_paths: int,
+        seed: int,
+        simulation_mode: str = "static_gaussian",
+        distribution_model_state=None,
+    ):
+        del cashflow_schedule, initial_value, goal_amount, market_state, n_paths, seed, simulation_mode, distribution_model_state
+        if weights["equity_cn"] == 0.30:
+            scenario = "defensive"
+        elif weights["equity_cn"] == 0.45:
+            scenario = "balanced"
+        else:
+            scenario = "growth"
+        probability, expected_terminal_value, max_drawdown = result_map[scenario]
+        return (
+            probability,
+            {"expected_terminal_value": expected_terminal_value},
+            RiskSummary(
+                max_drawdown_90pct=max_drawdown,
+                terminal_value_tail_mean_95=expected_terminal_value * 0.82,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.08,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert result.recommended_allocation.name == "defensive"
+    assert result.frontier_analysis is not None
+    assert result.frontier_analysis.recommended.allocation_name == "defensive"
+    assert result.frontier_analysis.highest_probability.allocation_name == "growth"
+    assert result.frontier_analysis.target_return_priority.allocation_name == "growth"
+    assert result.frontier_analysis.drawdown_priority.allocation_name == "defensive"
+    assert result.frontier_analysis.balanced_tradeoff.allocation_name == "balanced"
+    assert result.frontier_analysis.recommended.meets_success_threshold is True
+    assert result.frontier_analysis.drawdown_priority.drawdown_gap == pytest.approx(0.0)
+    assert result.frontier_analysis.target_return_priority.target_return_gap == pytest.approx(0.0)
+
+    result_dict = result.to_dict()
+    assert result_dict["frontier_analysis"] is not None
+    assert result_dict["frontier_analysis"]["highest_probability"]["allocation_name"] == "growth"
+    assert result_dict["frontier_analysis"]["balanced_tradeoff"]["allocation_name"] == "balanced"

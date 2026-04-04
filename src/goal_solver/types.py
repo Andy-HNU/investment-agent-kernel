@@ -216,6 +216,54 @@ class SuccessProbabilityResult:
 
 
 @dataclass
+class FrontierScenario:
+    scenario_id: str
+    allocation_name: str
+    weights: dict[str, float]
+    success_probability: float
+    expected_terminal_value: float
+    max_drawdown_90pct: float
+    product_adjusted_success_probability: float | None = None
+    expected_annual_return: float | None = None
+    meets_success_threshold: bool = False
+    drawdown_gap: float = 0.0
+    target_return_gap: float = 0.0
+    rationale: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["scenario_expected_annual_return"] = self.expected_annual_return
+        data["why_selected"] = self.rationale
+        return data
+
+
+@dataclass
+class FrontierAnalysis:
+    implied_required_annual_return: float | None
+    success_probability_threshold: float
+    max_drawdown_tolerance: float
+    recommended: FrontierScenario
+    highest_probability: FrontierScenario
+    target_return_priority: FrontierScenario
+    drawdown_priority: FrontierScenario
+    balanced_tradeoff: FrontierScenario
+    scenario_status: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "implied_required_annual_return": self.implied_required_annual_return,
+            "success_probability_threshold": self.success_probability_threshold,
+            "max_drawdown_tolerance": self.max_drawdown_tolerance,
+            "recommended": self.recommended.to_dict(),
+            "highest_probability": self.highest_probability.to_dict(),
+            "target_return_priority": self.target_return_priority.to_dict(),
+            "drawdown_priority": self.drawdown_priority.to_dict(),
+            "balanced_tradeoff": self.balanced_tradeoff.to_dict(),
+            "scenario_status": self.scenario_status,
+        }
+
+
+@dataclass
 class GoalSolverOutput:
     input_snapshot_id: str
     generated_at: str
@@ -230,6 +278,7 @@ class GoalSolverOutput:
     simulation_mode_requested: str = "static_gaussian"
     simulation_mode_used: str = "static_gaussian"
     simulation_mode_auto_selected: bool = False
+    frontier_analysis: FrontierAnalysis | None = None
     candidate_menu: list[dict[str, Any]] = field(default_factory=list)
     fallback_suggestions: list[dict[str, Any]] = field(default_factory=list)
     disclaimer: str = "以下为模型模拟结果，不是历史回测收益承诺。"
@@ -238,6 +287,9 @@ class GoalSolverOutput:
         data = asdict(self)
         data["recommended_allocation"] = self.recommended_allocation.to_dict()
         data["recommended_result"] = self.recommended_result.to_dict()
+        data["frontier_analysis"] = (
+            self.frontier_analysis.to_dict() if self.frontier_analysis is not None else None
+        )
         data["all_results"] = [item.to_dict() for item in self.all_results]
         data["structure_budget"] = self.structure_budget.to_dict()
         data["risk_budget"] = self.risk_budget.to_dict()
