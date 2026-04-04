@@ -270,3 +270,100 @@ def test_build_execution_plan_marks_non_applicable_products_with_explicit_valuat
     assert cash_item.valuation_audit is not None
     assert cash_item.valuation_audit.reason == "valuation:not_applicable"
     assert plan.valuation_audit_summary["non_applicable_candidate_count"] >= 2
+
+
+@pytest.mark.contract
+def test_build_execution_plan_uses_dynamic_policy_news_score_for_satellite_ranking():
+    plan = build_execution_plan(
+        source_run_id="run_policy_news_satellite",
+        source_allocation_id="allocation_policy_news_satellite",
+        bucket_targets={"satellite": 0.20, "equity_cn": 0.40, "bond_cn": 0.40},
+        restrictions=[],
+        policy_news_signals=[
+            {
+                "signal_id": "signal-energy-positive",
+                "as_of": "2026-04-04T15:00:00Z",
+                "published_at": "2026-04-03T12:00:00Z",
+                "source_type": "news",
+                "source_name": "newswire",
+                "source_refs": ["https://example.com/news/energy"],
+                "direction": "bullish",
+                "strength": 0.9,
+                "confidence": 0.85,
+                "decay_half_life_days": 7.0,
+                "target_buckets": ["satellite"],
+                "target_tags": ["cyclical"],
+            }
+        ],
+    )
+
+    satellite_item = next(item for item in plan.items if item.asset_bucket == "satellite")
+
+    assert satellite_item.primary_product_id == "cn_satellite_energy_etf"
+    assert satellite_item.policy_news_audit is not None
+    assert satellite_item.policy_news_audit.realtime_eligible is True
+    assert satellite_item.policy_news_audit.score > 0.0
+    assert plan.policy_news_audit_summary["source_status"] == "observed"
+    assert plan.policy_news_audit_summary["realtime_eligible"] is True
+
+
+@pytest.mark.contract
+def test_build_execution_plan_does_not_claim_realtime_policy_news_without_real_materials():
+    plan = build_execution_plan(
+        source_run_id="run_policy_news_missing_materials",
+        source_allocation_id="allocation_policy_news_missing_materials",
+        bucket_targets={"satellite": 0.20},
+        restrictions=[],
+        policy_news_signals=[
+            {
+                "signal_id": "signal-missing-materials",
+                "as_of": "2026-04-04T15:00:00Z",
+                "source_type": "analysis",
+                "direction": "bullish",
+                "strength": 0.9,
+                "confidence": 0.85,
+                "target_buckets": ["satellite"],
+                "target_tags": ["cyclical"],
+            }
+        ],
+    )
+
+    satellite_item = next(item for item in plan.items if item.asset_bucket == "satellite")
+
+    assert satellite_item.primary_product_id == "cn_satellite_chip_etf"
+    assert satellite_item.policy_news_audit is not None
+    assert satellite_item.policy_news_audit.realtime_eligible is False
+    assert plan.policy_news_audit_summary["source_status"] == "missing_materials"
+    assert plan.policy_news_audit_summary["realtime_eligible"] is False
+
+
+@pytest.mark.contract
+def test_build_execution_plan_limits_policy_news_to_mild_core_influence():
+    plan = build_execution_plan(
+        source_run_id="run_policy_news_core_mild",
+        source_allocation_id="allocation_policy_news_core_mild",
+        bucket_targets={"equity_cn": 1.0},
+        restrictions=[],
+        policy_news_signals=[
+            {
+                "signal_id": "signal-low-vol-positive",
+                "as_of": "2026-04-04T15:00:00Z",
+                "published_at": "2026-04-04T12:00:00Z",
+                "source_type": "policy",
+                "source_name": "policy_feed",
+                "source_refs": ["https://example.com/policy/low-vol"],
+                "direction": "bullish",
+                "strength": 1.0,
+                "confidence": 1.0,
+                "decay_half_life_days": 5.0,
+                "target_products": ["cn_equity_low_vol_fund"],
+            }
+        ],
+    )
+
+    equity_item = next(item for item in plan.items if item.asset_bucket == "equity_cn")
+
+    assert equity_item.primary_product_id == "cn_equity_csi300_etf"
+    assert equity_item.policy_news_audit is not None
+    assert equity_item.policy_news_audit.influence_scope == "core_mild"
+    assert plan.policy_news_audit_summary["core_influence_capped"] is True

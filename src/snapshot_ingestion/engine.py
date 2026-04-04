@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from typing import Any
 
 from snapshot_ingestion.historical import build_historical_dataset_snapshot
@@ -23,6 +24,34 @@ def _generate_bundle_id(account_profile_id: str, as_of: datetime) -> str:
 
 def _quality_flag(code: str, severity: str, domain: str, message: str) -> QualityFlag:
     return QualityFlag(code=code, severity=severity, domain=domain, message=message)
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return _as_utc(dt)
+
+
+def _compute_policy_signal_recency_days(as_of: str | None, published_at: str | None) -> float | None:
+    as_of_dt = _parse_iso_datetime(as_of)
+    published_dt = _parse_iso_datetime(published_at)
+    if as_of_dt is None or published_dt is None:
+        return None
+    delta = as_of_dt - published_dt
+    return max(delta.total_seconds() / 86400.0, 0.0)
+
+
+def _compute_decay_weight(recency_days: float | None, decay_half_life_days: float | None) -> float | None:
+    if recency_days is None or decay_half_life_days is None or decay_half_life_days <= 0:
+        return None
+    return math.pow(0.5, recency_days / decay_half_life_days)
 
 
 def validate_market_snapshot(snap: dict[str, Any]) -> list[QualityFlag]:
@@ -142,6 +171,15 @@ def validate_policy_news_signals(signals: list[PolicyNewsSignal]) -> list[Qualit
                     f"policy/news signal {signal.signal_id} missing source_refs",
                 )
             )
+        if not signal.published_at:
+            flags.append(
+                _quality_flag(
+                    "POLICY_SIGNAL_PUBLISHED_AT_MISSING",
+                    "warn",
+                    "market",
+                    f"policy/news signal {signal.signal_id} missing published_at",
+                )
+            )
         if not 0.0 <= float(signal.confidence) <= 1.0:
             flags.append(
                 _quality_flag(
@@ -252,18 +290,32 @@ def build_snapshot_bundle(
             rendered_signals.append(signal)
             continue
         signal_data = dict(signal or {})
+        signal_as_of = str(signal_data.get("as_of") or created_at.isoformat().replace("+00:00", "Z"))
+        published_at = signal_data.get("published_at")
+        decay_half_life_days = float(signal_data.get("decay_half_life_days", 7.0) or 7.0)
+        recency_days = _compute_policy_signal_recency_days(signal_as_of, published_at)
         rendered_signals.append(
             PolicyNewsSignal(
                 signal_id=str(signal_data.get("signal_id") or signal_data.get("id") or "policy_signal"),
-                as_of=str(signal_data.get("as_of") or created_at.isoformat().replace("+00:00", "Z")),
+                as_of=signal_as_of,
                 source_type=str(signal_data.get("source_type") or "analysis"),
+                source_name=signal_data.get("source_name"),
                 source_refs=[str(item) for item in list(signal_data.get("source_refs") or []) if str(item).strip()],
+                published_at=published_at,
                 policy_regime=signal_data.get("policy_regime"),
                 macro_uncertainty=signal_data.get("macro_uncertainty"),
                 sentiment_stress=signal_data.get("sentiment_stress"),
                 liquidity_stress=signal_data.get("liquidity_stress"),
+                direction=signal_data.get("direction"),
+                strength=float(signal_data.get("strength", 0.0) or 0.0),
                 manual_review_required=bool(signal_data.get("manual_review_required", False)),
                 confidence=float(signal_data.get("confidence", 0.0) or 0.0),
+                decay_half_life_days=decay_half_life_days,
+                recency_days=recency_days,
+                decay_weight=_compute_decay_weight(recency_days, decay_half_life_days),
+                target_buckets=[str(item) for item in list(signal_data.get("target_buckets") or []) if str(item).strip()],
+                target_tags=[str(item) for item in list(signal_data.get("target_tags") or []) if str(item).strip()],
+                target_products=[str(item) for item in list(signal_data.get("target_products") or []) if str(item).strip()],
                 notes=[str(item) for item in list(signal_data.get("notes") or []) if str(item).strip()],
             )
         )

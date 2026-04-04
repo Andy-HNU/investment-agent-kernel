@@ -398,6 +398,73 @@ def test_frontdesk_cli_json_surfaces_formal_path_visibility(tmp_path, capsys, mo
 
 
 @pytest.mark.smoke
+def test_frontdesk_cli_json_preserves_policy_news_audit_summary(tmp_path, capsys, monkeypatch):
+    from frontdesk import cli
+
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    monkeypatch.setattr(
+        cli,
+        "run_frontdesk_onboarding",
+        lambda *args, **kwargs: {
+            "status": "completed",
+            "run_id": "run_policy_news_cli",
+            "decision_card": {
+                "card_type": "goal_baseline",
+                "execution_plan_summary": {
+                    "plan_id": "plan_policy_news",
+                    "policy_news_audit_summary": {
+                        "source_status": "observed",
+                        "realtime_eligible": True,
+                        "matched_signal_count": 2,
+                        "latest_published_at": "2026-04-04T12:00:00Z",
+                    },
+                },
+            },
+            "user_state": {
+                "profile": {"account_profile_id": "andy_cli", "display_name": "Andy"},
+                "decision_card": {
+                    "card_type": "goal_baseline",
+                    "execution_plan_summary": {
+                        "plan_id": "plan_policy_news",
+                        "policy_news_audit_summary": {
+                            "source_status": "observed",
+                            "realtime_eligible": True,
+                            "matched_signal_count": 2,
+                        },
+                    },
+                },
+            },
+        },
+    )
+
+    exit_code = cli.main(
+        [
+            "onboard",
+            "--db",
+            str(db_path),
+            "--profile-json",
+            json.dumps(_profile().to_dict(), ensure_ascii=False),
+            "--non-interactive",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert (
+        payload["user_state"]["decision_card"]["execution_plan_summary"]["policy_news_audit_summary"]["source_status"]
+        == "observed"
+    )
+    assert (
+        payload["user_state"]["decision_card"]["execution_plan_summary"]["policy_news_audit_summary"][
+            "realtime_eligible"
+        ]
+        is True
+    )
+
+
+@pytest.mark.smoke
 def test_render_frontdesk_summary_surfaces_execution_plan_valuation_audit():
     from frontdesk.cli import render_frontdesk_summary
 

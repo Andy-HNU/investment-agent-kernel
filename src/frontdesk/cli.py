@@ -334,6 +334,8 @@ def _render_execution_plan_block(
         )
     if execution_plan.get("valuation_audit_summary"):
         lines.append(f"{label}_valuation_audit={execution_plan.get('valuation_audit_summary')}")
+    if execution_plan.get("policy_news_audit_summary"):
+        lines.append(f"{label}_policy_news_audit={execution_plan.get('policy_news_audit_summary')}")
     if execution_plan.get("approved_at"):
         lines.append(f"{label}_approved_at={execution_plan.get('approved_at')}")
     if execution_plan.get("superseded_by_plan_id"):

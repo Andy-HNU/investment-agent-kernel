@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from shared.profile_parser import parse_profile_semantics
 
 from product_mapping.catalog import load_builtin_catalog
+from product_mapping.policy_news import apply_policy_news_scores
 from product_mapping.types import (
     CandidateFilterBreakdown,
     CandidateFilterStage,
     ExecutionPlan,
     ExecutionPlanItem,
     ProductCandidate,
+    ProductPolicyNewsAudit,
     ProductValuationAudit,
     RuntimeProductCandidate,
 )
@@ -153,8 +155,19 @@ def _theme_reason(candidate: ProductCandidate, restriction_filter: _RestrictionF
     return None
 
 
-def _candidate_sort_key(candidate: ProductCandidate) -> tuple[int, int, int, str]:
+def _candidate_sort_key(runtime_candidate: RuntimeProductCandidate) -> tuple[float, int, int, int, str]:
+    candidate = runtime_candidate.candidate
+    policy_score = 0.0
+    if runtime_candidate.policy_news_audit is not None:
+        policy_score = float(runtime_candidate.policy_news_audit.score or 0.0)
+    if candidate.asset_bucket == "satellite":
+        policy_priority = -policy_score
+    else:
+        # Core buckets can see the score in audits, but ranking only uses it as a
+        # late tiebreaker so policy/news cannot silently replace the core.
+        policy_priority = 0.0
     return (
+        policy_priority,
         _WRAPPER_PRIORITY.get((candidate.asset_bucket, candidate.wrapper_type), 9),
         _LIQUIDITY_PRIORITY.get(candidate.liquidity_tier, 9),
         _FEE_PRIORITY.get(candidate.fee_tier, 9),
@@ -369,11 +382,30 @@ def _apply_valuation_stage(
 
 
 def _build_item(bucket: str, target_weight: float, candidates: list[RuntimeProductCandidate]) -> ExecutionPlanItem:
-    ordered_candidates = sorted(candidates, key=lambda item: _candidate_sort_key(item.candidate))
+    ordered_candidates = sorted(candidates, key=_candidate_sort_key)
     primary_runtime_candidate = ordered_candidates[0]
     primary_product = primary_runtime_candidate.candidate
     alternate_runtime_candidates = ordered_candidates[1:]
     alternate_products = [item.candidate for item in alternate_runtime_candidates]
+    bucket_policy_audits = [
+        item.policy_news_audit
+        for item in ordered_candidates
+        if item.policy_news_audit is not None and item.policy_news_audit.realtime_eligible and item.policy_news_audit.score
+    ]
+    item_policy_news_audit = primary_runtime_candidate.policy_news_audit
+    if (
+        bucket != "satellite"
+        and item_policy_news_audit is not None
+        and item_policy_news_audit.influence_scope == "none"
+        and bucket_policy_audits
+    ):
+        strongest_bucket_audit = max(bucket_policy_audits, key=lambda audit: abs(float(audit.score or 0.0)))
+        item_policy_news_audit = replace(
+            strongest_bucket_audit,
+            influence_scope="core_mild",
+            notes=list(strongest_bucket_audit.notes)
+            + ["policy/news signal matched the bucket but did not displace the core primary product"],
+        )
     rationale = [
         f"该执行项承接资金桶 {bucket} 的建议权重。",
         "主推产品按高流动性、低费用、低复杂度优先排序。",
@@ -384,6 +416,14 @@ def _build_item(bucket: str, target_weight: float, candidates: list[RuntimeProdu
             rationale.append("主推产品已基于真实估值结果通过正式筛选：PE<=40，估值分位<=30%。")
         elif audit.status == "not_applicable":
             rationale.append("该产品不适用 PE/估值分位筛选，已显式标记 valuation:not_applicable。")
+    if item_policy_news_audit is not None:
+        audit = item_policy_news_audit
+        if audit.realtime_eligible and audit.score:
+            rationale.append("主推产品已吸收真实政策/新闻材料的动态评分排序。")
+        elif not audit.realtime_eligible:
+            rationale.append("当前没有可用的真实政策/新闻材料，本次未启用实时政策/新闻评分。")
+        elif audit.influence_scope == "core_mild":
+            rationale.append("核心仓仅接受温和政策/新闻影响，热点信号不会直接推翻核心排序。")
     if alternate_products:
         rationale.append(f"同时保留 {len(alternate_products)} 个替代产品，避免把候选隐藏成黑箱答案。")
 
@@ -397,6 +437,7 @@ def _build_item(bucket: str, target_weight: float, candidates: list[RuntimeProdu
         primary_product=primary_product,
         alternate_products=alternate_products,
         valuation_audit=primary_runtime_candidate.valuation_audit,
+        policy_news_audit=item_policy_news_audit,
     )
 
 
@@ -428,6 +469,7 @@ def _build_runtime_candidate_pool(
     runtime_candidates: list[ProductCandidate] | list[RuntimeProductCandidate] | None = None,
     valuation_inputs: dict[str, Any] | None = None,
     valuation_result: dict[str, Any] | None = None,
+    policy_news_signals: list[dict[str, Any]] | list[Any] | None = None,
 ) -> tuple[list[RuntimeProductCandidate], CandidateFilterBreakdown]:
     if runtime_candidates is None:
         staged_candidates = list(enumerate(registry))
@@ -480,12 +522,26 @@ def _build_runtime_candidate_pool(
     stages.append(stage)
     for reason, count in stage.dropped_reasons.items():
         dropped_reasons[reason] = dropped_reasons.get(reason, 0) + count
+    runtime_candidates, policy_news_audit_summary = apply_policy_news_scores(
+        runtime_candidates,
+        policy_news_signals,
+    )
+    stages.append(
+        CandidateFilterStage(
+            stage_name="policy_news_scoring",
+            input_count=len(runtime_candidates),
+            output_count=len(runtime_candidates),
+            dropped_reasons={},
+            audit_fields=policy_news_audit_summary,
+        )
+    )
     return runtime_candidates, CandidateFilterBreakdown(
         registry_candidate_count=len(registry),
         runtime_candidate_count=len(runtime_candidates),
         stages=stages,
         dropped_reasons=dropped_reasons,
         valuation_audit_summary=valuation_audit_summary,
+        policy_news_audit_summary=policy_news_audit_summary,
     )
 
 
@@ -500,6 +556,7 @@ def build_execution_plan(
     runtime_candidates: list[ProductCandidate] | list[RuntimeProductCandidate] | None = None,
     valuation_inputs: dict[str, Any] | None = None,
     valuation_result: dict[str, Any] | None = None,
+    policy_news_signals: list[dict[str, Any]] | list[Any] | None = None,
 ) -> ExecutionPlan:
     normalized_targets = _normalize_bucket_targets(bucket_targets)
     restriction_filter = _compile_restrictions(restrictions)
@@ -510,6 +567,7 @@ def build_execution_plan(
         runtime_candidates=runtime_candidates,
         valuation_inputs=valuation_inputs,
         valuation_result=valuation_result,
+        policy_news_signals=policy_news_signals,
     )
     grouped_candidates: dict[str, list[RuntimeProductCandidate]] = defaultdict(list)
 
@@ -545,4 +603,5 @@ def build_execution_plan(
         runtime_candidates=runtime_candidate_pool,
         candidate_filter_breakdown=candidate_filter_breakdown,
         valuation_audit_summary=dict(candidate_filter_breakdown.valuation_audit_summary or {}),
+        policy_news_audit_summary=dict(candidate_filter_breakdown.policy_news_audit_summary or {}),
     )

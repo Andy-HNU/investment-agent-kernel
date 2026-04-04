@@ -28,12 +28,22 @@ class PolicyNewsSignal:
     as_of: str
     source_type: str
     source_refs: list[str]
+    source_name: str | None = None
+    published_at: str | None = None
     policy_regime: str | None = None
     macro_uncertainty: str | None = None
     sentiment_stress: str | None = None
     liquidity_stress: str | None = None
+    direction: str | None = None
+    strength: float = 0.0
     manual_review_required: bool = False
     confidence: float = 0.0
+    decay_half_life_days: float | None = None
+    recency_days: float | None = None
+    decay_weight: float | None = None
+    target_buckets: list[str] = field(default_factory=list)
+    target_tags: list[str] = field(default_factory=list)
+    target_products: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

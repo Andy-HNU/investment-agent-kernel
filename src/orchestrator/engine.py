@@ -1570,6 +1570,19 @@ def _extract_execution_plan_valuation_context(
     )
 
 
+def _extract_execution_plan_policy_news_signals(
+    envelope: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    direct = envelope.get("policy_news_signals")
+    if isinstance(direct, list) and direct:
+        return [_as_dict(item) for item in direct if _as_dict(item)]
+    market_raw = _as_dict(envelope.get("market_raw"))
+    payload = market_raw.get("policy_news_signals")
+    if isinstance(payload, list) and payload:
+        return [_as_dict(item) for item in payload if _as_dict(item)]
+    return None
+
+
 def _maybe_build_execution_plan(
     *,
     run_id: str,
@@ -1593,6 +1606,7 @@ def _maybe_build_execution_plan(
     if not weights or allocation_name is None:
         return None
     valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
+    policy_news_signals = _extract_execution_plan_policy_news_signals(envelope)
     return build_execution_plan(
         source_run_id=run_id,
         source_allocation_id=allocation_name,
@@ -1600,6 +1614,7 @@ def _maybe_build_execution_plan(
         restrictions=_extract_execution_plan_restrictions(envelope),
         valuation_inputs=valuation_inputs,
         valuation_result=valuation_result,
+        policy_news_signals=policy_news_signals,
     )
 
 

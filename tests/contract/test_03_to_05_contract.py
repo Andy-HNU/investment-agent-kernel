@@ -505,3 +505,46 @@ def test_run_calibration_policy_news_signal_surfaces_manual_review_and_market_no
     assert result.constraint_state.soft_preferences["policy_manual_review_required"] is True
     assert any("policy_signal manual_review_required=true" in note for note in result.notes)
     assert any("macro_uncertainty=high" in note for note in result.notes)
+
+
+@pytest.mark.contract
+def test_build_snapshot_bundle_policy_news_signal_carries_source_recency_and_decay_metadata(
+    goal_solver_input_base,
+    live_portfolio_base,
+    calibration_result_base,
+):
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw=_market_raw(goal_solver_input_base),
+        account_raw=_account_raw(goal_solver_input_base, live_portfolio_base),
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=calibration_result_base["behavior_state"],
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+        policy_news_signals=[
+            {
+                "signal_id": "signal-recency",
+                "as_of": "2026-03-29T12:00:00Z",
+                "published_at": "2026-03-27T12:00:00Z",
+                "source_type": "news",
+                "source_name": "news_feed",
+                "source_refs": ["https://example.com/news/1"],
+                "direction": "bullish",
+                "strength": 0.8,
+                "confidence": 0.9,
+                "decay_half_life_days": 7.0,
+                "target_buckets": ["satellite"],
+                "target_tags": ["cyclical"],
+            }
+        ],
+    )
+
+    signal = bundle.policy_news_signals[0]
+    assert signal.source_name == "news_feed"
+    assert signal.published_at == "2026-03-27T12:00:00Z"
+    assert signal.direction == "bullish"
+    assert signal.strength == pytest.approx(0.8)
+    assert signal.recency_days == pytest.approx(2.0)
+    assert signal.decay_weight is not None
+    assert 0.0 < signal.decay_weight <= 1.0

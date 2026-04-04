@@ -242,6 +242,9 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "valuation_audit_summary": dict(
             payload.get("valuation_audit_summary") or breakdown.get("valuation_audit_summary") or {}
         ),
+        "policy_news_audit_summary": dict(
+            payload.get("policy_news_audit_summary") or breakdown.get("policy_news_audit_summary") or {}
+        ),
     }
 
 
