@@ -9,6 +9,7 @@ from product_mapping import (
     build_execution_plan,
     load_builtin_catalog,
 )
+from product_mapping.types import CandidateFilterBreakdown, RuntimeProductCandidate
 
 
 @pytest.mark.contract
@@ -20,6 +21,8 @@ def test_builtin_catalog_covers_first_wave_buckets_with_typed_candidates():
     assert {"equity_cn", "bond_cn", "gold", "cash_liquidity"}.issubset(
         {candidate.asset_bucket for candidate in catalog}
     )
+    assert any(candidate.wrapper_type == "stock" for candidate in catalog)
+    assert any(candidate.region != "CN" for candidate in catalog)
 
 
 @pytest.mark.contract
@@ -32,6 +35,7 @@ def test_build_execution_plan_returns_typed_items_and_surfaces_alternates():
             "bond_cn": 0.25,
             "gold": 0.15,
             "cash": 0.10,
+            "satellite": 0.05,
         },
         restrictions=[],
     )
@@ -40,6 +44,9 @@ def test_build_execution_plan_returns_typed_items_and_surfaces_alternates():
     assert plan.status == "draft"
     assert plan.confirmation_required is True
     assert all(isinstance(item, ExecutionPlanItem) for item in plan.items)
+    assert all(isinstance(candidate, RuntimeProductCandidate) for candidate in plan.runtime_candidates)
+    assert isinstance(plan.candidate_filter_breakdown, CandidateFilterBreakdown)
+    assert plan.registry_candidate_count >= plan.runtime_candidate_count > 0
 
     equity_item = next(item for item in plan.items if item.asset_bucket == "equity_cn")
 
@@ -77,9 +84,12 @@ def test_build_execution_plan_respects_do_not_touch_stocks_restriction():
         restrictions=["不碰股票"],
     )
 
-    assert "equity_cn" not in {item.asset_bucket for item in plan.items}
+    assert "equity_cn" in {item.asset_bucket for item in plan.items}
+    equity_item = next(item for item in plan.items if item.asset_bucket == "equity_cn")
+    assert equity_item.primary_product.wrapper_type in {"etf", "fund"}
+    assert all(product.wrapper_type != "stock" for product in [equity_item.primary_product, *equity_item.alternate_products])
     assert any("不碰股票" in warning for warning in plan.warnings)
-    assert {"bond_cn", "gold", "cash_liquidity"}.issubset({item.asset_bucket for item in plan.items})
+    assert any("wrapper:stock" in reason for reason in plan.candidate_filter_breakdown.dropped_reasons)
 
 
 @pytest.mark.contract
@@ -98,3 +108,24 @@ def test_build_execution_plan_respects_gold_and_cash_only_restriction():
 
     assert {item.asset_bucket for item in plan.items} == {"gold", "cash_liquidity"}
     assert any("只接受黄金和现金" in warning for warning in plan.warnings)
+
+
+@pytest.mark.contract
+def test_build_execution_plan_filters_qdii_and_overseas_candidates_from_runtime_pool():
+    unrestricted = build_execution_plan(
+        source_run_id="run_qdii_allowed",
+        source_allocation_id="allocation_delta",
+        bucket_targets={"equity_cn": 0.65, "satellite": 0.20, "bond_cn": 0.15},
+        restrictions=[],
+    )
+    restricted = build_execution_plan(
+        source_run_id="run_qdii_forbidden",
+        source_allocation_id="allocation_delta",
+        bucket_targets={"equity_cn": 0.65, "satellite": 0.20, "bond_cn": 0.15},
+        restrictions=["不买QDII"],
+    )
+
+    assert any(candidate.candidate.region != "CN" for candidate in unrestricted.runtime_candidates)
+    assert all(candidate.candidate.region == "CN" for candidate in restricted.runtime_candidates)
+    assert restricted.runtime_candidate_count < unrestricted.runtime_candidate_count
+    assert any("region:non_cn" in reason or "tag:qdii" in reason for reason in restricted.candidate_filter_breakdown.dropped_reasons)

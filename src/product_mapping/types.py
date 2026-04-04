@@ -25,7 +25,7 @@ class ProductCandidate:
     product_name: str
     asset_bucket: str
     product_family: str
-    wrapper_type: Literal["etf", "fund", "bond", "cash_mgmt", "other"]
+    wrapper_type: Literal["etf", "fund", "bond", "cash_mgmt", "stock", "other"]
     provider_source: str
     provider_symbol: str | None = None
     region: str = "CN"
@@ -38,6 +38,39 @@ class ProductCandidate:
     tags: list[str] = field(default_factory=list)
     risk_labels: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
+class RuntimeProductCandidate:
+    candidate: ProductCandidate
+    registry_index: int
+    filter_stage: str = "runtime_pool"
+    filter_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
+class CandidateFilterStage:
+    stage_name: str
+    input_count: int
+    output_count: int
+    dropped_reasons: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
+class CandidateFilterBreakdown:
+    registry_candidate_count: int
+    runtime_candidate_count: int
+    stages: list[CandidateFilterStage] = field(default_factory=list)
+    dropped_reasons: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -70,6 +103,10 @@ class ExecutionPlan:
     plan_version: int = 1
     approved_at: str | None = None
     superseded_by_plan_id: str | None = None
+    registry_candidate_count: int = 0
+    runtime_candidate_count: int = 0
+    runtime_candidates: list[RuntimeProductCandidate] = field(default_factory=list)
+    candidate_filter_breakdown: CandidateFilterBreakdown | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
