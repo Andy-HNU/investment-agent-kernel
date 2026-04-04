@@ -97,6 +97,29 @@ def test_historical_dataset_cache_roundtrip_preserves_version_pin(tmp_path):
 
 
 @pytest.mark.contract
+def test_historical_dataset_summary_annualizes_daily_frequency_correctly():
+    dataset = build_historical_dataset_snapshot(
+        {
+            "source_name": "market_history",
+            "source_ref": "yfinance://market_history?symbols=equity_cn:510300.SS",
+            "as_of": "2026-04-04",
+            "lookback_months": 24,
+            "frequency": "daily",
+            "return_series": {
+                "equity_cn": [0.001, 0.002, -0.001, 0.0],
+            },
+        }
+    )
+
+    assert dataset is not None
+    expected_returns, volatility, _ = summarize_historical_dataset(dataset)
+
+    expected_mean = sum([0.001, 0.002, -0.001, 0.0]) / 4
+    assert expected_returns["equity_cn"] == pytest.approx(expected_mean * 252.0)
+    assert volatility["equity_cn"] >= 0.03
+
+
+@pytest.mark.contract
 def test_frontdesk_onboarding_accepts_local_json_provider_fixture(tmp_path):
     fixture_path = Path(__file__).resolve().parents[1] / "fixtures" / "provider_snapshot_local.json"
     summary = run_frontdesk_onboarding(
@@ -188,6 +211,40 @@ def test_frontdesk_onboarding_accepts_market_history_provider_config(tmp_path, m
     assert summary["refresh_summary"]["provider_name"] == "market_history"
     assert summary["refresh_summary"]["external_status"] == "fetched"
     assert summary["decision_card"]["input_provenance"]["counts"]["externally_fetched"] > 0
+
+
+@pytest.mark.contract
+def test_frontdesk_refresh_summary_surfaces_historical_dataset_metadata(tmp_path, monkeypatch):
+    def _fake_fetch_timeseries(spec, *, pin, cache, allow_fallback=False, return_used_pin=False):
+        rows = [
+            {"date": "2024-03-28", "open": 3.20, "high": 3.25, "low": 3.18, "close": 3.24, "volume": 1000},
+            {"date": "2024-03-29", "open": 3.24, "high": 3.28, "low": 3.20, "close": 3.27, "volume": 2000},
+            {"date": "2024-04-01", "open": 3.27, "high": 3.30, "low": 3.25, "close": 3.29, "volume": 1500},
+        ]
+        return (rows, pin) if return_used_pin else rows
+
+    monkeypatch.setattr("snapshot_ingestion.providers.fetch_timeseries", _fake_fetch_timeseries)
+
+    summary = run_frontdesk_onboarding(
+        _profile(account_profile_id="market_history_refresh_summary_user"),
+        db_path=tmp_path / "frontdesk.sqlite",
+        external_data_config={
+            "adapter": "market_history",
+            "provider": "yfinance",
+            "coverage_asset_class": "etf",
+            "cache_dir": str(tmp_path / "cache"),
+            "lookback_months": 12,
+        },
+    )
+
+    market_detail = next(
+        item for item in summary["refresh_summary"]["domain_details"] if item.get("domain") == "market_raw"
+    )
+    historical = market_detail["historical_dataset"]
+    assert historical["source_name"] == "yfinance"
+    assert historical["coverage_status"] == "verified"
+    assert historical["audit_window"]["trading_days"] == 3
+    assert historical["source_ref"].startswith("yfinance://market_history?")
 
 
 @pytest.mark.contract

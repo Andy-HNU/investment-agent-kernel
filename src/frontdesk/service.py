@@ -600,6 +600,7 @@ def _build_refresh_summary(
     }
     domain_details: list[dict[str, Any]] = []
     externally_fetched_items = list((input_provenance or {}).get("externally_fetched", []))
+    historical_dataset_meta = _as_dict(_as_dict(raw_inputs.get("market_raw")).get("historical_dataset"))
     for key in ("market_raw", "account_raw", "behavior_raw", "live_portfolio"):
         domain_meta = _as_dict((meta.get("domains") or {}).get(key))
         domain_source = "externally_fetched" if any(str(item.get("field")) == key for item in externally_fetched_items) else None
@@ -613,23 +614,35 @@ def _build_refresh_summary(
             domain_state = "default_assumed" if domain_source == "default_assumed" else "fresh"
         if fallback_active and domain_source != "externally_fetched":
             domain_state = "fallback"
-        domain_details.append(
-            {
-                "domain": key,
-                "label": _EXT_SOURCE_LABELS.get(key, key),
-                "source_type": domain_source,
-                "source_label": (input_provenance or {}).get("source_labels", {}).get(domain_source or "", domain_source),
-                "source_ref": domain_meta.get("source_ref") or (source_ref if domain_source == "externally_fetched" else None),
-                "data_status": domain_meta.get("data_status")
-                or (_FORMAL_PATH_SOURCE_STATUS.get(domain_source or "", DataStatus.INFERRED).value if domain_source else None),
-                "freshness_state": domain_state,
-                "freshness_label": freshness_label_map.get(domain_state, domain_state),
-                "fetched_at": domain_meta.get("fetched_at") or (fetched_at if domain_source == "externally_fetched" else None),
-                "as_of": domain_meta.get("as_of") or meta.get("as_of") or as_of or None,
-                "audit_window": _coerce_audit_window(domain_meta).to_dict() if _coerce_audit_window(domain_meta) else None,
-                "detail": domain_meta.get("detail"),
+        detail = {
+            "domain": key,
+            "label": _EXT_SOURCE_LABELS.get(key, key),
+            "source_type": domain_source,
+            "source_label": (input_provenance or {}).get("source_labels", {}).get(domain_source or "", domain_source),
+            "source_ref": domain_meta.get("source_ref") or (source_ref if domain_source == "externally_fetched" else None),
+            "data_status": domain_meta.get("data_status")
+            or (_FORMAL_PATH_SOURCE_STATUS.get(domain_source or "", DataStatus.INFERRED).value if domain_source else None),
+            "freshness_state": domain_state,
+            "freshness_label": freshness_label_map.get(domain_state, domain_state),
+            "fetched_at": domain_meta.get("fetched_at") or (fetched_at if domain_source == "externally_fetched" else None),
+            "as_of": domain_meta.get("as_of") or meta.get("as_of") or as_of or None,
+            "audit_window": _coerce_audit_window(domain_meta).to_dict() if _coerce_audit_window(domain_meta) else None,
+            "detail": domain_meta.get("detail"),
+        }
+        if key == "market_raw" and historical_dataset_meta:
+            detail["historical_dataset"] = {
+                "dataset_id": historical_dataset_meta.get("dataset_id"),
+                "version_id": historical_dataset_meta.get("version_id"),
+                "source_name": historical_dataset_meta.get("source_name"),
+                "source_ref": historical_dataset_meta.get("source_ref"),
+                "coverage_status": historical_dataset_meta.get("coverage_status"),
+                "frequency": historical_dataset_meta.get("frequency"),
+                "notes": list(historical_dataset_meta.get("notes") or []),
+                "audit_window": _coerce_audit_window(historical_dataset_meta).to_dict()
+                if _coerce_audit_window(historical_dataset_meta)
+                else None,
             }
-        )
+        domain_details.append(detail)
     return {
         "workflow_type": workflow_type,
         "as_of": as_of or None,

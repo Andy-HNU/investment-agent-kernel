@@ -104,7 +104,7 @@ def _market_history_symbol_map(config: dict[str, Any], provider: str) -> dict[st
 
 def _make_version_pin(provider: str, symbol: str, *, start_date: str, end_date: str, lookback_months: int) -> VersionPin:
     source_ref = f"{provider}://{symbol}?start={start_date}&end={end_date}&lookback_months={lookback_months}"
-    version_id = f"{provider}:{symbol}:{end_date}:{lookback_months}m"
+    version_id = f"{provider}:{symbol}:{start_date}:{end_date}:{lookback_months}m"
     return VersionPin(version_id=version_id, source_ref=source_ref)
 
 
@@ -237,7 +237,8 @@ def _coerce_market_history_snapshot(config: dict[str, Any], *, as_of: str) -> Fe
         warnings.append(f"market_history cache fallback activated for provider={used_provider}")
     historical_dataset = {
         "dataset_id": str(config.get("dataset_id") or "market_history"),
-        "version_id": f"{used_provider}:{end_date}:{lookback_months}m",
+        "version_id": f"{used_provider}:{start_date}:{end_date}:{lookback_months}m",
+        "frequency": "daily",
         "as_of": end_date,
         "source_name": used_provider,
         "source_ref": used_source_ref or f"{used_provider}://market_history",

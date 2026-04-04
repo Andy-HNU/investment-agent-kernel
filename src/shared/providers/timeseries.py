@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -43,19 +44,29 @@ def _window_from_source_ref(pin: VersionPin) -> tuple[str | None, str | None]:
 def _load_cached_fallback(
     spec: DatasetSpec,
     *,
+    pin: VersionPin,
     cache: DatasetCache,
     allow_fallback: bool,
     return_used_pin: bool,
 ):
     if not allow_fallback:
         return None
-    latest = cache.latest_cached_pin(spec)
-    if latest is None:
+    requested_start, requested_end = _window_from_source_ref(pin)
+    for candidate in reversed(cache.cached_pins(spec)):
+        candidate_start, candidate_end = _window_from_source_ref(candidate)
+        if requested_start != candidate_start or requested_end != candidate_end:
+            continue
+        cached = cache.read(spec, candidate)
+        if cached is None:
+            continue
+        return (cached, candidate) if return_used_pin else cached
+    return None
+
+
+def _inclusive_yfinance_end(end: str | None) -> str | None:
+    if not end:
         return None
-    cached = cache.read(spec, latest)
-    if cached is None:
-        return None
-    return (cached, latest) if return_used_pin else cached
+    return (date.fromisoformat(end) + timedelta(days=1)).isoformat()
 
 
 def _normalize_provider_error(spec: DatasetSpec, exc: Exception) -> RuntimeError:
@@ -100,7 +111,7 @@ def _fetch_yfinance(spec: DatasetSpec, pin: VersionPin) -> list[dict[str, Any]]:
     df = yf.download(
         ticker,
         start=start,
-        end=end,
+        end=_inclusive_yfinance_end(end),
         auto_adjust=False,
         progress=False,
         threads=False,
@@ -240,7 +251,13 @@ def fetch_timeseries(
         else:
             raise ValueError(f"unsupported timeseries provider: {spec.provider}")
     except Exception as exc:
-        fallback = _load_cached_fallback(spec, cache=cache, allow_fallback=allow_fallback, return_used_pin=return_used_pin)
+        fallback = _load_cached_fallback(
+            spec,
+            pin=pin,
+            cache=cache,
+            allow_fallback=allow_fallback,
+            return_used_pin=return_used_pin,
+        )
         if fallback is not None:
             return fallback
         if isinstance(exc, ValueError) and str(exc).startswith("unsupported timeseries provider:"):
