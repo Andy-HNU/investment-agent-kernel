@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 
 import runtime_optimizer.ev_engine.engine as ev_engine_module
+import runtime_optimizer.ev_engine.scorer as ev_scorer_module
 from runtime_optimizer.candidates import Action, ActionType
 from runtime_optimizer.ev_engine.engine import run_ev_engine
 from runtime_optimizer.ev_engine.scorer import score_action
@@ -106,6 +107,50 @@ def test_run_ev_engine_returns_typed_report(
 
     assert isinstance(report, EVReport)
     assert report.trigger_type == "monthly"
+
+
+@pytest.mark.contract
+def test_score_action_add_cash_to_new_bucket_preserves_cash_coverage_without_retargeting(
+    market_state_base,
+    constraint_state_base,
+    behavior_state_base,
+    ev_params_base,
+    goal_solver_input_base,
+    goal_solver_output_base,
+    live_portfolio_base,
+    monkeypatch,
+):
+    captured: list[dict[str, float]] = []
+
+    def _fake_run_goal_solver_lightweight(*, weights, baseline_inp):
+        captured.append(dict(weights))
+        return 0.5, None
+
+    monkeypatch.setattr(ev_scorer_module, "run_goal_solver_lightweight", _fake_run_goal_solver_lightweight)
+
+    live_portfolio_base["weights"] = {"gold": 0.30}
+    live_portfolio_base["available_cash"] = 7_000.0
+    live_portfolio_base["total_value"] = 10_000.0
+    state = _ev_state(
+        market_state_base,
+        constraint_state_base,
+        behavior_state_base,
+        ev_params_base,
+        goal_solver_input_base,
+        goal_solver_output_base,
+        live_portfolio_base,
+    )
+
+    score_action(
+        _action(ActionType.ADD_CASH_TO_CORE, target_bucket="equity_cn", amount=1_000.0, amount_pct=0.10),
+        state,
+    )
+
+    assert len(captured) >= 2
+    assert captured[0]["cash_liquidity"] == pytest.approx(0.70, abs=1e-6)
+    assert captured[1]["gold"] == pytest.approx(0.30, abs=1e-6)
+    assert captured[1]["cash_liquidity"] == pytest.approx(0.60, abs=1e-6)
+    assert captured[1]["equity_cn"] == pytest.approx(0.10, abs=1e-6)
 
 
 @pytest.mark.contract

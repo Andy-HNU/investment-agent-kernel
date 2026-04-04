@@ -242,6 +242,11 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "execution_realism_summary": dict(payload.get("execution_realism_summary") or {}),
         "candidate_filter_dropped_reasons": dict(breakdown.get("dropped_reasons") or {}),
         "candidate_filter_stages": list(breakdown.get("stages") or []),
+        "product_universe_audit_summary": dict(
+            payload.get("product_universe_audit_summary")
+            or breakdown.get("product_universe_audit_summary")
+            or {}
+        ),
         "valuation_audit_summary": dict(
             payload.get("valuation_audit_summary") or breakdown.get("valuation_audit_summary") or {}
         ),

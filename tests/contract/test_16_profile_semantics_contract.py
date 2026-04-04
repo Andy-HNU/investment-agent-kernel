@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from frontdesk.service import load_frontdesk_snapshot, run_frontdesk_followup, run_frontdesk_onboarding
+from frontdesk.storage import FrontdeskStore
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 from shared.profile_parser import parse_profile_semantics
 
@@ -46,6 +47,72 @@ def test_profile_parser_compiles_known_constraints_and_marks_unknown_restriction
     assert partial.restrictions_parse_status == "partial"
     assert partial.requires_confirmation is True
     assert any("未解析" in warning for warning in partial.warnings)
+
+
+@pytest.mark.contract
+def test_profile_parser_compiles_canonical_restriction_tokens_without_partial_warning():
+    parsed = parse_profile_semantics(
+        current_holdings="",
+        restrictions=["no_stock_picking", "forbidden_theme:technology", "no_qdii"],
+    )
+
+    assert parsed.forbidden_wrappers == ["stock"]
+    assert parsed.forbidden_themes == ["technology"]
+    assert parsed.qdii_allowed is False
+    assert parsed.restrictions_parse_status == "parsed"
+    assert parsed.requires_confirmation is False
+    assert parsed.warnings == []
+
+
+@pytest.mark.contract
+def test_profile_parser_parses_amount_based_cash_and_gold_holdings():
+    parsed = parse_profile_semantics(
+        current_holdings="现金 12000 黄金 6000",
+        restrictions=[],
+    )
+
+    assert parsed.holdings_parse_status == "parsed"
+    assert parsed.current_weights == {"gold": 0.3333}
+    assert parsed.available_cash_fraction == pytest.approx(0.6667, abs=1e-4)
+    assert any("显式金额" in note for note in parsed.notes)
+
+
+@pytest.mark.contract
+def test_profile_parser_parses_reverse_order_amount_holdings_without_cash_bleed():
+    parsed = parse_profile_semantics(
+        current_holdings="黄金 6000 现金 12000",
+        restrictions=[],
+    )
+
+    assert parsed.holdings_parse_status == "parsed"
+    assert parsed.current_weights == {"gold": 0.3333}
+    assert parsed.available_cash_fraction == pytest.approx(0.6667, abs=1e-4)
+
+
+@pytest.mark.contract
+def test_profile_parser_does_not_double_count_explicit_cash_bucket():
+    parsed = parse_profile_semantics(
+        current_holdings="",
+        restrictions=[],
+        explicit_current_weights={"gold": 0.2, "cash_liquidity": 0.3},
+    )
+
+    assert parsed.current_weights == {"gold": 0.2, "cash_liquidity": 0.3}
+    assert parsed.available_cash_fraction == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.contract
+def test_profile_parser_splits_compound_restriction_clauses_and_compiles_high_risk_filter():
+    parsed = parse_profile_semantics(
+        current_holdings="",
+        restrictions=["不买个股，而且不碰科技主题；不碰高风险产品"],
+    )
+
+    assert parsed.forbidden_wrappers == ["stock"]
+    assert parsed.forbidden_themes == ["technology"]
+    assert parsed.forbidden_risk_labels == ["high_risk_product"]
+    assert parsed.restrictions_parse_status == "parsed"
+    assert parsed.warnings == []
 
 
 @pytest.mark.contract
@@ -161,6 +228,51 @@ def test_degraded_onboarding_still_persists_baseline_and_allows_monthly_followup
     assert snapshot is not None
     assert snapshot["latest_baseline"]["run_id"] == onboarding["run_id"]
     assert snapshot["latest_run"]["workflow_type"] == "monthly"
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_compiles_canonical_theme_restriction_into_execution_plan(tmp_path):
+    db_path = tmp_path / "canonical_theme.sqlite"
+    profile = UserOnboardingProfile(
+        account_profile_id="canonical_theme_profile",
+        display_name="CanonicalTheme",
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
+        restrictions=["no_stock_picking", "forbidden_theme:technology"],
+    )
+
+    summary = run_frontdesk_onboarding(profile, db_path=db_path)
+    snapshot = load_frontdesk_snapshot(profile.account_profile_id, db_path=db_path)
+    assert summary["status"] in {"completed", "degraded"}
+    assert snapshot is not None
+    persisted_profile = snapshot["profile"]["profile"]
+    assert "stock" in set(persisted_profile["forbidden_wrappers"] or [])
+    assert "technology" in set(persisted_profile["forbidden_themes"] or [])
+    assert not any("限制条件未能稳定编译" in note for note in persisted_profile.get("profile_parse_notes") or [])
+
+    pending = snapshot["pending_execution_plan"]
+    assert pending is not None
+    plan_record = FrontdeskStore(db_path).get_execution_plan_record(
+        profile.account_profile_id,
+        plan_id=str(pending["plan_id"]),
+        plan_version=int(pending["plan_version"]),
+    )
+    assert plan_record is not None
+    selected_tags = {
+        str(tag)
+        for item in list((plan_record.payload or {}).get("items") or [])
+        for tag in list(((item or {}).get("primary_product") or {}).get("tags") or [])
+    }
+    assert "technology" not in selected_tags
+    assert any(
+        "theme:technology" in reason
+        for reason in dict(pending.get("candidate_filter_dropped_reasons") or {}).keys()
+    )
 
 
 @pytest.mark.contract

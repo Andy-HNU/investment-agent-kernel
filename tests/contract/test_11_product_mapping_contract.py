@@ -183,6 +183,113 @@ def test_build_execution_plan_filters_theme_without_collapsing_satellite_bucket(
 
 
 @pytest.mark.contract
+def test_build_execution_plan_accepts_canonical_theme_token_without_collapsing_satellite_bucket():
+    restricted = build_execution_plan(
+        source_run_id="run_theme_forbidden_canonical",
+        source_allocation_id="allocation_theme_forbidden_canonical",
+        bucket_targets={"satellite": 0.20},
+        restrictions=["forbidden_theme:technology"],
+    )
+
+    satellite_item = next(item for item in restricted.items if item.asset_bucket == "satellite")
+
+    assert "technology" not in satellite_item.primary_product.tags
+    assert restricted.runtime_candidate_count > 0
+    assert any("theme:technology" in reason for reason in restricted.candidate_filter_breakdown.dropped_reasons)
+
+
+@pytest.mark.contract
+def test_build_execution_plan_filters_high_risk_products_when_requested():
+    restricted = build_execution_plan(
+        source_run_id="run_high_risk_forbidden",
+        source_allocation_id="allocation_high_risk_forbidden",
+        bucket_targets={"equity_cn": 0.50, "bond_cn": 0.30, "gold": 0.20, "satellite": 0.10},
+        restrictions=["no_high_risk_products"],
+    )
+
+    assert any("risk_label:high_risk_product" in reason for reason in restricted.candidate_filter_breakdown.dropped_reasons)
+    assert all(
+        "主题波动" not in item.primary_product.risk_labels and item.primary_product.wrapper_type != "stock"
+        for item in restricted.items
+    )
+
+
+@pytest.mark.contract
+def test_build_execution_plan_filters_runtime_pool_by_observed_product_universe_result():
+    unrestricted = build_execution_plan(
+        source_run_id="run_universe_unrestricted",
+        source_allocation_id="allocation_universe_unrestricted",
+        bucket_targets={"equity_cn": 0.60, "satellite": 0.20, "bond_cn": 0.20},
+        restrictions=[],
+    )
+    restricted = build_execution_plan(
+        source_run_id="run_universe_observed_filter",
+        source_allocation_id="allocation_universe_observed_filter",
+        bucket_targets={"equity_cn": 0.60, "satellite": 0.20, "bond_cn": 0.20},
+        restrictions=[],
+        product_universe_inputs={"requested": True, "require_observed_source": True},
+        product_universe_result={
+            "source_status": "observed",
+            "source_name": "akshare_product_universe",
+            "source_ref": "akshare:product_universe:cn",
+            "as_of": "2026-04-04",
+            "products": {
+                "510880": {"status": "observed", "tradable": True},
+                "510300": {"status": "observed", "tradable": True},
+                "012390": {"status": "observed", "tradable": False},
+                "511010": {"status": "observed", "tradable": True},
+                "000402": {"status": "observed", "tradable": False},
+                "159995": {"status": "observed", "tradable": False},
+                "562500": {"status": "observed", "tradable": False},
+                "159930": {"status": "observed", "tradable": True},
+            },
+        },
+    )
+
+    assert restricted.runtime_candidate_count < unrestricted.runtime_candidate_count
+    assert any(
+        "product_universe:not_tradable" in reason
+        for reason in restricted.candidate_filter_breakdown.dropped_reasons
+    )
+    assert restricted.candidate_filter_breakdown.product_universe_audit_summary["source_status"] == "observed"
+    assert restricted.candidate_filter_breakdown.product_universe_audit_summary["dropped_candidate_count"] >= 1
+    assert restricted.summary()["product_universe_audit_summary"]["source_name"] == "akshare_product_universe"
+
+
+@pytest.mark.contract
+def test_build_execution_plan_uses_observed_product_proxy_specs_when_available():
+    plan = build_execution_plan(
+        source_run_id="run_observed_proxy_specs",
+        source_allocation_id="allocation_observed_proxy_specs",
+        bucket_targets={"equity_cn": 0.60, "bond_cn": 0.25, "gold": 0.15},
+        restrictions=[],
+        product_proxy_result={
+            "products": {
+                "cn_equity_dividend_etf": {
+                    "status": "observed",
+                    "proxy_kind": "observed_total_return_proxy",
+                    "proxy_ref": "akshare:fund:510880",
+                    "confidence": 0.91,
+                    "confidence_data_status": "computed_from_observed",
+                    "confidence_disclosure": "proxy confidence is backed by observed coverage metadata.",
+                    "source_ref": "akshare:proxy:510880",
+                    "data_status": "observed",
+                    "as_of": "2026-04-04",
+                }
+            }
+        },
+    )
+
+    dividend_spec = next(spec for spec in plan.product_proxy_specs if spec.product_id == "cn_equity_dividend_etf")
+    assert dividend_spec.proxy_kind == "observed_total_return_proxy"
+    assert dividend_spec.proxy_ref == "akshare:fund:510880"
+    assert dividend_spec.data_status == "observed"
+    assert dividend_spec.confidence_data_status == "computed_from_observed"
+    assert dividend_spec.as_of == "2026-04-04"
+    assert plan.summary()["proxy_universe_summary"]["data_status"] in {"observed", "computed_from_observed"}
+
+
+@pytest.mark.contract
 def test_build_execution_plan_does_not_claim_low_valuation_filter_without_observed_source():
     plan = build_execution_plan(
         source_run_id="run_missing_valuation_source",
@@ -224,7 +331,20 @@ def test_build_execution_plan_filters_observed_valuation_by_pe_and_percentile_ru
             "source_ref": "akshare:valuation:equity_cn",
             "as_of": "2026-04-04",
             "products": {
-                "510880": {"status": "observed", "pe_ratio": 18.0, "percentile": 0.22},
+                "510880": {
+                    "status": "observed",
+                    "pe_ratio": 18.0,
+                    "pb_ratio": 2.1,
+                    "percentile": 0.22,
+                    "data_status": "observed",
+                    "audit_window": {
+                        "start_date": "2016-04-04",
+                        "end_date": "2026-04-04",
+                        "trading_days": 2420,
+                        "observed_days": 2420,
+                        "inferred_days": 0,
+                    },
+                },
                 "510300": {"status": "observed", "pe_ratio": 45.0, "percentile": 0.18},
                 "012390": {"status": "observed", "pe_ratio": 20.0, "percentile": 0.42},
             },
@@ -236,6 +356,10 @@ def test_build_execution_plan_filters_observed_valuation_by_pe_and_percentile_ru
     assert equity_item.primary_product_id == "cn_equity_dividend_etf"
     assert equity_item.valuation_audit is not None
     assert equity_item.valuation_audit.status == "observed"
+    assert equity_item.valuation_audit.pb_ratio == 2.1
+    assert equity_item.valuation_audit.data_status == "observed"
+    assert equity_item.valuation_audit.audit_window is not None
+    assert equity_item.valuation_audit.audit_window.trading_days == 2420
     assert equity_item.valuation_audit.passed_filters is True
     assert any("valuation:pe_above_40" in reason for reason in plan.candidate_filter_breakdown.dropped_reasons)
     assert any(
@@ -278,8 +402,22 @@ def test_build_execution_plan_uses_dynamic_policy_news_score_for_satellite_ranki
         source_run_id="run_policy_news_satellite",
         source_allocation_id="allocation_policy_news_satellite",
         bucket_targets={"satellite": 0.20, "equity_cn": 0.40, "bond_cn": 0.40},
-        restrictions=[],
+        restrictions=["forbidden_theme:technology"],
         policy_news_signals=[
+            {
+                "signal_id": "signal-tech-positive",
+                "as_of": "2026-04-04T15:00:00Z",
+                "published_at": "2026-03-26T12:00:00Z",
+                "source_type": "news",
+                "source_name": "newswire",
+                "source_refs": ["https://example.com/news/tech"],
+                "direction": "bullish",
+                "strength": 0.9,
+                "confidence": 0.85,
+                "decay_half_life_days": 7.0,
+                "target_buckets": ["satellite"],
+                "target_tags": ["technology"],
+            },
             {
                 "signal_id": "signal-energy-positive",
                 "as_of": "2026-04-04T15:00:00Z",
@@ -303,6 +441,10 @@ def test_build_execution_plan_uses_dynamic_policy_news_score_for_satellite_ranki
     assert satellite_item.policy_news_audit is not None
     assert satellite_item.policy_news_audit.realtime_eligible is True
     assert satellite_item.policy_news_audit.score > 0.0
+    assert satellite_item.policy_news_audit.data_status == "computed_from_observed"
+    assert satellite_item.policy_news_audit.confidence_data_status == "inferred"
+    assert satellite_item.policy_news_audit.recency_days == pytest.approx(1.125, abs=1e-6)
+    assert satellite_item.policy_news_audit.decay_weight == pytest.approx(0.5 ** (1.125 / 7.0), abs=1e-6)
     assert plan.policy_news_audit_summary["source_status"] == "observed"
     assert plan.policy_news_audit_summary["realtime_eligible"] is True
 
@@ -333,6 +475,7 @@ def test_build_execution_plan_does_not_claim_realtime_policy_news_without_real_m
     assert satellite_item.primary_product_id == "cn_satellite_chip_etf"
     assert satellite_item.policy_news_audit is not None
     assert satellite_item.policy_news_audit.realtime_eligible is False
+    assert satellite_item.policy_news_audit.data_status == "manual_annotation"
     assert plan.policy_news_audit_summary["source_status"] == "missing_materials"
     assert plan.policy_news_audit_summary["realtime_eligible"] is False
 

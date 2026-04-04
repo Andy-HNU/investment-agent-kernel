@@ -665,19 +665,15 @@ def _build_probability_explanation(
         why_not_drawdown = ""
 
     return {
-        "recommended_allocation_name": recommended_name,
         "recommended_allocation_label": recommended_label,
         "recommended_success_probability": recommended_probability,
-        "highest_probability_allocation_name": highest_name,
         "highest_probability_allocation_label": highest_label,
         "highest_probability_success_probability": highest_probability,
         "why_not_highest_probability": why_not,
-        "target_return_priority_allocation_name": _metric(target_return_priority.get("allocation_name")) or "",
         "target_return_priority_allocation_label": target_label,
         "target_return_priority_success_probability": _metric(target_return_priority.get("success_probability")) or "",
         "target_return_priority_explanation": target_explanation,
         "why_not_target_return_priority": why_not_target,
-        "drawdown_priority_allocation_name": _metric(drawdown_priority.get("allocation_name")) or "",
         "drawdown_priority_allocation_label": drawdown_label,
         "drawdown_priority_success_probability": _metric(drawdown_priority.get("success_probability")) or "",
         "drawdown_priority_explanation": drawdown_explanation,

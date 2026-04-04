@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from typing import Any
 
+from shared.audit import AuditWindow, DataStatus, coerce_data_status
 from shared.profile_parser import parse_profile_semantics
 
 from product_mapping.catalog import load_builtin_catalog
@@ -70,8 +71,44 @@ class _RestrictionFilter:
     allowed_regions: set[str]
     forbidden_regions: set[str]
     forbidden_themes: set[str]
+    forbidden_risk_labels: set[str]
     qdii_allowed: bool | None
     warnings: list[str]
+
+
+def _product_universe_source_summary(
+    universe_inputs: dict[str, Any] | None,
+    universe_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    inputs = dict(universe_inputs or {})
+    result = dict(universe_result or {})
+    return {
+        "requested": bool(inputs.get("requested") or universe_result is not None),
+        "require_observed_source": bool(inputs.get("require_observed_source", False)),
+        "source_status": str(result.get("source_status") or "missing"),
+        "source_name": result.get("source_name"),
+        "source_ref": result.get("source_ref"),
+        "as_of": result.get("as_of"),
+    }
+
+
+def _resolve_product_universe_payload(
+    candidate: ProductCandidate,
+    universe_result: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not universe_result:
+        return None
+    product_map = dict(universe_result.get("products") or {})
+    for key in (
+        candidate.product_id,
+        str(candidate.provider_symbol or "").strip(),
+        str(candidate.provider_symbol or "").strip().lower(),
+    ):
+        if key and key in product_map:
+            payload = dict(product_map.get(key) or {})
+            payload.setdefault("product_key", key)
+            return payload
+    return None
 
 
 def _normalize_bucket(bucket: str) -> str:
@@ -97,6 +134,7 @@ def _compile_restrictions(restrictions: list[str] | None) -> _RestrictionFilter:
     allowed_regions = {str(region).strip().upper() for region in parsed.allowed_regions}
     forbidden_regions = {str(region).strip().upper() for region in parsed.forbidden_regions}
     forbidden_themes = {str(theme).strip().lower() for theme in parsed.forbidden_themes}
+    forbidden_risk_labels = {str(label).strip().lower() for label in parsed.forbidden_risk_labels}
     warnings: list[str] = []
     lowered_items = [item.lower() for item in raw_restrictions]
 
@@ -121,6 +159,7 @@ def _compile_restrictions(restrictions: list[str] | None) -> _RestrictionFilter:
         allowed_regions={region for region in allowed_regions if region},
         forbidden_regions={region for region in forbidden_regions if region},
         forbidden_themes={theme for theme in forbidden_themes if theme},
+        forbidden_risk_labels={label for label in forbidden_risk_labels if label},
         qdii_allowed=parsed.qdii_allowed,
         warnings=warnings,
     )
@@ -171,6 +210,26 @@ def _theme_reason(candidate: ProductCandidate, restriction_filter: _RestrictionF
     for theme in sorted(restriction_filter.forbidden_themes):
         if theme in candidate_tags:
             return f"theme:{theme}"
+    return None
+
+
+_HIGH_RISK_PRODUCT_LABELS = {
+    "个股波动",
+    "集中度",
+    "主题波动",
+    "汇率波动",
+    "海外市场",
+}
+
+
+def _risk_reason(candidate: ProductCandidate, restriction_filter: _RestrictionFilter) -> str | None:
+    if "high_risk_product" not in restriction_filter.forbidden_risk_labels:
+        return None
+    candidate_risk_labels = {str(label).strip() for label in candidate.risk_labels}
+    if candidate.wrapper_type == "stock":
+        return "risk_label:high_risk_product"
+    if candidate_risk_labels & _HIGH_RISK_PRODUCT_LABELS:
+        return "risk_label:high_risk_product"
     return None
 
 
@@ -254,6 +313,11 @@ def _build_valuation_audit(
         ), None
 
     payload = _resolve_valuation_payload(candidate, valuation_result)
+    payload_data_status = None
+    if payload is not None and payload.get("data_status") is not None:
+        payload_data_status = coerce_data_status(payload.get("data_status")).value
+    elif summary["source_status"] == "observed":
+        payload_data_status = DataStatus.OBSERVED.value
     if (
         summary["source_status"] != "observed"
         or not payload
@@ -265,6 +329,7 @@ def _build_valuation_audit(
             source_name=summary["source_name"],
             source_ref=summary["source_ref"],
             as_of=summary["as_of"],
+            data_status=payload_data_status or DataStatus.PRIOR_DEFAULT.value,
             passed_filters=False,
             reason=reason,
         )
@@ -273,7 +338,9 @@ def _build_valuation_audit(
         return audit, None
 
     pe_ratio = payload.get("pe_ratio")
+    pb_ratio = payload.get("pb_ratio")
     percentile = payload.get("percentile")
+    audit_window = AuditWindow.from_any(payload.get("audit_window"))
     if pe_ratio is None or percentile is None:
         reason = "valuation:missing_metrics"
         return ProductValuationAudit(
@@ -282,13 +349,17 @@ def _build_valuation_audit(
             source_ref=summary["source_ref"],
             as_of=summary["as_of"],
             pe_ratio=pe_ratio,
+            pb_ratio=pb_ratio,
             percentile=percentile,
+            data_status=payload_data_status or DataStatus.OBSERVED.value,
+            audit_window=audit_window,
             passed_filters=False,
             reason=reason,
         ), reason
 
     pe_ratio = float(pe_ratio)
     percentile = float(percentile)
+    pb_ratio = None if pb_ratio is None else float(pb_ratio)
     if pe_ratio > _VALUATION_MAX_PE:
         reason = "valuation:pe_above_40"
         return ProductValuationAudit(
@@ -297,7 +368,10 @@ def _build_valuation_audit(
             source_ref=summary["source_ref"],
             as_of=summary["as_of"],
             pe_ratio=pe_ratio,
+            pb_ratio=pb_ratio,
             percentile=percentile,
+            data_status=payload_data_status or DataStatus.OBSERVED.value,
+            audit_window=audit_window,
             passed_filters=False,
             reason=reason,
         ), reason
@@ -309,7 +383,10 @@ def _build_valuation_audit(
             source_ref=summary["source_ref"],
             as_of=summary["as_of"],
             pe_ratio=pe_ratio,
+            pb_ratio=pb_ratio,
             percentile=percentile,
+            data_status=payload_data_status or DataStatus.OBSERVED.value,
+            audit_window=audit_window,
             passed_filters=False,
             reason=reason,
         ), reason
@@ -319,7 +396,10 @@ def _build_valuation_audit(
         source_ref=summary["source_ref"],
         as_of=summary["as_of"],
         pe_ratio=pe_ratio,
+        pb_ratio=pb_ratio,
         percentile=percentile,
+        data_status=payload_data_status or DataStatus.OBSERVED.value,
+        audit_window=audit_window,
         passed_filters=True,
         reason="valuation:passed",
     ), None
@@ -549,11 +629,71 @@ def _build_product_proxy_spec(candidate: ProductCandidate) -> ProductProxySpec:
     )
 
 
-def _attach_proxy_specs(runtime_candidates: list[RuntimeProductCandidate]) -> tuple[list[RuntimeProductCandidate], list[ProductProxySpec]]:
+def _resolve_product_proxy_payload(
+    candidate: ProductCandidate,
+    proxy_result: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    result = dict(proxy_result or {})
+    products = dict(result.get("products") or {})
+    keys = [
+        candidate.product_id,
+        str(candidate.provider_symbol or "").strip(),
+        f"{candidate.provider_source}:{candidate.provider_symbol or candidate.product_id}",
+    ]
+    for key in keys:
+        if key and key in products:
+            return dict(products.get(key) or {})
+    return None
+
+
+def _build_product_proxy_spec(
+    candidate: ProductCandidate,
+    proxy_result: dict[str, Any] | None = None,
+) -> ProductProxySpec:
+    proxy_ref = f"{candidate.provider_source}:{candidate.provider_symbol or candidate.product_id}"
+    payload = _resolve_product_proxy_payload(candidate, proxy_result)
+    if payload and str(payload.get("status") or "").strip().lower() == "observed":
+        confidence = float(payload.get("confidence", _PROXY_CONFIDENCE_BY_WRAPPER.get(candidate.wrapper_type, 0.70)) or 0.0)
+        confidence_status = str(payload.get("confidence_data_status") or "observed")
+        confidence_disclosure = str(
+            payload.get("confidence_disclosure")
+            or "proxy confidence is backed by observed proxy coverage metadata, not a pure heuristic wrapper score."
+        )
+        observed_proxy_ref = str(payload.get("proxy_ref") or proxy_ref)
+        observed_source_ref = str(payload.get("source_ref") or observed_proxy_ref)
+        observed_data_status = str(payload.get("data_status") or "observed")
+        return ProductProxySpec(
+            product_id=candidate.product_id,
+            proxy_kind=str(payload.get("proxy_kind") or _proxy_kind(candidate)),
+            proxy_ref=observed_proxy_ref,
+            confidence=confidence,
+            confidence_data_status=confidence_status,
+            confidence_disclosure=confidence_disclosure,
+            source_ref=observed_source_ref,
+            data_status=observed_data_status,
+            as_of=str(payload.get("as_of") or "") or None,
+        )
+    return ProductProxySpec(
+        product_id=candidate.product_id,
+        proxy_kind=_proxy_kind(candidate),
+        proxy_ref=proxy_ref,
+        confidence=_PROXY_CONFIDENCE_BY_WRAPPER.get(candidate.wrapper_type, 0.70),
+        confidence_data_status="manual_annotation",
+        confidence_disclosure="proxy confidence is a heuristic wrapper-level mapping, not observed market coverage or empirical fit quality.",
+        source_ref=proxy_ref,
+        data_status="manual_annotation",
+    )
+
+
+def _attach_proxy_specs(
+    runtime_candidates: list[RuntimeProductCandidate],
+    *,
+    proxy_result: dict[str, Any] | None = None,
+) -> tuple[list[RuntimeProductCandidate], list[ProductProxySpec]]:
     proxy_specs: list[ProductProxySpec] = []
     enriched: list[RuntimeProductCandidate] = []
     for runtime_candidate in runtime_candidates:
-        proxy_spec = _build_product_proxy_spec(runtime_candidate.candidate)
+        proxy_spec = _build_product_proxy_spec(runtime_candidate.candidate, proxy_result)
         proxy_specs.append(proxy_spec)
         enriched.append(replace(runtime_candidate, proxy_spec=proxy_spec))
     return enriched, proxy_specs
@@ -576,6 +716,13 @@ def _build_proxy_universe_summary(
             for product in [item.primary_product, *item.alternate_products]
         }
     )
+    proxy_data_status = "manual_annotation"
+    if product_proxy_specs:
+        statuses = {str(spec.data_status or "").strip() for spec in product_proxy_specs if str(spec.data_status or "").strip()}
+        if statuses == {"observed"}:
+            proxy_data_status = "observed"
+        elif statuses and statuses != {"manual_annotation"}:
+            proxy_data_status = "computed_from_observed"
     return ProxyUniverseSummary(
         solving_mode="proxy_universe",
         proxy_scope="selected_plan_items",
@@ -584,7 +731,7 @@ def _build_proxy_universe_summary(
         covered_regions=covered_regions,
         product_proxy_count=len(product_proxy_specs),
         runtime_candidate_proxy_count=len(runtime_candidates),
-        data_status="manual_annotation",
+        data_status=proxy_data_status,
         claims_real_product_history=False,
         disclosure=(
             "当前仍是代理宇宙求解：plan 级 proxy 披露仅覆盖执行计划中实际选中的产品，"
@@ -593,14 +740,18 @@ def _build_proxy_universe_summary(
     )
 
 
-def _build_selected_plan_proxy_specs(items: list[ExecutionPlanItem]) -> list[ProductProxySpec]:
+def _build_selected_plan_proxy_specs(
+    items: list[ExecutionPlanItem],
+    *,
+    proxy_result: dict[str, Any] | None = None,
+) -> list[ProductProxySpec]:
     selected_products: dict[str, ProductCandidate] = {}
     for item in items:
         selected_products[item.primary_product.product_id] = item.primary_product
         for product in item.alternate_products:
             selected_products[product.product_id] = product
     return [
-        _build_product_proxy_spec(candidate)
+        _build_product_proxy_spec(candidate, proxy_result)
         for candidate in sorted(selected_products.values(), key=lambda candidate: candidate.product_id)
     ]
 
@@ -706,11 +857,95 @@ def _apply_stage(
     )
 
 
+def _apply_product_universe_stage(
+    staged_candidates: list[tuple[int, ProductCandidate]],
+    *,
+    universe_inputs: dict[str, Any] | None,
+    universe_result: dict[str, Any] | None,
+) -> tuple[list[tuple[int, ProductCandidate]], CandidateFilterStage, dict[str, Any]]:
+    summary = _product_universe_source_summary(universe_inputs, universe_result)
+    if not summary["requested"]:
+        return staged_candidates, CandidateFilterStage(
+            stage_name="product_universe",
+            input_count=len(staged_candidates),
+            output_count=len(staged_candidates),
+            dropped_reasons={},
+            audit_fields=summary,
+        ), {
+            **summary,
+            "applicable_candidate_count": 0,
+            "observed_candidate_count": 0,
+            "tradable_candidate_count": 0,
+            "dropped_candidate_count": 0,
+        }
+
+    dropped_reasons: dict[str, int] = {}
+    kept: list[tuple[int, ProductCandidate]] = []
+    applicable_count = 0
+    observed_count = 0
+    tradable_count = 0
+    dropped_count = 0
+    source_status = summary["source_status"]
+
+    for registry_index, candidate in staged_candidates:
+        payload = _resolve_product_universe_payload(candidate, universe_result)
+        if payload is None:
+            if summary["require_observed_source"]:
+                reason = "product_universe:missing_observed_entry"
+                dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
+                dropped_count += 1
+                continue
+            kept.append((registry_index, candidate))
+            continue
+
+        applicable_count += 1
+        entry_status = str(payload.get("status") or source_status or "missing").strip().lower()
+        if entry_status == "observed":
+            observed_count += 1
+        if source_status != "observed" or entry_status != "observed":
+            if summary["require_observed_source"]:
+                reason = "product_universe:missing_observed_source"
+                dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
+                dropped_count += 1
+                continue
+            kept.append((registry_index, candidate))
+            continue
+
+        tradable = payload.get("tradable")
+        if tradable is None:
+            tradable = payload.get("tradeable")
+        if bool(tradable):
+            tradable_count += 1
+            kept.append((registry_index, candidate))
+            continue
+
+        reason = "product_universe:not_tradable"
+        dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
+        dropped_count += 1
+
+    audit_summary = {
+        **summary,
+        "applicable_candidate_count": applicable_count,
+        "observed_candidate_count": observed_count,
+        "tradable_candidate_count": tradable_count,
+        "dropped_candidate_count": dropped_count,
+    }
+    return kept, CandidateFilterStage(
+        stage_name="product_universe",
+        input_count=len(staged_candidates),
+        output_count=len(kept),
+        dropped_reasons=dropped_reasons,
+        audit_fields=audit_summary,
+    ), audit_summary
+
+
 def _build_runtime_candidate_pool(
     registry: list[ProductCandidate],
     restriction_filter: _RestrictionFilter,
     *,
     runtime_candidates: list[ProductCandidate] | list[RuntimeProductCandidate] | None = None,
+    product_universe_inputs: dict[str, Any] | None = None,
+    product_universe_result: dict[str, Any] | None = None,
     valuation_inputs: dict[str, Any] | None = None,
     valuation_result: dict[str, Any] | None = None,
     policy_news_signals: list[dict[str, Any]] | list[Any] | None = None,
@@ -725,8 +960,15 @@ def _build_runtime_candidate_pool(
             else:
                 staged_candidates.append((index, entry))
     stages: list[CandidateFilterStage] = []
+    product_universe_audit_summary: dict[str, Any] = {}
 
     staged_candidates, stage = _apply_stage("availability", staged_candidates, _availability_reason)
+    stages.append(stage)
+    staged_candidates, stage, product_universe_audit_summary = _apply_product_universe_stage(
+        staged_candidates,
+        universe_inputs=product_universe_inputs,
+        universe_result=product_universe_result,
+    )
     stages.append(stage)
     staged_candidates, stage = _apply_stage(
         "bucket_restrictions",
@@ -750,6 +992,12 @@ def _build_runtime_candidate_pool(
         "theme_restrictions",
         staged_candidates,
         lambda candidate: _theme_reason(candidate, restriction_filter),
+    )
+    stages.append(stage)
+    staged_candidates, stage = _apply_stage(
+        "risk_restrictions",
+        staged_candidates,
+        lambda candidate: _risk_reason(candidate, restriction_filter),
     )
     stages.append(stage)
 
@@ -784,6 +1032,7 @@ def _build_runtime_candidate_pool(
         runtime_candidate_count=len(runtime_candidates),
         stages=stages,
         dropped_reasons=dropped_reasons,
+        product_universe_audit_summary=product_universe_audit_summary,
         valuation_audit_summary=valuation_audit_summary,
         policy_news_audit_summary=policy_news_audit_summary,
     )
@@ -798,9 +1047,12 @@ def build_execution_plan(
     plan_version: int = 1,
     catalog: list[ProductCandidate] | None = None,
     runtime_candidates: list[ProductCandidate] | list[RuntimeProductCandidate] | None = None,
+    product_universe_inputs: dict[str, Any] | None = None,
+    product_universe_result: dict[str, Any] | None = None,
     valuation_inputs: dict[str, Any] | None = None,
     valuation_result: dict[str, Any] | None = None,
     policy_news_signals: list[dict[str, Any]] | list[Any] | None = None,
+    product_proxy_result: dict[str, Any] | None = None,
     account_total_value: float | None = None,
     current_weights: dict[str, float] | None = None,
     available_cash: float | None = None,
@@ -818,11 +1070,16 @@ def build_execution_plan(
         registry,
         restriction_filter,
         runtime_candidates=runtime_candidates,
+        product_universe_inputs=product_universe_inputs,
+        product_universe_result=product_universe_result,
         valuation_inputs=valuation_inputs,
         valuation_result=valuation_result,
         policy_news_signals=policy_news_signals,
     )
-    runtime_candidate_pool, _runtime_pool_proxy_specs = _attach_proxy_specs(runtime_candidate_pool)
+    runtime_candidate_pool, _runtime_pool_proxy_specs = _attach_proxy_specs(
+        runtime_candidate_pool,
+        proxy_result=product_proxy_result,
+    )
     grouped_candidates: dict[str, list[RuntimeProductCandidate]] = defaultdict(list)
 
     for runtime_candidate in runtime_candidate_pool:
@@ -874,7 +1131,10 @@ def build_execution_plan(
             ]
         )
 
-    product_proxy_specs = _build_selected_plan_proxy_specs(items)
+    product_proxy_specs = _build_selected_plan_proxy_specs(
+        items,
+        proxy_result=product_proxy_result,
+    )
     proxy_universe_summary = _build_proxy_universe_summary(
         normalized_targets=normalized_targets,
         runtime_candidates=runtime_candidate_pool,

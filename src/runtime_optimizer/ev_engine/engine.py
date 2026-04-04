@@ -8,6 +8,7 @@ from goal_solver.engine import run_goal_solver_lightweight
 from runtime_optimizer.candidates import Action, ActionType
 from runtime_optimizer.ev_engine.scorer import score_action
 from runtime_optimizer.ev_engine.types import EVComponentScore, EVReport, EVResult, EVState, FeasibilityResult
+from runtime_optimizer.state_builder import augment_weights_with_cash_bucket, portfolio_weight_coverage
 
 
 def _obj(value: Any) -> Any:
@@ -45,13 +46,30 @@ def _action_from_any(item: Any) -> Action:
 
 
 def _weights_after_action(action: Action, account: dict[str, Any]) -> dict[str, float]:
-    current = dict(account.get("current_weights", {}))
+    current = augment_weights_with_cash_bucket(
+        account.get("current_weights", {}),
+        account.get("total_portfolio_value", 0.0),
+        account.get("available_cash", 0.0),
+    )
     target = account.get("target_weights", {}) or {}
     if action.type in {ActionType.FREEZE, ActionType.OBSERVE}:
         return current
 
     delta = float(action.amount_pct or 0.0)
     new_weights = dict(current)
+    cash_bucket = "cash_liquidity" if "cash_liquidity" in new_weights else ("cash" if "cash" in new_weights else None)
+
+    def _transfer_from_cash(bucket: str, amount: float) -> None:
+        nonlocal new_weights
+        if amount <= 0:
+            return
+        transferred = amount
+        if cash_bucket is not None:
+            available = max(0.0, float(new_weights.get(cash_bucket, 0.0)))
+            transferred = min(amount, available)
+            new_weights[cash_bucket] = max(0.0, available - transferred)
+        new_weights[bucket] = new_weights.get(bucket, 0.0) + transferred
+
     if action.type in {
         ActionType.ADD_CASH_TO_CORE,
         ActionType.ADD_CASH_TO_DEF,
@@ -59,10 +77,14 @@ def _weights_after_action(action: Action, account: dict[str, Any]) -> dict[str, 
         ActionType.ADD_DEFENSE,
     }:
         bucket = action.target_bucket or action.to_bucket or "equity_cn"
-        new_weights[bucket] = new_weights.get(bucket, 0.0) + delta
+        _transfer_from_cash(bucket, delta)
     elif action.type == ActionType.REDUCE_SATELLITE:
         bucket = action.target_bucket or "satellite"
-        new_weights[bucket] = max(0.0, new_weights.get(bucket, 0.0) - delta)
+        reduced = min(delta, max(0.0, float(new_weights.get(bucket, 0.0))))
+        new_weights[bucket] = max(0.0, new_weights.get(bucket, 0.0) - reduced)
+        if reduced > 0.0:
+            cash_target = cash_bucket or "cash_liquidity"
+            new_weights[cash_target] = new_weights.get(cash_target, 0.0) + reduced
     elif action.type in {ActionType.REBALANCE_LIGHT, ActionType.REBALANCE_FULL}:
         from_bucket = action.from_bucket or max(current, key=current.get)
         to_bucket = action.to_bucket or (min(target, key=target.get) if target else from_bucket)
@@ -114,12 +136,17 @@ def _validate_state(state: EVState) -> None:
     behavior = _obj(state.behavior)
 
     current_total = sum(float(value) for value in account["current_weights"].values())
+    covered_total, _cash_coverage = portfolio_weight_coverage(
+        account["current_weights"],
+        account.get("total_portfolio_value", 0.0),
+        account.get("available_cash", 0.0),
+    )
     all_cash_snapshot = (
         current_total <= 1e-9
         and float(account.get("total_portfolio_value", 0.0) or 0.0) > 0.0
         and float(account.get("available_cash", 0.0) or 0.0) >= float(account.get("total_portfolio_value", 0.0) or 0.0) - 1e-6
     )
-    assert abs(current_total - 1.0) < 1e-3 or all_cash_snapshot, "current_weights 合计必须为 1"
+    assert abs(covered_total - 1.0) < 1e-3 or all_cash_snapshot, "current_weights 合计必须为 1"
     target_total = sum(float(value) for value in account["target_weights"].values())
     assert abs(target_total - 1.0) < 1e-3, "target_weights 合计必须为 1"
     assert 0.0 <= float(account["success_prob_baseline"]) <= 1.0, "success_prob_baseline 必须在 [0, 1]"

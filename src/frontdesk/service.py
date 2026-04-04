@@ -76,6 +76,7 @@ _MONTHLY_EVENT_PROFILE_FIELDS = {
     "forbidden_regions",
     "preferred_themes",
     "forbidden_themes",
+    "forbidden_risk_labels",
     "qdii_allowed",
     "profile_parse_notes",
     "profile_parse_warnings",
@@ -852,6 +853,7 @@ def _normalize_profile_payload(profile: dict[str, Any]) -> dict[str, Any]:
     normalized["forbidden_regions"] = list(parsed.forbidden_regions)
     normalized["preferred_themes"] = list(parsed.preferred_themes)
     normalized["forbidden_themes"] = list(parsed.forbidden_themes)
+    normalized["forbidden_risk_labels"] = list(parsed.forbidden_risk_labels)
     if normalized.get("qdii_allowed") is None and parsed.qdii_allowed is not None:
         normalized["qdii_allowed"] = parsed.qdii_allowed
     elif parsed.qdii_allowed is None:

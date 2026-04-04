@@ -290,6 +290,8 @@ def test_run_goal_solver_emits_dual_probability_and_frontier_diagnostics(goal_so
     assert result.frontier_diagnostics["raw_candidate_count"] == 2
     assert result.frontier_diagnostics["feasible_candidate_count"] == 0
     assert result.frontier_diagnostics["frontier_max_expected_annual_return"] is not None
+    assert "expected_return_shrinkage_applied" in result.frontier_diagnostics["structural_limitations"]
+    assert result.frontier_diagnostics["candidate_families"] == ["balanced", "defensive"]
     assert result.frontier_diagnostics["binding_constraints"]
 
 

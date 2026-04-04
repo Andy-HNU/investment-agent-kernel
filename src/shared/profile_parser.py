@@ -7,6 +7,8 @@ from typing import Any
 
 _PERCENT_PATTERN = re.compile(r"(?P<value>\d{1,3}(?:\.\d+)?)\s*%")
 _DIGIT_RATIO_PATTERN = re.compile(r"(?P<left>\d(?:\.\d+)?)\s*[:：/]\s*(?P<right>\d(?:\.\d+)?)")
+_NUMBER_PATTERN = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>万|w|k|千)?", re.IGNORECASE)
+_RESTRICTION_CLAUSE_SPLIT_PATTERN = re.compile(r"[，,、；;]+|(?:而且)|(?:并且)|(?:以及)")
 _CN_RATIO_MAP = {
     "一九": (0.1, 0.9),
     "二八": (0.2, 0.8),
@@ -22,6 +24,9 @@ _CASH_WORDS = ("现金", "cash", "货基", "货币基金", "货币", "存款", "
 _EQUITY_WORDS = ("股票", "权益", "etf", "指数基金", "沪深300", "标普", "纳指", "nasdaq", "sp500")
 _BOND_WORDS = ("债", "债券", "固收", "中短债", "国债", "信用债")
 _GOLD_WORDS = ("黄金", "金", "gold")
+_CANONICAL_FORBIDDEN_THEME_PREFIX = "forbidden_theme:"
+_CANONICAL_FORBIDDEN_WRAPPER_PREFIX = "forbidden_wrapper:"
+_CANONICAL_FORBIDDEN_REGION_PREFIX = "forbidden_region:"
 
 
 @dataclass
@@ -36,6 +41,7 @@ class ParsedProfilePreferences:
     forbidden_regions: list[str] = field(default_factory=list)
     preferred_themes: list[str] = field(default_factory=list)
     forbidden_themes: list[str] = field(default_factory=list)
+    forbidden_risk_labels: list[str] = field(default_factory=list)
     qdii_allowed: bool | None = None
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -58,6 +64,40 @@ def _normalize_weight_map(weights: dict[str, float], *, normalize_to: float = 1.
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
+
+
+def _classify_bucket_from_context(before: str, after: str, *, prefer_after: bool) -> str | None:
+    ordered_contexts = (str(after or "").strip(), str(before or "").strip()) if prefer_after else (
+        str(before or "").strip(),
+        str(after or "").strip(),
+    )
+    for context in ordered_contexts:
+        lowered = context.lower()
+        if not lowered:
+            continue
+        if _contains_any(lowered, _CASH_WORDS):
+            return "cash"
+        if _contains_any(lowered, _GOLD_WORDS):
+            return "gold"
+        if _contains_any(lowered, _BOND_WORDS):
+            return "bond_cn"
+        if _contains_any(lowered, _EQUITY_WORDS):
+            return "equity_cn"
+    return None
+
+
+def _split_restriction_clauses(restrictions: list[str]) -> list[str]:
+    clauses: list[str] = []
+    for item in restrictions:
+        rendered = str(item).strip()
+        if not rendered:
+            continue
+        parts = [part.strip() for part in _RESTRICTION_CLAUSE_SPLIT_PATTERN.split(rendered) if part.strip()]
+        if parts:
+            clauses.extend(parts)
+        else:
+            clauses.append(rendered)
+    return clauses
 
 
 def _parse_explicit_weight_tokens(text: str) -> tuple[dict[str, float] | None, float, list[str]]:
@@ -91,15 +131,9 @@ def _parse_explicit_weight_tokens(text: str) -> tuple[dict[str, float] | None, f
             next_start = percent_matches[index + 1].start() if index + 1 < len(percent_matches) else len(normalized)
             before = normalized[max(prev_end, match.start() - 8):match.start()]
             after = normalized[match.end():min(next_start, match.end() + 8)]
-            context = f"{after} {before}".strip()
-            if _contains_any(context, _GOLD_WORDS):
-                allocations.append(("gold", value))
-            elif _contains_any(context, _BOND_WORDS):
-                allocations.append(("bond_cn", value))
-            elif _contains_any(context, _CASH_WORDS):
-                allocations.append(("cash", value))
-            elif _contains_any(context, _EQUITY_WORDS):
-                allocations.append(("equity_cn", value))
+            bucket = _classify_bucket_from_context(before, after, prefer_after=True)
+            if bucket is not None:
+                allocations.append((bucket, value))
         if allocations:
             bucket_weights: dict[str, float] = {}
             cash_fraction = 0.0
@@ -112,25 +146,96 @@ def _parse_explicit_weight_tokens(text: str) -> tuple[dict[str, float] | None, f
                 cash_fraction = min(max(cash_fraction, 0.0), 1.0)
                 notes.append("根据显式百分比描述解析当前持仓。")
                 return _normalize_weight_map(bucket_weights, normalize_to=max(1.0 - cash_fraction, 0.0)), cash_fraction, notes
+    amount_matches = list(_NUMBER_PATTERN.finditer(normalized))
+    if amount_matches:
+        allocations: list[tuple[str, float]] = []
+        for index, match in enumerate(amount_matches):
+            value = float(match.group("value"))
+            unit = str(match.group("unit") or "").lower()
+            if unit in {"万", "w"}:
+                value *= 10_000.0
+            elif unit in {"k", "千"}:
+                value *= 1_000.0
+            prev_end = amount_matches[index - 1].end() if index > 0 else 0
+            next_start = amount_matches[index + 1].start() if index + 1 < len(amount_matches) else len(normalized)
+            before = normalized[max(prev_end, match.start() - 8):match.start()]
+            after = normalized[match.end():min(next_start, match.end() + 8)]
+            bucket = _classify_bucket_from_context(before, after, prefer_after=False)
+            if bucket is not None:
+                allocations.append((bucket, value))
+        if allocations:
+            bucket_amounts: dict[str, float] = {}
+            cash_amount = 0.0
+            for bucket, value in allocations:
+                if bucket == "cash":
+                    cash_amount += value
+                else:
+                    bucket_amounts[bucket] = bucket_amounts.get(bucket, 0.0) + value
+            total_amount = cash_amount + sum(bucket_amounts.values())
+            if total_amount > 0:
+                cash_fraction = min(max(cash_amount / total_amount, 0.0), 1.0)
+                notes.append("根据显式金额描述解析当前持仓。")
+                return _normalize_weight_map(bucket_amounts, normalize_to=max(1.0 - cash_fraction, 0.0)), cash_fraction, notes
     return None, 0.0, notes
 
 
 def _parse_restrictions(restrictions: list[str]) -> ParsedProfilePreferences:
     parsed = ParsedProfilePreferences(restrictions_parse_status="parsed")
-    normalized_items = [str(item).strip().lower() for item in restrictions if str(item).strip()]
+    normalized_items = [item.lower() for item in _split_restriction_clauses(restrictions)]
     if not normalized_items:
         parsed.restrictions_parse_status = "not_provided"
         return parsed
     unmatched_items: list[str] = []
     for item in normalized_items:
         matched = False
-        if "不碰股票" in item or "不买股票" in item or "不能买股票" in item:
+        if item in {"no_stock_picking", "no_stock_wrapper"} or item == "forbidden_wrapper:stock":
             parsed.forbidden_wrappers.append("stock")
-            parsed.notes.append("限制条件包含“不碰股票”，已编译为禁止股票包装，不影响 ETF/基金权益敞口。")
+            parsed.notes.append("限制条件包含 canonical token no_stock_picking，已编译为禁止股票包装，不影响 ETF/基金权益敞口。")
+            matched = True
+        elif item.startswith(_CANONICAL_FORBIDDEN_WRAPPER_PREFIX):
+            wrapper = item.split(":", 1)[1].strip().lower()
+            if wrapper:
+                parsed.forbidden_wrappers.append(wrapper)
+                parsed.notes.append(f"限制条件包含 canonical token forbidden_wrapper:{wrapper}，已编译为包装过滤。")
+                matched = True
+        if item.startswith(_CANONICAL_FORBIDDEN_THEME_PREFIX):
+            theme = item.split(":", 1)[1].strip().lower()
+            if theme:
+                parsed.forbidden_themes.append(theme)
+                parsed.notes.append(f"限制条件包含 canonical token forbidden_theme:{theme}，已编译为主题过滤。")
+                matched = True
+        if item in {"no_qdii", "forbidden_region:non_cn"}:
+            parsed.qdii_allowed = False
+            parsed.forbidden_regions.append("non_cn")
+            parsed.notes.append("限制条件包含 canonical token no_qdii，已关闭非 CN / QDII 产品。")
+            matched = True
+        elif item.startswith(_CANONICAL_FORBIDDEN_REGION_PREFIX):
+            region = item.split(":", 1)[1].strip().upper()
+            if region:
+                parsed.forbidden_regions.append(region)
+                parsed.notes.append(f"限制条件包含 canonical token forbidden_region:{region.lower()}，已编译为区域过滤。")
+                matched = True
+        if item in {"only_gold_and_cash", "gold_and_cash_only"}:
+            parsed.allowed_buckets = ["gold", "cash_liquidity"]
+            parsed.forbidden_buckets.extend(["equity_cn", "bond_cn", "satellite"])
+            parsed.notes.append("限制条件包含 canonical token only_gold_and_cash，当前产品 universe 会近似为黄金单桶并保留现金为未投资部分。")
+            parsed.requires_confirmation = True
+            matched = True
+        if item in {"no_high_risk_products", "forbidden_risk:high"}:
+            parsed.forbidden_risk_labels.append("high_risk_product")
+            parsed.notes.append("限制条件包含 canonical token no_high_risk_products，已编译为高风险产品过滤。")
+            matched = True
+        if "不碰股票" in item or "不买股票" in item or "不能买股票" in item or "不碰个股" in item or "不买个股" in item or "不能买个股" in item:
+            parsed.forbidden_wrappers.append("stock")
+            parsed.notes.append("限制条件包含“不碰股票/个股”，已编译为禁止股票包装，不影响 ETF/基金权益敞口。")
             matched = True
         if "不碰科技" in item or "不买科技" in item or "不能买科技" in item:
             parsed.forbidden_themes.append("technology")
             parsed.notes.append("限制条件包含“不碰科技”，已编译为 technology 主题过滤。")
+            matched = True
+        if "不碰高风险产品" in item or "不买高风险产品" in item or "不能买高风险产品" in item:
+            parsed.forbidden_risk_labels.append("high_risk_product")
+            parsed.notes.append("限制条件包含“不碰高风险产品”，已编译为高风险产品过滤。")
             matched = True
         if "不买qdii" in item or "不碰qdii" in item or "不能买qdii" in item:
             parsed.qdii_allowed = False
@@ -150,6 +255,7 @@ def _parse_restrictions(restrictions: list[str]) -> ParsedProfilePreferences:
     parsed.forbidden_wrappers = sorted(set(parsed.forbidden_wrappers))
     parsed.forbidden_regions = sorted(set(parsed.forbidden_regions))
     parsed.forbidden_themes = sorted(set(parsed.forbidden_themes))
+    parsed.forbidden_risk_labels = sorted(set(parsed.forbidden_risk_labels))
     if unmatched_items and parsed.notes:
         parsed.restrictions_parse_status = "partial"
         parsed.requires_confirmation = True
@@ -172,9 +278,26 @@ def compile_profile_preferences(
 ) -> ParsedProfilePreferences:
     parsed = _parse_restrictions(restrictions)
     if explicit_current_weights is not None:
-        weights = _normalize_weight_map(explicit_current_weights)
+        raw_weights = {
+            str(key): max(float(value), 0.0)
+            for key, value in dict(explicit_current_weights).items()
+            if float(value) > 0.0
+        }
+        total = sum(raw_weights.values())
+        explicit_cash_weight = float(
+            raw_weights.get("cash_liquidity", raw_weights.get("cash", 0.0)) or 0.0
+        )
+        if total <= 0.0:
+            weights = {}
+            cash_fraction = 1.0
+        elif total <= 1.0 + 1e-6:
+            weights = {key: round(value, 4) for key, value in raw_weights.items()}
+            cash_fraction = 0.0 if explicit_cash_weight > 0.0 else max(0.0, 1.0 - total)
+        else:
+            weights = _normalize_weight_map(raw_weights)
+            cash_fraction = max(0.0, 1.0 - sum(weights.values()))
         parsed.current_weights = weights
-        parsed.available_cash_fraction = max(0.0, 1.0 - sum(weights.values()))
+        parsed.available_cash_fraction = round(cash_fraction, 4)
         parsed.holdings_parse_status = "explicit_weights"
         parsed.notes.append("用户已显式提供 current_weights，优先使用。")
         return parsed

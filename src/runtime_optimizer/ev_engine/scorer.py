@@ -6,6 +6,7 @@ from typing import Any
 from goal_solver.engine import run_goal_solver_lightweight
 from runtime_optimizer.candidates import Action, ActionType
 from runtime_optimizer.ev_engine.types import EVComponentScore, EVState
+from runtime_optimizer.state_builder import augment_weights_with_cash_bucket
 
 
 def _obj(value: Any) -> Any:
@@ -34,20 +35,31 @@ def _is_qdii_bucket(bucket: str | None, constraints: dict[str, Any]) -> bool:
 
 
 def _apply_action(action: Action, account: dict[str, Any]) -> dict[str, float]:
-    weights = dict(account.get("current_weights", {}))
+    weights = augment_weights_with_cash_bucket(
+        account.get("current_weights", {}),
+        account.get("total_portfolio_value", 0.0),
+        account.get("available_cash", 0.0),
+    )
     if action.type in {ActionType.FREEZE, ActionType.OBSERVE}:
         return weights
     delta = float(action.amount_pct or 0.0)
     if delta <= 0:
         return weights
     target = action.target_bucket or action.to_bucket or "equity_cn"
-    keys = list(weights)
-    if target not in weights and keys:
-        target = keys[0]
+    cash_bucket = "cash_liquidity" if "cash_liquidity" in weights else ("cash" if "cash" in weights else None)
     if action.type in {ActionType.ADD_CASH_TO_CORE, ActionType.ADD_CASH_TO_DEF, ActionType.ADD_CASH_TO_SAT, ActionType.ADD_DEFENSE}:
-        weights[target] = weights.get(target, 0.0) + delta
+        transferred = delta
+        if cash_bucket is not None:
+            available = max(0.0, float(weights.get(cash_bucket, 0.0)))
+            transferred = min(delta, available)
+            weights[cash_bucket] = max(0.0, available - transferred)
+        weights[target] = weights.get(target, 0.0) + transferred
     elif action.type == ActionType.REDUCE_SATELLITE:
-        weights[target] = max(0.0, weights.get(target, 0.0) - delta)
+        reduced = min(delta, max(0.0, float(weights.get(target, 0.0))))
+        weights[target] = max(0.0, weights.get(target, 0.0) - reduced)
+        if reduced > 0.0:
+            cash_target = cash_bucket or "cash_liquidity"
+            weights[cash_target] = weights.get(cash_target, 0.0) + reduced
     elif action.type in {ActionType.REBALANCE_LIGHT, ActionType.REBALANCE_FULL}:
         from_bucket = action.from_bucket or target
         to_bucket = action.to_bucket or target
@@ -99,8 +111,13 @@ def _is_momentum_chase(action: Action, market: dict[str, Any]) -> bool:
 
 def compute_goal_impact(action: Action, state: EVState, params: dict[str, Any], new_weights: dict[str, float]) -> float:
     state_dict = _obj(state)
+    baseline_weights = augment_weights_with_cash_bucket(
+        _obj(state_dict["account"])["current_weights"],
+        _obj(state_dict["account"]).get("total_portfolio_value", 0.0),
+        _obj(state_dict["account"]).get("available_cash", 0.0),
+    )
     baseline, _risk = run_goal_solver_lightweight(
-        weights=_obj(state_dict["account"])["current_weights"],
+        weights=baseline_weights,
         baseline_inp=_obj(state_dict["goal_solver_baseline_inp"]),
     )
     after, _risk_after = run_goal_solver_lightweight(
@@ -123,7 +140,12 @@ def compute_risk_penalty(action: Action, state: EVState, params: dict[str, Any],
     assumptions = _market_assumptions(state)
 
     cvar_after = _parametric_cvar(new_weights, assumptions, confidence=0.95)
-    cvar_before = _parametric_cvar(_obj(state_dict["account"])["current_weights"], assumptions, confidence=0.95)
+    baseline_weights = augment_weights_with_cash_bucket(
+        _obj(state_dict["account"])["current_weights"],
+        _obj(state_dict["account"]).get("total_portfolio_value", 0.0),
+        _obj(state_dict["account"]).get("available_cash", 0.0),
+    )
+    cvar_before = _parametric_cvar(baseline_weights, assumptions, confidence=0.95)
     cvar_delta = max(0.0, cvar_after - cvar_before)
 
     concentration_penalty = 0.0

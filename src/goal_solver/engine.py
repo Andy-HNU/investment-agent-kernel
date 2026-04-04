@@ -858,6 +858,14 @@ def _build_frontier_diagnostics(
     ]
     finite_expected_returns = [value for value in expected_returns if value is not None]
     binding_constraints: list[dict[str, Any]] = []
+    candidate_families = sorted(
+        {
+            str(result.allocation_name or "").split("__", 1)[0]
+            for result in all_results
+            if str(result.allocation_name or "").strip()
+        }
+    )
+    structural_limitations: list[str] = []
     if frontier_analysis is not None:
         target_status = frontier_analysis.scenario_status.get("target_return_priority", {})
         if target_status.get("available") is False:
@@ -877,6 +885,21 @@ def _build_frontier_diagnostics(
                     "required_value": inp.constraints.max_drawdown_tolerance,
                 }
             )
+        max_expected_return = max(finite_expected_returns) if finite_expected_returns else None
+        if (
+            frontier_analysis.implied_required_annual_return is not None
+            and max_expected_return is not None
+            and max_expected_return + 1e-9 < frontier_analysis.implied_required_annual_return
+        ):
+            structural_limitations.append("required_return_above_frontier_ceiling")
+    if inp.goal.risk_preference == "moderate" and inp.goal.horizon_months < 60 and "growth_tilt" not in candidate_families:
+        structural_limitations.append("growth_tilt_template_gated_by_horizon_lt_60_for_moderate")
+    if inp.constraints.satellite_cap <= 0.15:
+        structural_limitations.append("satellite_cap_limits_high_beta_allocations")
+    if inp.constraints.qdii_cap <= 0.20:
+        structural_limitations.append("qdii_cap_limits_overseas_exposure")
+    if inp.solver_params.shrinkage_factor < 1.0:
+        structural_limitations.append("expected_return_shrinkage_applied")
     return {
         "raw_candidate_count": len(all_results),
         "feasible_candidate_count": sum(1 for result in all_results if result.is_feasible),
@@ -884,7 +907,9 @@ def _build_frontier_diagnostics(
         "frontier_max_effective_success_probability": (
             max(_effective_success_probability(result) for result in all_results) if all_results else None
         ),
+        "candidate_families": candidate_families,
         "binding_constraints": binding_constraints,
+        "structural_limitations": structural_limitations,
     }
 
 
@@ -1254,8 +1279,20 @@ def build_account_state_baseline(
     live = _obj(live_portfolio)
     recommended = solver_output_dict["recommended_allocation"]
     structure_budget = solver_output_dict["structure_budget"]
+    current_weights = dict(live["weights"])
+    total_value = float(live["total_value"])
+    available_cash = float(live["available_cash"])
+    weight_total = sum(float(value) for value in current_weights.values())
+    if (
+        weight_total < 1.0 - 1e-6
+        and "cash_liquidity" not in current_weights
+        and "cash" not in current_weights
+        and total_value > 0.0
+        and available_cash > 0.0
+    ):
+        current_weights["cash_liquidity"] = max(min(available_cash / total_value, 1.0 - weight_total), 0.0)
     return {
-        "current_weights": dict(live["weights"]),
+        "current_weights": current_weights,
         "target_weights": dict(recommended["weights"]),
         "goal_gap": float(
             live.get(
@@ -1268,7 +1305,7 @@ def build_account_state_baseline(
         ),
         "success_prob_baseline": float(solver_output_dict["recommended_result"]["success_probability"]),
         "horizon_months": int(live["remaining_horizon_months"]),
-        "available_cash": float(live["available_cash"]),
-        "total_portfolio_value": float(live["total_value"]),
+        "available_cash": available_cash,
+        "total_portfolio_value": total_value,
         "theme_remaining_budget": dict(structure_budget.get("theme_remaining_budget", {})),
     }

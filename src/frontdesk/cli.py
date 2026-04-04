@@ -419,6 +419,10 @@ def _render_execution_plan_block(
             lines.append(
                 f"{label}_execution_realism_reasons={execution_realism_summary.get('reasons')}"
             )
+    if execution_plan.get("product_universe_audit_summary"):
+        lines.append(
+            f"{label}_product_universe_audit={execution_plan.get('product_universe_audit_summary')}"
+        )
     if execution_plan.get("valuation_audit_summary"):
         lines.append(f"{label}_valuation_audit={execution_plan.get('valuation_audit_summary')}")
     if execution_plan.get("policy_news_audit_summary"):

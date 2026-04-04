@@ -108,6 +108,7 @@ class UserOnboardingProfile:
     forbidden_regions: list[str] = field(default_factory=list)
     preferred_themes: list[str] = field(default_factory=list)
     forbidden_themes: list[str] = field(default_factory=list)
+    forbidden_risk_labels: list[str] = field(default_factory=list)
     qdii_allowed: bool | None = None
     profile_parse_notes: list[str] = field(default_factory=list)
     profile_parse_warnings: list[str] = field(default_factory=list)
@@ -214,6 +215,7 @@ def build_user_onboarding_inputs(
             "forbidden_regions": sorted(set(profile.forbidden_regions or parsed_profile.forbidden_regions)),
             "preferred_themes": sorted(set(profile.preferred_themes or parsed_profile.preferred_themes)),
             "forbidden_themes": sorted(set(profile.forbidden_themes or parsed_profile.forbidden_themes)),
+            "forbidden_risk_labels": sorted(set(profile.forbidden_risk_labels or parsed_profile.forbidden_risk_labels)),
             "qdii_allowed": profile.qdii_allowed if profile.qdii_allowed is not None else parsed_profile.qdii_allowed,
             "profile_parse_notes": list(parsed_profile.notes),
             "profile_parse_warnings": list(parsed_profile.warnings),

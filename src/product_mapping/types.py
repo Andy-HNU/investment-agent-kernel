@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
 from typing import Any, Literal
 
+from shared.audit import AuditWindow
+
 
 def _serialize(value: Any) -> Any:
     if isinstance(value, Enum):
@@ -50,7 +52,10 @@ class ProductValuationAudit:
     source_ref: str | None = None
     as_of: str | None = None
     pe_ratio: float | None = None
+    pb_ratio: float | None = None
     percentile: float | None = None
+    data_status: str | None = None
+    audit_window: AuditWindow | None = None
     passed_filters: bool | None = None
     reason: str | None = None
 
@@ -68,6 +73,7 @@ class ProductProxySpec:
     confidence_disclosure: str
     source_ref: str
     data_status: str
+    as_of: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -147,6 +153,7 @@ class CandidateFilterBreakdown:
     runtime_candidate_count: int
     stages: list[CandidateFilterStage] = field(default_factory=list)
     dropped_reasons: dict[str, int] = field(default_factory=dict)
+    product_universe_audit_summary: dict[str, Any] = field(default_factory=dict)
     valuation_audit_summary: dict[str, Any] = field(default_factory=dict)
     policy_news_audit_summary: dict[str, Any] = field(default_factory=dict)
 
@@ -186,10 +193,14 @@ class ProductPolicyNewsAudit:
     status: Literal["observed", "missing_materials", "unavailable", "not_applicable"]
     realtime_eligible: bool
     influence_scope: Literal["satellite_dynamic", "core_mild", "none"] = "none"
+    data_status: str | None = None
+    confidence_data_status: str | None = None
     source_name: str | None = None
     source_refs: list[str] = field(default_factory=list)
     latest_as_of: str | None = None
     latest_published_at: str | None = None
+    recency_days: float | None = None
+    decay_weight: float | None = None
     matched_signal_ids: list[str] = field(default_factory=list)
     matched_tags: list[str] = field(default_factory=list)
     score: float = 0.0
@@ -255,6 +266,9 @@ class ExecutionPlan:
             ),
             "candidate_filter_dropped_reasons": dict(breakdown.dropped_reasons),
             "candidate_filter_stages": [stage.to_dict() for stage in breakdown.stages],
+            "product_universe_audit_summary": dict(
+                breakdown.product_universe_audit_summary or {}
+            ),
             "valuation_audit_summary": dict(self.valuation_audit_summary or breakdown.valuation_audit_summary or {}),
             "policy_news_audit_summary": dict(
                 self.policy_news_audit_summary or breakdown.policy_news_audit_summary or {}

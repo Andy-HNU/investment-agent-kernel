@@ -1583,6 +1583,39 @@ def _extract_execution_plan_policy_news_signals(
     return None
 
 
+def _extract_execution_plan_product_universe_context(
+    envelope: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    market_raw = _as_dict(envelope.get("market_raw"))
+    universe_inputs = _as_dict(
+        market_raw.get("product_universe_inputs")
+        or market_raw.get("runtime_product_universe_inputs")
+        or {}
+    )
+    universe_result = _as_dict(
+        market_raw.get("product_universe_result")
+        or market_raw.get("runtime_product_universe_result")
+        or market_raw.get("product_universe_snapshot")
+        or {}
+    )
+    return (
+        universe_inputs or None,
+        universe_result or None,
+    )
+
+
+def _extract_execution_plan_product_proxy_context(
+    envelope: dict[str, Any],
+) -> dict[str, Any] | None:
+    market_raw = _as_dict(envelope.get("market_raw"))
+    proxy_result = _as_dict(
+        market_raw.get("product_proxy_result")
+        or market_raw.get("proxy_result")
+        or {}
+    )
+    return proxy_result or None
+
+
 def _extract_execution_plan_account_context(
     envelope: dict[str, Any],
 ) -> tuple[float | None, dict[str, float] | None, float | None, float | None, dict[str, float] | None]:
@@ -1592,6 +1625,12 @@ def _extract_execution_plan_account_context(
     current_weights = _as_dict(account_raw.get("weights")) or None
     account_total_value = account_raw.get("total_value")
     available_cash = account_raw.get("available_cash")
+    if available_cash is None and account_total_value is not None and current_weights:
+        inferred_cash_weight = float(
+            current_weights.get("cash_liquidity", current_weights.get("cash", 0.0)) or 0.0
+        )
+        if inferred_cash_weight > 0.0:
+            available_cash = float(account_total_value) * inferred_cash_weight
     liquidity_reserve_min = constraints.get("liquidity_reserve_min")
     return (
         None if account_total_value is None else float(account_total_value),
@@ -1632,6 +1671,8 @@ def _maybe_build_execution_plan(
     if not weights or allocation_name is None:
         return None
     valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
+    product_universe_inputs, product_universe_result = _extract_execution_plan_product_universe_context(envelope)
+    product_proxy_result = _extract_execution_plan_product_proxy_context(envelope)
     policy_news_signals = _extract_execution_plan_policy_news_signals(envelope)
     account_total_value, current_weights, available_cash, liquidity_reserve_min, transaction_fee_rate = (
         _extract_execution_plan_account_context(envelope)
@@ -1641,9 +1682,12 @@ def _maybe_build_execution_plan(
         source_allocation_id=allocation_name,
         bucket_targets={bucket: float(weight) for bucket, weight in weights.items()},
         restrictions=_extract_execution_plan_restrictions(envelope),
+        product_universe_inputs=product_universe_inputs,
+        product_universe_result=product_universe_result,
         valuation_inputs=valuation_inputs,
         valuation_result=valuation_result,
         policy_news_signals=policy_news_signals,
+        product_proxy_result=product_proxy_result,
         account_total_value=account_total_value,
         current_weights=current_weights,
         available_cash=available_cash,
