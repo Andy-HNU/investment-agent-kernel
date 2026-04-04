@@ -1583,6 +1583,32 @@ def _extract_execution_plan_policy_news_signals(
     return None
 
 
+def _extract_execution_plan_account_context(
+    envelope: dict[str, Any],
+) -> tuple[float | None, dict[str, float] | None, float | None, float | None, dict[str, float] | None]:
+    account_raw = _as_dict(envelope.get("account_raw")) or _as_dict(envelope.get("live_portfolio"))
+    baseline_input = _as_dict(envelope.get("goal_solver_input"))
+    constraints = _as_dict(envelope.get("constraint_raw")) or _as_dict(baseline_input.get("constraints"))
+    current_weights = _as_dict(account_raw.get("weights")) or None
+    account_total_value = account_raw.get("total_value")
+    available_cash = account_raw.get("available_cash")
+    liquidity_reserve_min = constraints.get("liquidity_reserve_min")
+    return (
+        None if account_total_value is None else float(account_total_value),
+        None
+        if current_weights is None
+        else {str(bucket): float(weight) for bucket, weight in current_weights.items()},
+        None if available_cash is None else float(available_cash),
+        None if liquidity_reserve_min is None else float(liquidity_reserve_min),
+        None
+        if not _as_dict(constraints.get("transaction_fee_rate"))
+        else {
+            str(bucket): float(rate)
+            for bucket, rate in _as_dict(constraints.get("transaction_fee_rate")).items()
+        },
+    )
+
+
 def _maybe_build_execution_plan(
     *,
     run_id: str,
@@ -1607,6 +1633,9 @@ def _maybe_build_execution_plan(
         return None
     valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
     policy_news_signals = _extract_execution_plan_policy_news_signals(envelope)
+    account_total_value, current_weights, available_cash, liquidity_reserve_min, transaction_fee_rate = (
+        _extract_execution_plan_account_context(envelope)
+    )
     return build_execution_plan(
         source_run_id=run_id,
         source_allocation_id=allocation_name,
@@ -1615,6 +1644,11 @@ def _maybe_build_execution_plan(
         valuation_inputs=valuation_inputs,
         valuation_result=valuation_result,
         policy_news_signals=policy_news_signals,
+        account_total_value=account_total_value,
+        current_weights=current_weights,
+        available_cash=available_cash,
+        liquidity_reserve_min=liquidity_reserve_min,
+        transaction_fee_rate=transaction_fee_rate,
     )
 
 

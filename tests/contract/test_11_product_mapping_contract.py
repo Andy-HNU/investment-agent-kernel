@@ -395,3 +395,71 @@ def test_build_execution_plan_summary_surfaces_proxy_universe_disclosure_and_spe
     assert summary["product_proxy_specs"]
     assert any(spec["product_id"] == "qdii_hk_tech_fund" for spec in summary["product_proxy_specs"])
     assert all(spec["data_status"] == "manual_annotation" for spec in summary["product_proxy_specs"])
+
+
+@pytest.mark.contract
+def test_build_execution_plan_surfaces_execution_realism_amounts_and_cash_reserve_conflict():
+    plan = build_execution_plan(
+        source_run_id="run_execution_realism_conflict",
+        source_allocation_id="allocation_execution_realism_conflict",
+        bucket_targets={
+            "equity_cn": 0.45,
+            "bond_cn": 0.35,
+            "gold": 0.15,
+            "satellite": 0.05,
+        },
+        restrictions=[],
+        account_total_value=35_000.0,
+        current_weights={
+            "cash_liquidity": 0.7143,
+            "gold": 0.2857,
+        },
+        available_cash=25_000.0,
+        liquidity_reserve_min=0.10,
+        minimum_trade_amount=500.0,
+        transaction_fee_rate={
+            "equity_cn": 0.003,
+            "bond_cn": 0.001,
+            "gold": 0.001,
+            "satellite": 0.004,
+        },
+    )
+
+    gold_item = next(item for item in plan.items if item.asset_bucket == "gold")
+
+    assert gold_item.current_amount == pytest.approx(9_999.5, abs=1.0)
+    assert gold_item.target_amount == pytest.approx(5_250.0, abs=1e-6)
+    assert gold_item.trade_direction == "sell"
+    assert gold_item.trade_amount == pytest.approx(4_749.5, abs=1.0)
+    assert plan.execution_realism_summary is not None
+    assert plan.execution_realism_summary.executable is False
+    assert plan.execution_realism_summary.cash_reserve_target_amount == pytest.approx(3_500.0, abs=1e-6)
+    assert plan.execution_realism_summary.estimated_total_fee is not None
+    assert plan.execution_realism_summary.estimated_total_fee > 0.0
+    assert "cash_reserve_conflict" in plan.execution_realism_summary.reasons
+
+
+@pytest.mark.contract
+def test_build_execution_plan_flags_tiny_trade_buckets_below_minimum_amount():
+    plan = build_execution_plan(
+        source_run_id="run_execution_realism_tiny_trade",
+        source_allocation_id="allocation_execution_realism_tiny_trade",
+        bucket_targets={
+            "cash_liquidity": 0.99,
+            "satellite": 0.01,
+        },
+        restrictions=[],
+        account_total_value=35_000.0,
+        current_weights={"cash_liquidity": 1.0},
+        available_cash=35_000.0,
+        liquidity_reserve_min=0.05,
+        minimum_trade_amount=500.0,
+    )
+
+    satellite_item = next(item for item in plan.items if item.asset_bucket == "satellite")
+
+    assert satellite_item.trade_amount == pytest.approx(350.0, abs=1e-6)
+    assert satellite_item.violates_minimum_trade is True
+    assert plan.execution_realism_summary is not None
+    assert plan.execution_realism_summary.executable is False
+    assert plan.execution_realism_summary.tiny_trade_buckets == ["cash_liquidity", "satellite"]

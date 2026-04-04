@@ -11,6 +11,7 @@ from product_mapping.policy_news import apply_policy_news_scores
 from product_mapping.types import (
     CandidateFilterBreakdown,
     CandidateFilterStage,
+    ExecutionRealismSummary,
     ExecutionPlan,
     ExecutionPlanItem,
     ProductCandidate,
@@ -49,6 +50,14 @@ _PROXY_CONFIDENCE_BY_WRAPPER = {
     "cash_mgmt": 0.88,
     "bond": 0.90,
     "other": 0.70,
+}
+_WRAPPER_SLIPPAGE_RATE = {
+    "stock": 0.0015,
+    "etf": 0.0008,
+    "fund": 0.0005,
+    "cash_mgmt": 0.0,
+    "bond": 0.0004,
+    "other": 0.0010,
 }
 
 
@@ -391,7 +400,18 @@ def _apply_valuation_stage(
     ), audit_summary
 
 
-def _build_item(bucket: str, target_weight: float, candidates: list[RuntimeProductCandidate]) -> ExecutionPlanItem:
+def _build_item(
+    bucket: str,
+    target_weight: float,
+    candidates: list[RuntimeProductCandidate],
+    *,
+    account_total_value: float | None = None,
+    current_weight: float | None = None,
+    minimum_trade_amount: float | None = None,
+    initial_deploy_fraction: float = 0.40,
+    transaction_fee_rate: dict[str, float] | None = None,
+    wrapper_slippage_rate: dict[str, float] | None = None,
+) -> ExecutionPlanItem:
     ordered_candidates = sorted(candidates, key=_candidate_sort_key)
     primary_runtime_candidate = ordered_candidates[0]
     primary_product = primary_runtime_candidate.candidate
@@ -437,9 +457,57 @@ def _build_item(bucket: str, target_weight: float, candidates: list[RuntimeProdu
     if alternate_products:
         rationale.append(f"同时保留 {len(alternate_products)} 个替代产品，避免把候选隐藏成黑箱答案。")
 
+    current_weight = None if current_weight is None else round(float(current_weight), 4)
+    target_amount = None
+    current_amount = None
+    trade_direction: str | None = None
+    trade_amount = None
+    initial_trade_amount = None
+    deferred_trade_amount = None
+    estimated_fee = None
+    estimated_slippage = None
+    violates_minimum_trade = False
+    if account_total_value is not None:
+        total_value = float(account_total_value)
+        target_amount = round(total_value * float(target_weight), 2)
+        current_amount = round(total_value * float(current_weight or 0.0), 2)
+        delta = round(target_amount - current_amount, 2)
+        if abs(delta) <= 1e-6:
+            trade_direction = "hold"
+            trade_amount = 0.0
+            initial_trade_amount = 0.0
+            deferred_trade_amount = 0.0
+        else:
+            trade_direction = "buy" if delta > 0 else "sell"
+            trade_amount = round(abs(delta), 2)
+            initial_trade_amount = round(trade_amount * float(initial_deploy_fraction), 2)
+            deferred_trade_amount = round(trade_amount - initial_trade_amount, 2)
+            fee_rate = float((transaction_fee_rate or {}).get(bucket, 0.0) or 0.0)
+            slip_rate = float(
+                (wrapper_slippage_rate or {}).get(
+                    primary_product.wrapper_type,
+                    _WRAPPER_SLIPPAGE_RATE.get(primary_product.wrapper_type, 0.0),
+                )
+                or 0.0
+            )
+            estimated_fee = round(trade_amount * fee_rate, 2)
+            estimated_slippage = round(trade_amount * slip_rate, 2)
+            if minimum_trade_amount is not None and 0.0 < trade_amount < float(minimum_trade_amount):
+                violates_minimum_trade = True
+
     return ExecutionPlanItem(
         asset_bucket=bucket,
         target_weight=round(float(target_weight), 4),
+        current_weight=current_weight,
+        current_amount=current_amount,
+        target_amount=target_amount,
+        trade_direction=trade_direction,
+        trade_amount=trade_amount,
+        initial_trade_amount=initial_trade_amount,
+        deferred_trade_amount=deferred_trade_amount,
+        estimated_fee=estimated_fee,
+        estimated_slippage=estimated_slippage,
+        violates_minimum_trade=violates_minimum_trade,
         primary_product_id=primary_product.product_id,
         alternate_product_ids=[product.product_id for product in alternate_products],
         rationale=rationale,
@@ -510,6 +578,60 @@ def _build_proxy_universe_summary(
             "当前仍是代理宇宙求解：产品层使用注册表与代理映射做筛选和披露，"
             "不应解读为每个产品都已有独立历史序列进入求解器。"
         ),
+    )
+
+
+def _build_execution_realism_summary(
+    *,
+    items: list[ExecutionPlanItem],
+    account_total_value: float | None,
+    available_cash: float | None,
+    liquidity_reserve_min: float | None,
+    minimum_trade_amount: float | None,
+    transaction_fee_rate: dict[str, float] | None,
+) -> ExecutionRealismSummary | None:
+    if account_total_value is None:
+        return None
+
+    total_value = float(account_total_value)
+    total_target_amount = round(
+        sum(float(item.target_amount or 0.0) for item in items),
+        2,
+    )
+    cash_target_amount = round(
+        sum(float(item.target_amount or 0.0) for item in items if item.asset_bucket == "cash_liquidity"),
+        2,
+    )
+    amount_closure_delta = round(total_target_amount - total_value, 2)
+    cash_reserve_target_amount = (
+        None
+        if liquidity_reserve_min is None
+        else round(total_value * float(liquidity_reserve_min), 2)
+    )
+    tiny_trade_buckets = sorted({item.asset_bucket for item in items if item.violates_minimum_trade})
+    estimated_total_fee = round(sum(float(item.estimated_fee or 0.0) for item in items), 2)
+    estimated_total_slippage = round(sum(float(item.estimated_slippage or 0.0) for item in items), 2)
+    reasons: list[str] = []
+    if cash_reserve_target_amount is not None and cash_target_amount + 1e-6 < cash_reserve_target_amount:
+        reasons.append("cash_reserve_conflict")
+    for bucket in tiny_trade_buckets:
+        reasons.append(f"tiny_trade:{bucket}")
+    if abs(amount_closure_delta) > 1.0:
+        reasons.append("account_amount_not_closed")
+
+    return ExecutionRealismSummary(
+        executable=not reasons,
+        account_total_value=round(total_value, 2),
+        available_cash=None if available_cash is None else round(float(available_cash), 2),
+        cash_reserve_target_amount=cash_reserve_target_amount,
+        minimum_trade_amount=None if minimum_trade_amount is None else round(float(minimum_trade_amount), 2),
+        total_target_amount=total_target_amount,
+        cash_target_amount=cash_target_amount,
+        amount_closure_delta=amount_closure_delta,
+        estimated_total_fee=estimated_total_fee,
+        estimated_total_slippage=estimated_total_slippage,
+        tiny_trade_buckets=tiny_trade_buckets,
+        reasons=reasons,
     )
 
 
@@ -629,8 +751,17 @@ def build_execution_plan(
     valuation_inputs: dict[str, Any] | None = None,
     valuation_result: dict[str, Any] | None = None,
     policy_news_signals: list[dict[str, Any]] | list[Any] | None = None,
+    account_total_value: float | None = None,
+    current_weights: dict[str, float] | None = None,
+    available_cash: float | None = None,
+    liquidity_reserve_min: float | None = None,
+    minimum_trade_amount: float | None = 500.0,
+    initial_deploy_fraction: float = 0.40,
+    transaction_fee_rate: dict[str, float] | None = None,
+    wrapper_slippage_rate: dict[str, float] | None = None,
 ) -> ExecutionPlan:
     normalized_targets = _normalize_bucket_targets(bucket_targets)
+    normalized_current_weights = _normalize_bucket_targets(current_weights or {})
     restriction_filter = _compile_restrictions(restrictions)
     registry = list(catalog or load_builtin_catalog())
     runtime_candidate_pool, candidate_filter_breakdown = _build_runtime_candidate_pool(
@@ -667,7 +798,36 @@ def build_execution_plan(
         if not bucket_candidates:
             warnings.append(f"资金桶 {bucket} 当前没有可用产品候选。")
             continue
-        items.append(_build_item(bucket, target_weight, bucket_candidates))
+        items.append(
+            _build_item(
+                bucket,
+                target_weight,
+                bucket_candidates,
+                account_total_value=account_total_value,
+                current_weight=normalized_current_weights.get(bucket, 0.0),
+                minimum_trade_amount=minimum_trade_amount,
+                initial_deploy_fraction=initial_deploy_fraction,
+                transaction_fee_rate=transaction_fee_rate,
+                wrapper_slippage_rate=wrapper_slippage_rate,
+            )
+        )
+
+    execution_realism_summary = _build_execution_realism_summary(
+        items=items,
+        account_total_value=account_total_value,
+        available_cash=available_cash,
+        liquidity_reserve_min=liquidity_reserve_min,
+        minimum_trade_amount=minimum_trade_amount,
+        transaction_fee_rate=transaction_fee_rate,
+    )
+    if execution_realism_summary is not None and not execution_realism_summary.executable:
+        warnings.extend(
+            [
+                f"执行真实性约束未通过: {reason}"
+                for reason in execution_realism_summary.reasons
+                if f"执行真实性约束未通过: {reason}" not in warnings
+            ]
+        )
 
     return ExecutionPlan(
         plan_id=f"{source_run_id}:{source_allocation_id}",
@@ -681,6 +841,7 @@ def build_execution_plan(
         runtime_candidates=runtime_candidate_pool,
         product_proxy_specs=product_proxy_specs,
         proxy_universe_summary=proxy_universe_summary,
+        execution_realism_summary=execution_realism_summary,
         candidate_filter_breakdown=candidate_filter_breakdown,
         valuation_audit_summary=dict(candidate_filter_breakdown.valuation_audit_summary or {}),
         policy_news_audit_summary=dict(candidate_filter_breakdown.policy_news_audit_summary or {}),

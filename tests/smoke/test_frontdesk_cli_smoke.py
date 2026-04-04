@@ -518,3 +518,53 @@ def test_render_frontdesk_summary_surfaces_execution_plan_valuation_audit():
     assert "valuation:pe_above_40" in output
     assert "pending_execution_plan_valuation_audit=" in output
     assert "akshare_dynamic_valuation" in output
+
+
+@pytest.mark.smoke
+def test_render_frontdesk_summary_surfaces_execution_realism_fields():
+    from frontdesk.cli import render_frontdesk_summary
+
+    output = render_frontdesk_summary(
+        {
+            "workflow": "status",
+            "status": "loaded",
+            "user_state": {
+                "profile": {
+                    "account_profile_id": "execution_realism_user",
+                    "display_name": "Andy",
+                },
+                "decision_card": {
+                    "card_type": "goal_baseline",
+                    "summary": "执行计划已生成。",
+                    "primary_recommendation": "防守优先方案",
+                    "recommended_action": "review",
+                    "input_provenance": {},
+                },
+                "pending_execution_plan": {
+                    "plan_id": "run_exec:allocation_exec",
+                    "plan_version": 1,
+                    "status": "draft",
+                    "item_count": 4,
+                    "confirmation_required": True,
+                    "runtime_candidate_count": 8,
+                    "execution_realism_summary": {
+                        "executable": False,
+                        "cash_reserve_target_amount": 3500.0,
+                        "minimum_trade_amount": 500.0,
+                        "estimated_total_fee": 42.8,
+                        "estimated_total_slippage": 11.2,
+                        "tiny_trade_buckets": ["satellite"],
+                        "reasons": ["cash_reserve_conflict", "tiny_trade:satellite"],
+                    },
+                },
+            },
+        }
+    )
+
+    assert "pending_execution_plan_executable=False" in output
+    assert "pending_execution_plan_cash_reserve_target=3500.0" in output
+    assert "pending_execution_plan_minimum_trade_amount=500.0" in output
+    assert "pending_execution_plan_estimated_total_fee=42.8" in output
+    assert "pending_execution_plan_estimated_total_slippage=11.2" in output
+    assert "pending_execution_plan_tiny_trade_buckets=['satellite']" in output
+    assert "pending_execution_plan_execution_realism_reasons=['cash_reserve_conflict', 'tiny_trade:satellite']" in output

@@ -348,6 +348,33 @@ def _render_execution_plan_block(
         lines.append(
             f"{label}_proxy_disclosure={proxy_universe_summary.get('disclosure')}"
         )
+    execution_realism_summary = execution_plan.get("execution_realism_summary") or {}
+    if execution_realism_summary:
+        lines.append(f"{label}_executable={execution_realism_summary.get('executable')}")
+        if execution_realism_summary.get("cash_reserve_target_amount") is not None:
+            lines.append(
+                f"{label}_cash_reserve_target={execution_realism_summary.get('cash_reserve_target_amount')}"
+            )
+        if execution_realism_summary.get("minimum_trade_amount") is not None:
+            lines.append(
+                f"{label}_minimum_trade_amount={execution_realism_summary.get('minimum_trade_amount')}"
+            )
+        if execution_realism_summary.get("estimated_total_fee") is not None:
+            lines.append(
+                f"{label}_estimated_total_fee={execution_realism_summary.get('estimated_total_fee')}"
+            )
+        if execution_realism_summary.get("estimated_total_slippage") is not None:
+            lines.append(
+                f"{label}_estimated_total_slippage={execution_realism_summary.get('estimated_total_slippage')}"
+            )
+        if execution_realism_summary.get("tiny_trade_buckets"):
+            lines.append(
+                f"{label}_tiny_trade_buckets={execution_realism_summary.get('tiny_trade_buckets')}"
+            )
+        if execution_realism_summary.get("reasons"):
+            lines.append(
+                f"{label}_execution_realism_reasons={execution_realism_summary.get('reasons')}"
+            )
     if execution_plan.get("valuation_audit_summary"):
         lines.append(f"{label}_valuation_audit={execution_plan.get('valuation_audit_summary')}")
     if execution_plan.get("policy_news_audit_summary"):

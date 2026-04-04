@@ -86,6 +86,25 @@ class ProxyUniverseSummary:
 
 
 @dataclass(frozen=True)
+class ExecutionRealismSummary:
+    executable: bool
+    account_total_value: float | None = None
+    available_cash: float | None = None
+    cash_reserve_target_amount: float | None = None
+    minimum_trade_amount: float | None = None
+    total_target_amount: float | None = None
+    cash_target_amount: float | None = None
+    amount_closure_delta: float | None = None
+    estimated_total_fee: float | None = None
+    estimated_total_slippage: float | None = None
+    tiny_trade_buckets: list[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
 class RuntimeProductCandidate:
     candidate: ProductCandidate
     registry_index: int
@@ -136,6 +155,16 @@ class ExecutionPlanItem:
     alternate_products: list[ProductCandidate] = field(default_factory=list)
     valuation_audit: ProductValuationAudit | None = None
     policy_news_audit: "ProductPolicyNewsAudit | None" = None
+    current_weight: float | None = None
+    current_amount: float | None = None
+    target_amount: float | None = None
+    trade_direction: Literal["buy", "sell", "hold"] | None = None
+    trade_amount: float | None = None
+    initial_trade_amount: float | None = None
+    deferred_trade_amount: float | None = None
+    estimated_fee: float | None = None
+    estimated_slippage: float | None = None
+    violates_minimum_trade: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -177,6 +206,7 @@ class ExecutionPlan:
     runtime_candidates: list[RuntimeProductCandidate] = field(default_factory=list)
     product_proxy_specs: list[ProductProxySpec] = field(default_factory=list)
     proxy_universe_summary: ProxyUniverseSummary | None = None
+    execution_realism_summary: ExecutionRealismSummary | None = None
     candidate_filter_breakdown: CandidateFilterBreakdown | None = None
     valuation_audit_summary: dict[str, Any] = field(default_factory=dict)
     policy_news_audit_summary: dict[str, Any] = field(default_factory=dict)
@@ -208,6 +238,9 @@ class ExecutionPlan:
             "product_proxy_specs": [spec.to_dict() for spec in self.product_proxy_specs],
             "proxy_universe_summary": (
                 self.proxy_universe_summary.to_dict() if self.proxy_universe_summary is not None else {}
+            ),
+            "execution_realism_summary": (
+                self.execution_realism_summary.to_dict() if self.execution_realism_summary is not None else {}
             ),
             "candidate_filter_dropped_reasons": dict(breakdown.dropped_reasons),
             "candidate_filter_stages": [stage.to_dict() for stage in breakdown.stages],
