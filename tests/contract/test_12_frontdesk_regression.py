@@ -197,6 +197,27 @@ def test_frontdesk_onboarding_surfaces_product_aware_probability_and_expanded_fr
 
 
 @pytest.mark.contract
+def test_frontdesk_onboarding_target_annual_return_keeps_required_return_non_negative(tmp_path):
+    profile = _profile(account_profile_id="annual_target_layer1_user")
+    profile.current_total_assets = 18_000.0
+    profile.monthly_contribution = 2_500.0
+    profile.goal_amount = 0.0
+    profile.goal_horizon_months = 36
+    profile.target_annual_return = 0.08
+    profile.max_drawdown_tolerance = 0.20
+    profile.current_holdings = ""
+    profile.current_weights = None
+    db_path = tmp_path / "frontdesk_annual_target.sqlite"
+
+    summary = run_frontdesk_onboarding(profile, db_path=db_path)
+    card = summary["user_state"]["decision_card"]
+
+    assert summary["status"] in {"completed", "degraded"}
+    assert card["key_metrics"]["implied_required_annual_return"] == "8.00%"
+    assert card["frontier_analysis"]["recommended"]["expected_annual_return"]
+
+
+@pytest.mark.contract
 def test_frontdesk_external_snapshot_without_audit_window_is_non_formal(tmp_path):
     profile = _profile(account_profile_id="formal_path_external")
     db_path = tmp_path / "frontdesk.sqlite"

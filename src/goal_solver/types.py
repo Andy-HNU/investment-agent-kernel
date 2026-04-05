@@ -58,6 +58,7 @@ class GoalCard:
     priority: str = "important"
     risk_preference: str = "moderate"
     goal_type: str = "wealth_accumulation"
+    target_annual_return: float | None = None
     goal_amount_basis: str = "nominal"
     goal_amount_scope: str = "total_assets"
     tax_assumption: str = "pre_tax"

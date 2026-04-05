@@ -138,3 +138,26 @@ def test_profile_dimensions_do_not_treat_negative_monthly_cashflow_as_zero():
     assert model_inputs["projected_funding_ratio"] < 1.0
     assert model_inputs["implied_required_annual_return"] > 0.0
     assert model_inputs["target_return_pressure"] != "low"
+
+
+@pytest.mark.contract
+def test_target_annual_return_derives_goal_amount_from_assets_and_contributions():
+    profile = _base_profile(
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=0.0,
+        goal_horizon_months=36,
+        target_annual_return=0.08,
+        current_holdings="",
+        restrictions=[],
+    )
+
+    bundle = build_user_onboarding_inputs(profile)
+    model_inputs = bundle.profile.profile_dimensions["model_inputs"]
+
+    assert bundle.profile.goal_amount == pytest.approx(123_588.24, abs=0.5)
+    assert bundle.goal_solver_input["goal"]["target_annual_return"] == pytest.approx(0.08)
+    assert model_inputs["implied_required_annual_return"] == pytest.approx(0.08, abs=1e-3)
+    assert any(
+        item["field"] == "goal.target_annual_return" for item in bundle.input_provenance["user_provided"]
+    )

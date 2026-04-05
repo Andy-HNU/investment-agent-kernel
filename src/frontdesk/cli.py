@@ -48,10 +48,19 @@ def _prompt_profile(args: argparse.Namespace) -> UserOnboardingProfile:
         if args.monthly_contribution is not None
         else _parse_float(_prompt_text("每月投入", "12000"))
     )
+    target_annual_return = (
+        args.target_annual_return
+        if getattr(args, "target_annual_return", None) is not None
+        else None
+    )
     goal_amount = (
         args.goal_amount
         if args.goal_amount is not None
-        else _parse_float(_prompt_text("目标期末总资产", "1000000"))
+        else (
+            _parse_float(_prompt_text("目标期末总资产", "1000000"))
+            if target_annual_return is None
+            else 0.0
+        )
     )
     goal_horizon_months = (
         args.goal_horizon_months
@@ -73,6 +82,7 @@ def _prompt_profile(args: argparse.Namespace) -> UserOnboardingProfile:
         monthly_contribution=float(monthly_contribution),
         goal_amount=float(goal_amount),
         goal_horizon_months=int(goal_horizon_months),
+        target_annual_return=None if target_annual_return is None else float(target_annual_return),
         risk_preference=risk_preference,
         max_drawdown_tolerance=float(max_drawdown_tolerance),
         current_holdings=current_holdings,
@@ -122,12 +132,13 @@ def _profile_from_non_interactive_args(args: argparse.Namespace) -> UserOnboardi
         "display_name": args.display_name,
         "current_total_assets": args.current_total_assets,
         "monthly_contribution": args.monthly_contribution,
-        "goal_amount": args.goal_amount,
         "goal_horizon_months": args.goal_horizon_months,
         "risk_preference": args.risk_preference,
         "max_drawdown_tolerance": args.max_drawdown_tolerance,
         "current_holdings": args.current_holdings,
     }
+    if args.goal_amount is None and getattr(args, "target_annual_return", None) is None:
+        required_fields["goal_amount"] = args.goal_amount
     missing = [field for field, value in required_fields.items() if value is None]
     if missing:
         raise SystemExit(
@@ -139,8 +150,11 @@ def _profile_from_non_interactive_args(args: argparse.Namespace) -> UserOnboardi
         display_name=str(args.display_name),
         current_total_assets=float(args.current_total_assets),
         monthly_contribution=float(args.monthly_contribution),
-        goal_amount=float(args.goal_amount),
+        goal_amount=float(args.goal_amount or 0.0),
         goal_horizon_months=int(args.goal_horizon_months),
+        target_annual_return=(
+            None if getattr(args, "target_annual_return", None) is None else float(args.target_annual_return)
+        ),
         risk_preference=str(args.risk_preference),
         max_drawdown_tolerance=float(args.max_drawdown_tolerance),
         current_holdings=str(args.current_holdings),
@@ -926,6 +940,7 @@ def build_parser() -> argparse.ArgumentParser:
     onboarding.add_argument("--current-total-assets", type=float)
     onboarding.add_argument("--monthly-contribution", type=float)
     onboarding.add_argument("--goal-amount", type=float)
+    onboarding.add_argument("--target-annual-return", type=float)
     onboarding.add_argument("--goal-horizon-months", type=int)
     onboarding.add_argument("--risk-preference")
     onboarding.add_argument("--max-drawdown-tolerance", type=float)
@@ -947,6 +962,7 @@ def build_parser() -> argparse.ArgumentParser:
     onboard.add_argument("--current-total-assets", type=float)
     onboard.add_argument("--monthly-contribution", type=float)
     onboard.add_argument("--goal-amount", type=float)
+    onboard.add_argument("--target-annual-return", type=float)
     onboard.add_argument("--goal-horizon-months", type=int)
     onboard.add_argument("--risk-preference")
     onboard.add_argument("--max-drawdown-tolerance", type=float)

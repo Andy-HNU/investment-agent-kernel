@@ -47,7 +47,8 @@ def parse_onboarding(text: str) -> dict[str, Any]:
     display_name = _extract_first(r"name\s+([\w\-]+)", text, default=account_profile_id)
     current_total_assets = _extract_number(r"assets\s+([0-9,\.]+)", text) or 50000.0
     monthly_contribution = _extract_number(r"monthly\s+([0-9,\.]+)", text) or 10000.0
-    goal_amount = _extract_number(r"goal\s+([0-9,\.]+)", text) or 1000000.0
+    target_annual_return = _extract_number(r"(?:annual|年化)\s*([0-9,\.]+)%?", text)
+    goal_amount = _extract_number(r"goal\s+([0-9,\.]+)", text) or (0.0 if target_annual_return is not None else 1000000.0)
     goal_horizon_months = int(_extract_number(r"(in|for)\s+([0-9]+)\s+months", text) or _extract_number(r"months?\s+([0-9]+)", text) or 60)
     risk_preference = _extract_first(r"risk\s+(low|moderate|medium|high|低|中等|高)", text) or "中等"
     risk_map = {"low": "保守", "moderate": "中等", "medium": "中等", "high": "激进", "低": "保守", "中等": "中等", "高": "激进"}
@@ -62,6 +63,7 @@ def parse_onboarding(text: str) -> dict[str, Any]:
         "monthly_contribution": monthly_contribution,
         "goal_amount": goal_amount,
         "goal_horizon_months": goal_horizon_months,
+        "target_annual_return": None if target_annual_return is None else float(target_annual_return) / (100.0 if float(target_annual_return) > 1.0 else 1.0),
         "risk_preference": risk_preference,
         "max_drawdown_tolerance": max_drawdown_tolerance,
         "current_holdings": current_holdings,
@@ -72,4 +74,3 @@ def parse_onboarding(text: str) -> dict[str, Any]:
 def parse_status(text: str) -> dict[str, Any]:
     account_profile_id = _extract_first(r"user\s+([a-zA-Z0-9_\-]+)", text) or _extract_first(r"account\s+([a-zA-Z0-9_\-]+)", text) or "user001"
     return {"account_profile_id": account_profile_id}
-
