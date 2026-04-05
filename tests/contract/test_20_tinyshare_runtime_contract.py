@@ -13,6 +13,7 @@ from product_mapping.runtime_inputs import (
 from product_mapping.types import ProductCandidate
 from shared.datasets.cache import DatasetCache
 from shared.datasets.types import DatasetSpec, VersionPin
+from shared.providers import tinyshare as tinyshare_provider
 from shared.onboarding import UserOnboardingProfile
 from shared.providers.timeseries import fetch_timeseries
 from snapshot_ingestion.providers import fetch_snapshot_from_provider_config
@@ -269,3 +270,34 @@ def test_market_history_provider_supports_tinyshare(monkeypatch):
     assert historical_dataset["source_name"] == "tinyshare"
     assert historical_dataset["coverage_status"] == "verified"
     assert historical_dataset["audit_window"]["trading_days"] == 3
+
+
+@pytest.mark.contract
+def test_tinyshare_provider_ignores_repo_local_token_file_under_pytest_by_default(monkeypatch, tmp_path):
+    token_file = tmp_path / ".secrets" / "tinyshare.token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text("file-token\n", encoding="utf-8")
+
+    monkeypatch.delenv("TINYSHARE_TOKEN", raising=False)
+    monkeypatch.delenv("TINYSHARE_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("TINYSHARE_ALLOW_REPO_TOKEN_FILE_UNDER_PYTEST", raising=False)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests::token-file")
+    monkeypatch.setattr("shared.providers.tinyshare._repo_root", lambda: tmp_path)
+
+    assert tinyshare_provider.has_token() is False
+
+
+@pytest.mark.contract
+def test_tinyshare_provider_reads_repo_local_token_file(monkeypatch, tmp_path):
+    token_file = tmp_path / ".secrets" / "tinyshare.token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text("file-token\n", encoding="utf-8")
+
+    monkeypatch.delenv("TINYSHARE_TOKEN", raising=False)
+    monkeypatch.delenv("TINYSHARE_TOKEN_FILE", raising=False)
+    monkeypatch.setenv("TINYSHARE_ALLOW_REPO_TOKEN_FILE_UNDER_PYTEST", "1")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests::token-file")
+    monkeypatch.setattr("shared.providers.tinyshare._repo_root", lambda: tmp_path)
+
+    assert tinyshare_provider.has_token() is True
+    assert tinyshare_provider._require_token() == "file-token"

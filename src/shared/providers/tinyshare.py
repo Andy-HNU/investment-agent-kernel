@@ -11,6 +11,8 @@ from product_mapping.types import ProductCandidate
 from shared.audit import AuditWindow, DataStatus
 
 _TOKEN_ENV = "TINYSHARE_TOKEN"
+_TOKEN_FILE_ENV = "TINYSHARE_TOKEN_FILE"
+_ALLOW_REPO_TOKEN_FILE_UNDER_PYTEST_ENV = "TINYSHARE_ALLOW_REPO_TOKEN_FILE_UNDER_PYTEST"
 _CACHE_NAMESPACE = "tinyshare"
 
 _SATELLITE_KEYWORDS = {
@@ -32,13 +34,49 @@ _SATELLITE_KEYWORDS = {
 
 
 def has_token() -> bool:
-    return bool(os.getenv(_TOKEN_ENV, "").strip())
+    if os.getenv(_TOKEN_ENV, "").strip():
+        return True
+    return _read_token_file() is not None
+
+
+def _repo_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / ".git").exists():
+            return parent
+    return Path.cwd()
+
+
+def _token_file_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    explicit = str(os.getenv(_TOKEN_FILE_ENV, "")).strip()
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    under_pytest = bool(str(os.getenv("PYTEST_CURRENT_TEST", "")).strip())
+    allow_repo_token_under_pytest = str(os.getenv(_ALLOW_REPO_TOKEN_FILE_UNDER_PYTEST_ENV, "")).strip() == "1"
+    if not under_pytest or allow_repo_token_under_pytest:
+        candidates.append(_repo_root() / ".secrets" / "tinyshare.token")
+    return candidates
+
+
+def _read_token_file() -> str | None:
+    for path in _token_file_candidates():
+        try:
+            if path.exists():
+                token = path.read_text(encoding="utf-8").strip()
+                if token:
+                    return token
+        except Exception:
+            continue
+    return None
 
 
 def _require_token(token: str | None = None) -> str:
-    resolved = str(token or os.getenv(_TOKEN_ENV, "")).strip()
+    resolved = str(token or os.getenv(_TOKEN_ENV, "")).strip() or str(_read_token_file() or "").strip()
     if not resolved:
-        raise RuntimeError("tinyshare provider unavailable - set TINYSHARE_TOKEN in environment")
+        raise RuntimeError(
+            "tinyshare provider unavailable - set TINYSHARE_TOKEN or provide .secrets/tinyshare.token"
+        )
     return resolved
 
 
