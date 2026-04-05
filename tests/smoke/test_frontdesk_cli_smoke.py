@@ -659,6 +659,27 @@ def test_render_frontdesk_summary_surfaces_execution_realism_fields():
                         "tiny_trade_buckets": ["satellite"],
                         "reasons": ["cash_reserve_conflict", "tiny_trade:satellite"],
                     },
+                    "maintenance_policy_summary": {
+                        "initial_deploy_fraction": 0.40,
+                        "drawdown_add_buy_threshold": 0.10,
+                        "core_take_profit_threshold": 0.12,
+                        "satellite_take_profit_threshold": 0.15,
+                        "rebalance_band": 0.10,
+                    },
+                    "items": [
+                        {
+                            "asset_bucket": "satellite",
+                            "target_weight": 0.10,
+                            "target_amount": 2000.0,
+                            "primary_product_id": "cn_satellite_energy_etf",
+                            "trade_direction": "buy",
+                            "initial_trade_amount": 800.0,
+                            "deferred_trade_amount": 1200.0,
+                            "trigger_conditions": ["若回撤达到10%，按预设分批补仓。"],
+                            "valuation_audit": {"status": "observed", "percentile": 0.2},
+                            "policy_news_audit": {"status": "observed", "score": 0.45},
+                        }
+                    ],
                 },
             },
         }
@@ -683,3 +704,13 @@ def test_render_frontdesk_summary_surfaces_execution_realism_fields():
     assert "pending_execution_plan_tax_estimate_status=not_modeled" in output
     assert "pending_execution_plan_tiny_trade_buckets=['satellite']" in output
     assert "pending_execution_plan_execution_realism_reasons=['cash_reserve_conflict', 'tiny_trade:satellite']" in output
+    assert "pending_execution_plan_maintenance_policy=" in output
+    assert "pending_execution_plan_initial_deploy_fraction=0.4" in output
+    assert "pending_execution_plan_drawdown_add_buy_threshold=0.1" in output
+    assert "pending_execution_plan_core_take_profit_threshold=0.12" in output
+    assert "pending_execution_plan_satellite_take_profit_threshold=0.15" in output
+    assert "pending_execution_plan_rebalance_band=0.1" in output
+    assert "pending_execution_plan_item_1=bucket:satellite, product:cn_satellite_energy_etf" in output
+    assert "pending_execution_plan_item_1_trigger_conditions=['若回撤达到10%，按预设分批补仓。']" in output
+    assert "pending_execution_plan_item_1_valuation_audit={'status': 'observed', 'percentile': 0.2}" in output
+    assert "pending_execution_plan_item_1_policy_news_audit={'status': 'observed', 'score': 0.45}" in output

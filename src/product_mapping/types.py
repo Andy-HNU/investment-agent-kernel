@@ -183,6 +183,7 @@ class ExecutionPlanItem:
     estimated_fee: float | None = None
     estimated_slippage: float | None = None
     violates_minimum_trade: bool = False
+    trigger_conditions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -229,6 +230,7 @@ class ExecutionPlan:
     product_proxy_specs: list[ProductProxySpec] = field(default_factory=list)
     proxy_universe_summary: ProxyUniverseSummary | None = None
     execution_realism_summary: ExecutionRealismSummary | None = None
+    maintenance_policy_summary: dict[str, Any] = field(default_factory=dict)
     candidate_filter_breakdown: CandidateFilterBreakdown | None = None
     valuation_audit_summary: dict[str, Any] = field(default_factory=dict)
     policy_news_audit_summary: dict[str, Any] = field(default_factory=dict)
@@ -264,6 +266,7 @@ class ExecutionPlan:
             "execution_realism_summary": (
                 self.execution_realism_summary.to_dict() if self.execution_realism_summary is not None else {}
             ),
+            "maintenance_policy_summary": dict(self.maintenance_policy_summary or {}),
             "candidate_filter_dropped_reasons": dict(breakdown.dropped_reasons),
             "candidate_filter_stages": [stage.to_dict() for stage in breakdown.stages],
             "product_universe_audit_summary": dict(

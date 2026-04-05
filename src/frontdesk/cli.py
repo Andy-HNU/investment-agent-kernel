@@ -510,6 +510,32 @@ def _render_execution_plan_block(
         lines.append(f"{label}_valuation_audit={execution_plan.get('valuation_audit_summary')}")
     if execution_plan.get("policy_news_audit_summary"):
         lines.append(f"{label}_policy_news_audit={execution_plan.get('policy_news_audit_summary')}")
+    maintenance_policy_summary = execution_plan.get("maintenance_policy_summary") or {}
+    if maintenance_policy_summary:
+        lines.append(f"{label}_maintenance_policy={maintenance_policy_summary}")
+        for key in (
+            "initial_deploy_fraction",
+            "drawdown_add_buy_threshold",
+            "core_take_profit_threshold",
+            "satellite_take_profit_threshold",
+            "rebalance_band",
+        ):
+            if maintenance_policy_summary.get(key) is not None:
+                lines.append(f"{label}_{key}={maintenance_policy_summary.get(key)}")
+    for index, item in enumerate(list(execution_plan.get("items") or []), start=1):
+        item_prefix = f"{label}_item_{index}"
+        lines.append(
+            f"{item_prefix}=bucket:{item.get('asset_bucket')}, product:{item.get('primary_product_id')}, "
+            f"target_weight:{item.get('target_weight')}, target_amount:{item.get('target_amount')}, "
+            f"trade_direction:{item.get('trade_direction')}, initial_trade_amount:{item.get('initial_trade_amount')}, "
+            f"deferred_trade_amount:{item.get('deferred_trade_amount')}"
+        )
+        if item.get("trigger_conditions"):
+            lines.append(f"{item_prefix}_trigger_conditions={item.get('trigger_conditions')}")
+        if item.get("valuation_audit"):
+            lines.append(f"{item_prefix}_valuation_audit={item.get('valuation_audit')}")
+        if item.get("policy_news_audit"):
+            lines.append(f"{item_prefix}_policy_news_audit={item.get('policy_news_audit')}")
     if execution_plan.get("approved_at"):
         lines.append(f"{label}_approved_at={execution_plan.get('approved_at')}")
     if execution_plan.get("superseded_by_plan_id"):

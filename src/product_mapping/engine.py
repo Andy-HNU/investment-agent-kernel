@@ -79,6 +79,10 @@ _WRAPPER_VOL_MULTIPLIER = {
     "bond": 0.95,
     "other": 1.05,
 }
+_CORE_TAKE_PROFIT_THRESHOLD = 0.12
+_SATELLITE_TAKE_PROFIT_THRESHOLD = 0.15
+_DRAWDOWN_ADD_BUY_THRESHOLD = 0.10
+_REBALANCE_BAND = 0.10
 
 
 @dataclass(frozen=True)
@@ -593,6 +597,23 @@ def _build_item(
             estimated_slippage = round(trade_amount * slip_rate, 2)
             if minimum_trade_amount is not None and 0.0 < trade_amount < float(minimum_trade_amount):
                 violates_minimum_trade = True
+    trigger_conditions: list[str] = []
+    if trade_direction == "buy" and initial_trade_amount is not None:
+        trigger_conditions.append(
+            f"首笔执行 {initial_trade_amount:.2f} 元；剩余 {float(deferred_trade_amount or 0.0):.2f} 元在回撤达到10%时分批执行。"
+        )
+    elif trade_direction == "sell" and initial_trade_amount is not None:
+        trigger_conditions.append(
+            f"首笔卖出 {initial_trade_amount:.2f} 元；剩余 {float(deferred_trade_amount or 0.0):.2f} 元在再平衡触发时继续执行。"
+        )
+    if bucket == "satellite":
+        trigger_conditions.append("若卫星仓收益达到15%，分批止盈并回补现金底仓。")
+    elif bucket != "cash_liquidity":
+        trigger_conditions.append("若核心仓收益达到12%，分批止盈并回到目标权重带。")
+    if bucket != "cash_liquidity":
+        trigger_conditions.append("当目标权重偏离超过10%时，执行再平衡。")
+    else:
+        trigger_conditions.append("保持现金/流动性底仓，用于后续补仓与执行缓冲。")
 
     return ExecutionPlanItem(
         asset_bucket=bucket,
@@ -607,6 +628,7 @@ def _build_item(
         estimated_fee=estimated_fee,
         estimated_slippage=estimated_slippage,
         violates_minimum_trade=violates_minimum_trade,
+        trigger_conditions=trigger_conditions,
         primary_product_id=primary_product.product_id,
         alternate_product_ids=[product.product_id for product in alternate_products],
         rationale=rationale,
@@ -616,6 +638,27 @@ def _build_item(
         valuation_audit=primary_runtime_candidate.valuation_audit,
         policy_news_audit=item_policy_news_audit,
     )
+
+
+def _build_maintenance_policy_summary(
+    *,
+    items: list[ExecutionPlanItem],
+    cash_reserve_target_amount: float | None,
+    initial_deploy_fraction: float,
+) -> dict[str, Any]:
+    return {
+        "initial_deploy_fraction": round(float(initial_deploy_fraction), 4),
+        "drawdown_add_buy_threshold": _DRAWDOWN_ADD_BUY_THRESHOLD,
+        "core_take_profit_threshold": _CORE_TAKE_PROFIT_THRESHOLD,
+        "satellite_take_profit_threshold": _SATELLITE_TAKE_PROFIT_THRESHOLD,
+        "rebalance_band": _REBALANCE_BAND,
+        "cash_reserve_target_amount": cash_reserve_target_amount,
+        "covered_buckets": [item.asset_bucket for item in items],
+        "disclosure": (
+            "当前维护规则为账户层执行政策：首笔40%，剩余仓位在回撤10%时分批执行；"
+            "核心仓止盈阈值12%，卫星仓止盈阈值15%，权重偏离10%触发再平衡。"
+        ),
+    }
 
 
 def _proxy_kind(candidate: ProductCandidate) -> str:
@@ -1296,6 +1339,13 @@ def build_execution_plan(
         selected_items=items,
         product_proxy_specs=product_proxy_specs,
     )
+    maintenance_policy_summary = _build_maintenance_policy_summary(
+        items=items,
+        cash_reserve_target_amount=(
+            None if execution_realism_summary is None else execution_realism_summary.cash_reserve_target_amount
+        ),
+        initial_deploy_fraction=initial_deploy_fraction,
+    )
 
     return ExecutionPlan(
         plan_id=f"{source_run_id}:{source_allocation_id}",
@@ -1310,6 +1360,7 @@ def build_execution_plan(
         product_proxy_specs=product_proxy_specs,
         proxy_universe_summary=proxy_universe_summary,
         execution_realism_summary=execution_realism_summary,
+        maintenance_policy_summary=maintenance_policy_summary,
         candidate_filter_breakdown=candidate_filter_breakdown,
         valuation_audit_summary=dict(candidate_filter_breakdown.valuation_audit_summary or {}),
         policy_news_audit_summary=dict(candidate_filter_breakdown.policy_news_audit_summary or {}),

@@ -10,6 +10,7 @@ from decision_card.builder import build_decision_card
 from decision_card.types import DecisionCardBuildInput, DecisionCardType
 from goal_solver.engine import run_goal_solver
 from product_mapping import build_candidate_product_context, build_execution_plan
+from product_mapping.runtime_inputs import enrich_market_raw_with_runtime_product_inputs
 from runtime_optimizer.engine import run_runtime_optimizer
 from runtime_optimizer.types import RuntimeOptimizerMode
 from snapshot_ingestion.engine import build_snapshot_bundle
@@ -1836,6 +1837,11 @@ def run_orchestrator(
     prior_calibration: Any | None = None,
 ) -> OrchestratorResult:
     envelope = dict(raw_inputs)
+    if isinstance(envelope.get("market_raw"), dict):
+        envelope["market_raw"] = enrich_market_raw_with_runtime_product_inputs(
+            envelope.get("market_raw"),
+            as_of=str(envelope.get("as_of") or ""),
+        )
     requested_workflow = _requested_workflow_from_any(trigger)
     normalized_trigger = _trigger_from_any(trigger)
     resolution_blocking_reasons: list[str] = []

@@ -224,6 +224,31 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         return None
     items = list(payload.get("items") or [])
     breakdown = dict(payload.get("candidate_filter_breakdown") or {})
+    item_summaries: list[dict[str, Any]] = []
+    for item in items:
+        primary_product = dict(item.get("primary_product") or {})
+        item_summaries.append(
+            {
+                "asset_bucket": item.get("asset_bucket"),
+                "target_weight": item.get("target_weight"),
+                "target_amount": item.get("target_amount"),
+                "current_weight": item.get("current_weight"),
+                "current_amount": item.get("current_amount"),
+                "primary_product_id": item.get("primary_product_id"),
+                "primary_product_name": primary_product.get("name"),
+                "alternate_product_ids": list(item.get("alternate_product_ids") or []),
+                "trade_direction": item.get("trade_direction"),
+                "trade_amount": item.get("trade_amount"),
+                "initial_trade_amount": item.get("initial_trade_amount"),
+                "deferred_trade_amount": item.get("deferred_trade_amount"),
+                "estimated_fee": item.get("estimated_fee"),
+                "estimated_slippage": item.get("estimated_slippage"),
+                "trigger_conditions": list(item.get("trigger_conditions") or []),
+                "rationale": list(item.get("rationale") or []),
+                "valuation_audit": dict(item.get("valuation_audit") or {}),
+                "policy_news_audit": dict(item.get("policy_news_audit") or {}),
+            }
+        )
     return {
         "plan_id": payload.get("plan_id"),
         "plan_version": payload.get("plan_version"),
@@ -231,6 +256,7 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "source_allocation_id": payload.get("source_allocation_id"),
         "status": payload.get("status"),
         "item_count": len(items),
+        "items": item_summaries,
         "confirmation_required": bool(payload.get("confirmation_required", True)),
         "warning_count": len(list(payload.get("warnings") or [])),
         "approved_at": payload.get("approved_at"),
@@ -240,6 +266,7 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "product_proxy_specs": list(payload.get("product_proxy_specs") or []),
         "proxy_universe_summary": dict(payload.get("proxy_universe_summary") or {}),
         "execution_realism_summary": dict(payload.get("execution_realism_summary") or {}),
+        "maintenance_policy_summary": dict(payload.get("maintenance_policy_summary") or {}),
         "candidate_filter_dropped_reasons": dict(breakdown.get("dropped_reasons") or {}),
         "candidate_filter_stages": list(breakdown.get("stages") or []),
         "product_universe_audit_summary": dict(
