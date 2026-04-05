@@ -1613,6 +1613,7 @@ def _extract_execution_plan_runtime_candidates(
     universe_result = _as_dict(
         market_raw.get("product_universe_result")
         or market_raw.get("runtime_product_universe_result")
+        or market_raw.get("product_universe_snapshot")
         or {}
     )
     candidates: list[ProductCandidate] = []

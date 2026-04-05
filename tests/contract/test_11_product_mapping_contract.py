@@ -182,6 +182,90 @@ def test_build_candidate_product_context_preserves_history_window_days():
 
 
 @pytest.mark.contract
+def test_build_candidate_product_context_emits_product_simulation_input_from_selected_products(monkeypatch):
+    runtime_pool = [
+        ProductCandidate(
+            product_id="ts_equity_core",
+            product_name="沪深300ETF",
+            asset_bucket="equity_cn",
+            product_family="core",
+            wrapper_type="etf",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="510300.SH",
+            tags=["core"],
+        ),
+        ProductCandidate(
+            product_id="ts_bond_core",
+            product_name="国债ETF",
+            asset_bucket="bond_cn",
+            product_family="defense",
+            wrapper_type="etf",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="511010.SH",
+            tags=["bond", "defense"],
+        ),
+        ProductCandidate(
+            product_id="ts_gold_core",
+            product_name="黄金ETF",
+            asset_bucket="gold",
+            product_family="defense",
+            wrapper_type="etf",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="518880.SH",
+            tags=["gold"],
+        ),
+    ]
+
+    def _fake_fetch_timeseries(spec, *, pin, cache, allow_fallback, return_used_pin):  # type: ignore[no-untyped-def]
+        rows = {
+            "510300.SH": [
+                {"date": "2026-04-01", "close": 1.0},
+                {"date": "2026-04-02", "close": 1.05},
+                {"date": "2026-04-03", "close": 1.07},
+            ],
+            "511010.SH": [
+                {"date": "2026-04-01", "close": 1.0},
+                {"date": "2026-04-02", "close": 1.01},
+                {"date": "2026-04-03", "close": 1.015},
+            ],
+            "518880.SH": [
+                {"date": "2026-04-01", "close": 1.0},
+                {"date": "2026-04-02", "close": 0.99},
+                {"date": "2026-04-03", "close": 1.02},
+            ],
+        }[spec.symbol]
+        return rows, pin
+
+    monkeypatch.setattr("product_mapping.engine.fetch_timeseries", _fake_fetch_timeseries)
+
+    context = build_candidate_product_context(
+        source_allocation_id="allocation_product_simulation",
+        bucket_targets={"equity_cn": 0.55, "bond_cn": 0.30, "gold": 0.15},
+        restrictions=[],
+        runtime_candidates=runtime_pool,
+        historical_dataset={
+            "source_name": "tinyshare",
+            "audit_window": {
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-03",
+                "trading_days": 3,
+                "observed_days": 3,
+                "inferred_days": 0,
+            },
+        },
+    )
+
+    assert context["product_probability_method"] == "product_independent_path"
+    simulation_input = context["product_simulation_input"]
+    assert simulation_input is not None
+    assert simulation_input["simulation_method"] == "product_independent_path"
+    assert simulation_input["frequency"] == "daily"
+    assert simulation_input["coverage_summary"]["observed_product_count"] == 3
+    assert len(simulation_input["products"]) == 3
+    assert simulation_input["products"][0]["return_series"]
+
+
+@pytest.mark.contract
 def test_build_execution_plan_filters_theme_without_collapsing_satellite_bucket():
     unrestricted = build_execution_plan(
         source_run_id="run_theme_allowed",
@@ -338,6 +422,21 @@ def test_build_execution_plan_does_not_claim_low_valuation_filter_without_observ
     assert plan.valuation_audit_summary["source_status"] == "missing"
     assert plan.valuation_audit_summary["applicable_candidate_count"] >= 1
     assert plan.valuation_audit_summary["non_applicable_candidate_count"] >= 1
+
+
+@pytest.mark.contract
+def test_build_execution_plan_marks_unrequested_dynamic_sources_as_not_requested():
+    plan = build_execution_plan(
+        source_run_id="run_not_requested_sources",
+        source_allocation_id="allocation_not_requested_sources",
+        bucket_targets={"equity_cn": 0.60, "bond_cn": 0.40},
+        restrictions=[],
+    )
+
+    assert plan.candidate_filter_breakdown.product_universe_audit_summary["requested"] is False
+    assert plan.candidate_filter_breakdown.product_universe_audit_summary["source_status"] == "not_requested"
+    assert plan.valuation_audit_summary["requested"] is False
+    assert plan.valuation_audit_summary["source_status"] == "not_requested"
 
 
 @pytest.mark.contract

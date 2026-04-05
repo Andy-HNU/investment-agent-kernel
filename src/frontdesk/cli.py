@@ -204,6 +204,7 @@ def _render_candidate_lines(options: list[dict[str, Any]], *, prefix: str) -> li
             f"{prefix}_{index}={option.get('label')} | {option.get('highlight')} | "
             f"success={option.get('success_probability')} "
             f"bucket_success={option.get('bucket_success_probability')} "
+            f"product_independent_success={option.get('product_independent_success_probability')} "
             f"product_success={option.get('product_proxy_adjusted_success_probability')} "
             f"probability_method={option.get('product_probability_method')} "
             f"required_return={option.get('implied_required_annual_return')} "
@@ -271,6 +272,8 @@ def _render_probability_explanation_block(decision_card: dict[str, Any]) -> list
         target_line,
         drawdown_line,
     ]
+    if explanation.get("difficulty_source"):
+        lines.append(f"probability_difficulty_source={explanation.get('difficulty_source')}")
     if explanation.get("product_probability_disclosure"):
         lines.append(f"probability_method_disclosure={explanation.get('product_probability_disclosure')}")
     return lines
@@ -892,6 +895,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
                 "expected_terminal_value",
                 "implied_required_annual_return",
                 "expected_annual_return",
+                "product_independent_success_probability",
                 "product_proxy_adjusted_success_probability",
                 "product_probability_method",
             ):
@@ -987,6 +991,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
             "expected_terminal_value",
             "implied_required_annual_return",
             "expected_annual_return",
+            "product_independent_success_probability",
             "product_proxy_adjusted_success_probability",
             "product_probability_method",
         ):

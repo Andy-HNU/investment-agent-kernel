@@ -131,6 +131,42 @@ class ProductHistoryProfile:
 
 
 @dataclass
+class ProductSimulationSeries:
+    product_id: str
+    asset_bucket: str
+    target_weight: float
+    return_series: list[float] = field(default_factory=list)
+    source_ref: str | None = None
+    data_status: str = "manual_annotation"
+    frequency: str = "daily"
+    observed_start_date: str | None = None
+    observed_end_date: str | None = None
+    observed_points: int = 0
+    inferred_points: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ProductSimulationInput:
+    products: list[ProductSimulationSeries] = field(default_factory=list)
+    frequency: str = "daily"
+    simulation_method: str = "product_independent_path"
+    audit_window: dict[str, Any] | None = None
+    coverage_summary: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "products": [item.to_dict() for item in self.products],
+            "frequency": self.frequency,
+            "simulation_method": self.simulation_method,
+            "audit_window": None if self.audit_window is None else dict(self.audit_window),
+            "coverage_summary": dict(self.coverage_summary),
+        }
+
+
+@dataclass
 class CandidateProductContext:
     allocation_name: str
     product_probability_method: str = "product_proxy_adjustment_estimate"
@@ -139,6 +175,7 @@ class CandidateProductContext:
     selected_product_ids: list[str] = field(default_factory=list)
     selected_proxy_refs: list[str] = field(default_factory=list)
     product_history_profiles: list[ProductHistoryProfile] = field(default_factory=list)
+    product_simulation_input: ProductSimulationInput | None = None
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -150,6 +187,9 @@ class CandidateProductContext:
             "selected_product_ids": list(self.selected_product_ids),
             "selected_proxy_refs": list(self.selected_proxy_refs),
             "product_history_profiles": [item.to_dict() for item in self.product_history_profiles],
+            "product_simulation_input": (
+                None if self.product_simulation_input is None else self.product_simulation_input.to_dict()
+            ),
             "notes": list(self.notes),
         }
 
@@ -226,6 +266,7 @@ class SuccessProbabilityResult:
     is_feasible: bool
     bucket_success_probability: float | None = None
     product_proxy_adjusted_success_probability: float | None = None
+    product_independent_success_probability: float | None = None
     product_probability_method: str = "bucket_only_no_product_proxy_adjustment"
     implied_required_annual_return: float | None = None
     expected_annual_return: float | None = None
@@ -249,6 +290,7 @@ class FrontierScenario:
     expected_terminal_value: float
     max_drawdown_90pct: float
     product_proxy_adjusted_success_probability: float | None = None
+    product_independent_success_probability: float | None = None
     product_probability_method: str = "bucket_only_no_product_proxy_adjustment"
     expected_annual_return: float | None = None
     meets_success_threshold: bool = False

@@ -258,9 +258,18 @@ def build_runtime_product_universe_context(
     cache_dir: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     market = dict(market_raw or {})
-    if market.get("product_universe_result") or market.get("runtime_product_universe_result"):
-        inputs = dict(market.get("product_universe_inputs") or market.get("runtime_product_universe_inputs") or {})
-        result = dict(market.get("product_universe_result") or market.get("runtime_product_universe_result") or {})
+    existing_result = (
+        market.get("product_universe_result")
+        or market.get("runtime_product_universe_result")
+        or market.get("product_universe_snapshot")
+    )
+    if existing_result:
+        inputs = dict(
+            market.get("product_universe_inputs")
+            or market.get("runtime_product_universe_inputs")
+            or {}
+        )
+        result = dict(existing_result or {})
         return inputs, result
 
     effective_cache_dir = cache_dir or Path.home() / ".cache" / "investment_system" / "timeseries"
@@ -335,7 +344,12 @@ def build_runtime_product_valuation_context(
 
     if _tinyshare_has_token():
         runtime_candidates: list[ProductCandidate] = []
-        universe_result = dict(market.get("product_universe_result") or market.get("runtime_product_universe_result") or {})
+        universe_result = dict(
+            market.get("product_universe_result")
+            or market.get("runtime_product_universe_result")
+            or market.get("product_universe_snapshot")
+            or {}
+        )
         for payload in list(universe_result.get("runtime_candidates") or []):
             if isinstance(payload, dict):
                 runtime_candidates.append(ProductCandidate(**dict(payload)))

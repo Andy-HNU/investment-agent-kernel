@@ -370,6 +370,68 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
 
 
 @pytest.mark.contract
+def test_goal_baseline_card_surfaces_product_independent_probability_disclosure():
+    card = build_decision_card(
+        DecisionCardBuildInput(
+            card_type=DecisionCardType.GOAL_BASELINE,
+            workflow_type="onboarding",
+            run_id="decision_card_product_independent_probability",
+            goal_solver_output={
+                "recommended_result": {
+                    "allocation_name": "balanced_progression__moderate__02",
+                    "success_probability": 0.68,
+                    "bucket_success_probability": 0.61,
+                    "product_proxy_adjusted_success_probability": 0.64,
+                    "product_independent_success_probability": 0.68,
+                    "product_probability_method": "product_independent_path",
+                    "implied_required_annual_return": 0.08,
+                    "expected_terminal_value": 1_030_000.0,
+                    "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
+                },
+                "candidate_menu": [
+                    {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "success_probability": 0.68,
+                        "bucket_success_probability": 0.61,
+                        "product_proxy_adjusted_success_probability": 0.64,
+                        "product_independent_success_probability": 0.68,
+                        "product_probability_method": "product_independent_path",
+                        "expected_annual_return": 0.061,
+                        "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
+                        "weights": {"equity_cn": 0.55, "bond_cn": 0.25, "gold": 0.10, "satellite": 0.10},
+                        "is_feasible": True,
+                    }
+                ],
+                "frontier_analysis": {
+                    "recommended": {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "bucket_success_probability": 0.61,
+                        "product_proxy_adjusted_success_probability": 0.64,
+                        "product_independent_success_probability": 0.68,
+                        "product_probability_method": "product_independent_path",
+                        "expected_terminal_value": 1_030_000.0,
+                        "expected_annual_return": 0.061,
+                        "max_drawdown_90pct": 0.16,
+                        "why_selected": "逐产品独立路径下当前推荐仍最均衡。",
+                    },
+                },
+                "frontier_diagnostics": {
+                    "binding_constraints": [{"constraint_name": "required_annual_return"}],
+                    "structural_limitations": ["required_return_above_frontier_ceiling"],
+                },
+            },
+        )
+    )
+
+    assert card["key_metrics"]["product_independent_success_probability"] == "68.00%"
+    assert card["probability_explanation"]["product_probability_method"] == "product_independent_path"
+    assert "逐产品独立路径" in card["probability_explanation"]["product_probability_disclosure"]
+    assert card["probability_explanation"]["difficulty_source"] == "constraint_binding"
+
+
+@pytest.mark.contract
 def test_goal_baseline_card_surfaces_unavailable_frontier_reasons():
     card = build_decision_card(
         DecisionCardBuildInput(

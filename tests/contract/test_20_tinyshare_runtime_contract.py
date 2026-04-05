@@ -71,10 +71,14 @@ def _runtime_catalog() -> list[ProductCandidate]:
 
 def _tinyshare_universe_result() -> dict[str, object]:
     return {
+        "snapshot_id": "tinyshare_runtime_catalog_2026-04-05",
         "source_status": "observed",
         "source_name": "tinyshare_runtime_catalog",
         "source_ref": "tinyshare://runtime_catalog?markets=stocks,funds",
         "as_of": "2026-04-05",
+        "data_status": "observed",
+        "item_count": 3,
+        "audit_window": None,
         "products": {
             candidate.product_id: {
                 "status": "observed",
@@ -179,6 +183,9 @@ def test_build_runtime_product_universe_context_uses_tinyshare_runtime_catalog_w
     assert result is not None
     assert result["source_status"] == "observed"
     assert result["source_name"] == "tinyshare_runtime_catalog"
+    assert result["snapshot_id"] == "tinyshare_runtime_catalog_2026-04-05"
+    assert result["item_count"] == 3
+    assert result["data_status"] == "observed"
     assert len(result["runtime_candidates"]) == 3
     assert result["products"]["ts_equity_core_etf"]["status"] == "observed"
 

@@ -23,6 +23,8 @@ from goal_solver.types import (
     RankingMode,
     RiskBudget,
     ProductHistoryProfile,
+    ProductSimulationInput,
+    ProductSimulationSeries,
     RiskSummary,
     StrategicAllocation,
     StructureBudget,
@@ -117,6 +119,54 @@ def _goal_solver_input_from_any(value: GoalSolverInput | dict[str, Any]) -> Goal
                 )
                 for item in payload.get("product_history_profiles", [])
             ],
+            product_simulation_input=(
+                None
+                if not isinstance(payload.get("product_simulation_input"), dict)
+                else ProductSimulationInput(
+                    products=[
+                        ProductSimulationSeries(
+                            product_id=str(item.get("product_id")),
+                            asset_bucket=str(item.get("asset_bucket") or ""),
+                            target_weight=float(item.get("target_weight", 0.0)),
+                            return_series=[float(value) for value in list(item.get("return_series") or [])],
+                            source_ref=(
+                                str(item.get("source_ref"))
+                                if item.get("source_ref") is not None
+                                else None
+                            ),
+                            data_status=str(item.get("data_status") or "manual_annotation"),
+                            frequency=str(item.get("frequency") or "daily"),
+                            observed_start_date=(
+                                str(item.get("observed_start_date"))
+                                if item.get("observed_start_date") is not None
+                                else None
+                            ),
+                            observed_end_date=(
+                                str(item.get("observed_end_date"))
+                                if item.get("observed_end_date") is not None
+                                else None
+                            ),
+                            observed_points=int(item.get("observed_points") or 0),
+                            inferred_points=int(item.get("inferred_points") or 0),
+                        )
+                        for item in list(payload.get("product_simulation_input", {}).get("products") or [])
+                        if isinstance(item, dict)
+                    ],
+                    frequency=str(payload.get("product_simulation_input", {}).get("frequency") or "daily"),
+                    simulation_method=str(
+                        payload.get("product_simulation_input", {}).get("simulation_method")
+                        or "product_independent_path"
+                    ),
+                    audit_window=(
+                        None
+                        if payload.get("product_simulation_input", {}).get("audit_window") is None
+                        else dict(payload.get("product_simulation_input", {}).get("audit_window") or {})
+                    ),
+                    coverage_summary=dict(
+                        payload.get("product_simulation_input", {}).get("coverage_summary") or {}
+                    ),
+                )
+            ),
             notes=[str(item) for item in payload.get("notes", [])],
         )
         for name, payload in dict(data.get("candidate_product_contexts") or {}).items()
@@ -497,6 +547,75 @@ def _run_monte_carlo(
     )
     extra = {"expected_terminal_value": expected_terminal_value}
     return probability, extra, risk
+
+
+def _normalize_simulation_frequency(value: str | None) -> tuple[str, float]:
+    rendered = str(value or "daily").strip().lower()
+    annualization = {
+        "daily": 252.0,
+        "weekly": 52.0,
+        "monthly": 12.0,
+        "quarterly": 4.0,
+    }.get(rendered, 252.0)
+    return rendered, annualization
+
+
+def _portfolio_return_series_from_products(
+    simulation_input: ProductSimulationInput,
+) -> tuple[list[float], str]:
+    series_entries = [item for item in simulation_input.products if item.return_series and item.target_weight > 0.0]
+    if not series_entries:
+        return [], simulation_input.frequency or "daily"
+    min_len = min(len(item.return_series) for item in series_entries)
+    if min_len <= 1:
+        return [], simulation_input.frequency or "daily"
+    total_weight = sum(float(item.target_weight) for item in series_entries)
+    if total_weight <= 0.0:
+        return [], simulation_input.frequency or "daily"
+    portfolio_returns: list[float] = []
+    for idx in range(-min_len, 0):
+        period_return = 0.0
+        for item in series_entries:
+            period_return += float(item.target_weight) * float(item.return_series[idx])
+        portfolio_returns.append(period_return / total_weight)
+    return portfolio_returns, simulation_input.frequency or "daily"
+
+
+def _run_product_independent_monte_carlo(
+    *,
+    simulation_input: ProductSimulationInput,
+    cashflow_schedule: list[float],
+    initial_value: float,
+    goal_amount: float,
+    n_paths: int,
+    seed: int,
+) -> tuple[float, dict[str, float], RiskSummary]:
+    portfolio_returns, frequency = _portfolio_return_series_from_products(simulation_input)
+    if not portfolio_returns:
+        raise ValueError("product_independent_path requires aligned observed return series")
+    _, annualization = _normalize_simulation_frequency(frequency)
+    mean_period = float(np.mean(portfolio_returns))
+    std_period = float(np.std(portfolio_returns))
+    mu_annual = mean_period * annualization
+    sigma_annual = std_period * math.sqrt(annualization)
+    synthetic_market = MarketAssumptions(
+        expected_returns={"portfolio": mu_annual},
+        volatility={"portfolio": max(sigma_annual, 0.0)},
+        correlation_matrix={"portfolio": {"portfolio": 1.0}},
+        source_name="product_independent_simulation",
+        dataset_version=None,
+        lookback_months=None,
+        historical_backtest_used=True,
+    )
+    return _run_monte_carlo(
+        {"portfolio": 1.0},
+        cashflow_schedule,
+        initial_value,
+        goal_amount,
+        synthetic_market,
+        n_paths,
+        seed,
+    )
 
 
 def _check_allocation_feasibility(
@@ -1208,6 +1327,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
         effective_extra = extra
         effective_risk = risk
         product_proxy_adjusted_success_probability = None
+        product_independent_success_probability = None
         product_probability_method = "bucket_only_no_product_proxy_adjustment"
         product_context = inp.candidate_product_contexts.get(allocation.name)
         if product_context is not None:
@@ -1228,6 +1348,30 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             effective_extra = adjusted_extra
             effective_risk = adjusted_risk
             product_proxy_adjusted_success_probability = adjusted_probability
+            simulation_input = product_context.product_simulation_input
+            if (
+                simulation_input is not None
+                and simulation_input.products
+                and (
+                    str(product_context.product_probability_method or "").strip().lower()
+                    == "product_independent_path"
+                    or str(simulation_input.simulation_method or "").strip().lower()
+                    == "product_independent_path"
+                )
+            ):
+                independent_probability, independent_extra, independent_risk = _run_product_independent_monte_carlo(
+                    simulation_input=simulation_input,
+                    cashflow_schedule=cashflow_schedule,
+                    initial_value=inp.current_portfolio_value,
+                    goal_amount=inp.goal.goal_amount,
+                    n_paths=params.n_paths,
+                    seed=params.seed,
+                )
+                effective_probability = independent_probability
+                effective_extra = independent_extra
+                effective_risk = independent_risk
+                product_independent_success_probability = independent_probability
+                product_probability_method = "product_independent_path"
         expected_annual_return = _scenario_expected_annual_return(
             initial_value=inp.current_portfolio_value,
             cashflow_schedule=cashflow_schedule,
@@ -1239,6 +1383,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             success_probability=effective_probability,
             bucket_success_probability=bucket_probability,
             product_proxy_adjusted_success_probability=product_proxy_adjusted_success_probability,
+            product_independent_success_probability=product_independent_success_probability,
             product_probability_method=product_probability_method,
             implied_required_annual_return=implied_required_annual_return,
             expected_annual_return=expected_annual_return,
@@ -1259,6 +1404,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
                 success_probability=effective_probability,
                 bucket_success_probability=bucket_probability,
                 product_proxy_adjusted_success_probability=product_proxy_adjusted_success_probability,
+                product_independent_success_probability=product_independent_success_probability,
                 product_probability_method=product_probability_method,
                 implied_required_annual_return=implied_required_annual_return,
                 expected_annual_return=expected_annual_return,

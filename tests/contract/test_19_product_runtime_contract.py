@@ -162,6 +162,46 @@ def test_build_runtime_product_universe_context_short_circuits_rate_limited_prov
 
 
 @pytest.mark.contract
+def test_build_runtime_product_universe_context_reuses_snapshot_payload():
+    snapshot = {
+        "source_status": "observed",
+        "source_name": "tinyshare_runtime_catalog",
+        "source_ref": "tinyshare://runtime_catalog?as_of=2026-04-05",
+        "as_of": "2026-04-05",
+        "runtime_candidates": [
+            {
+                "product_id": "ts_stock_000001_sz",
+                "product_name": "平安银行",
+                "asset_bucket": "equity_cn",
+                "product_family": "a_share_stock",
+                "wrapper_type": "stock",
+                "provider_source": "tinyshare_stock_basic",
+                "provider_symbol": "000001.SZ",
+                "tags": ["equity", "stock_wrapper", "cn"],
+            }
+        ],
+        "products": {
+            "ts_stock_000001_sz": {
+                "status": "observed",
+                "tradable": True,
+                "source_name": "tinyshare_runtime_catalog",
+                "source_ref": "tinyshare://runtime_catalog?ts_code=000001.SZ",
+                "as_of": "2026-04-05",
+                "data_status": "observed",
+            }
+        },
+    }
+
+    inputs, result = build_runtime_product_universe_context(
+        market_raw={"product_universe_snapshot": snapshot},
+        as_of="2026-04-05T10:00:00Z",
+    )
+
+    assert inputs == {}
+    assert result == snapshot
+
+
+@pytest.mark.contract
 def test_build_runtime_product_valuation_context_maps_bucket_observations_to_products():
     inputs, result = build_runtime_product_valuation_context(
         market_raw={

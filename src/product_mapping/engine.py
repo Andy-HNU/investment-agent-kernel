@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from shared.audit import AuditWindow, DataStatus, coerce_data_status
+from shared.datasets.cache import DatasetCache
+from shared.datasets.types import DatasetSpec, VersionPin
 from shared.profile_parser import parse_profile_semantics
+from shared.providers.timeseries import fetch_timeseries
 
 from product_mapping.catalog import load_builtin_catalog
 from product_mapping.policy_news import apply_policy_news_scores
@@ -83,6 +87,7 @@ _CORE_TAKE_PROFIT_THRESHOLD = 0.12
 _SATELLITE_TAKE_PROFIT_THRESHOLD = 0.15
 _DRAWDOWN_ADD_BUY_THRESHOLD = 0.10
 _REBALANCE_BAND = 0.10
+_PRODUCT_SIMULATION_CACHE_DIR = Path.home() / ".cache" / "investment_system" / "timeseries"
 
 
 @dataclass(frozen=True)
@@ -105,10 +110,11 @@ def _product_universe_source_summary(
 ) -> dict[str, Any]:
     inputs = dict(universe_inputs or {})
     result = dict(universe_result or {})
+    requested = bool(inputs.get("requested") or universe_result is not None)
     return {
-        "requested": bool(inputs.get("requested") or universe_result is not None),
+        "requested": requested,
         "require_observed_source": bool(inputs.get("require_observed_source", False)),
-        "source_status": str(result.get("source_status") or "missing"),
+        "source_status": str(result.get("source_status") or ("missing" if requested else "not_requested")),
         "source_name": result.get("source_name"),
         "source_ref": result.get("source_ref"),
         "as_of": result.get("as_of"),
@@ -336,10 +342,11 @@ def _valuation_source_summary(
 ) -> dict[str, Any]:
     inputs = dict(valuation_inputs or {})
     result = dict(valuation_result or {})
+    requested = bool(inputs.get("requested") or valuation_result is not None)
     return {
-        "requested": bool(inputs.get("requested") or valuation_result is not None),
+        "requested": requested,
         "require_observed_source": bool(inputs.get("require_observed_source", False)),
-        "source_status": str(result.get("source_status") or "missing"),
+        "source_status": str(result.get("source_status") or ("missing" if requested else "not_requested")),
         "source_name": result.get("source_name"),
         "source_ref": result.get("source_ref"),
         "as_of": result.get("as_of"),
@@ -921,6 +928,117 @@ def _product_context_adjustment(
     return round(return_adjustment, 6), round(volatility_multiplier, 6)
 
 
+def _product_simulation_provider(candidate: ProductCandidate, preferred_provider: str | None) -> str:
+    provider_source = str(candidate.provider_source or "").strip().lower()
+    provider_symbol = str(candidate.provider_symbol or "").strip().upper()
+    if "tinyshare" in provider_source:
+        return "tinyshare"
+    if "baostock" in provider_source:
+        return "baostock"
+    if "yfinance" in provider_source:
+        return "yfinance"
+    if preferred_provider:
+        return preferred_provider
+    if provider_symbol.endswith((".SH", ".SZ", ".BJ")):
+        return "tinyshare"
+    return "yfinance"
+
+
+def _product_simulation_symbol(candidate: ProductCandidate, provider: str) -> str | None:
+    symbol = str(candidate.provider_symbol or "").strip()
+    if not symbol:
+        return None
+    if provider != "yfinance":
+        return symbol
+    upper = symbol.upper()
+    if upper.endswith(".SH"):
+        return upper.replace(".SH", ".SS")
+    return upper
+
+
+def _product_return_series_from_rows(rows: list[dict[str, Any]]) -> list[float]:
+    closes = [float(item["close"]) for item in rows if item.get("close") is not None]
+    if len(closes) < 2:
+        return []
+    return [(closes[idx] / closes[idx - 1]) - 1.0 for idx in range(1, len(closes))]
+
+
+def _build_product_simulation_input(
+    items: list[ExecutionPlanItem],
+    *,
+    historical_dataset: dict[str, Any] | None,
+    history_window: AuditWindow | None,
+) -> dict[str, Any] | None:
+    if not items or history_window is None or not history_window.start_date or not history_window.end_date:
+        return None
+    preferred_provider = str((historical_dataset or {}).get("source_name") or "").strip().lower() or None
+    cache = DatasetCache(base_dir=_PRODUCT_SIMULATION_CACHE_DIR)
+    products: list[dict[str, Any]] = []
+    observed_count = 0
+    for item in items:
+        candidate = item.primary_product
+        provider = _product_simulation_provider(candidate, preferred_provider)
+        symbol = _product_simulation_symbol(candidate, provider)
+        if not symbol:
+            continue
+        spec = DatasetSpec(
+            kind="timeseries",
+            dataset_id="product_simulation",
+            provider=provider,
+            symbol=symbol,
+        )
+        pin = VersionPin(
+            version_id=f"{provider}:{symbol}:{history_window.start_date}:{history_window.end_date}:product_simulation",
+            source_ref=f"{provider}://{symbol}?start={history_window.start_date}&end={history_window.end_date}",
+        )
+        try:
+            rows, used_pin = fetch_timeseries(
+                spec,
+                pin=pin,
+                cache=cache,
+                allow_fallback=True,
+                return_used_pin=True,
+            )
+        except Exception:
+            continue
+        return_series = _product_return_series_from_rows(rows)
+        if not return_series:
+            continue
+        observed_count += 1
+        products.append(
+            {
+                "product_id": candidate.product_id,
+                "asset_bucket": item.asset_bucket,
+                "target_weight": float(item.target_weight or 0.0),
+                "return_series": return_series,
+                "source_ref": str(used_pin.source_ref or pin.source_ref),
+                "data_status": (
+                    DataStatus.OBSERVED.value
+                    if used_pin.version_id == pin.version_id
+                    else DataStatus.COMPUTED_FROM_OBSERVED.value
+                ),
+                "frequency": "daily",
+                "observed_start_date": history_window.start_date,
+                "observed_end_date": history_window.end_date,
+                "observed_points": len(return_series),
+                "inferred_points": 0,
+            }
+        )
+    if not products:
+        return None
+    return {
+        "products": products,
+        "frequency": "daily",
+        "simulation_method": "product_independent_path" if observed_count == len(items) else "product_proxy_path",
+        "audit_window": history_window.to_dict(),
+        "coverage_summary": {
+            "selected_product_count": len(items),
+            "observed_product_count": observed_count,
+            "missing_product_count": max(len(items) - observed_count, 0),
+        },
+    }
+
+
 def build_candidate_product_context(
     *,
     source_allocation_id: str,
@@ -983,14 +1101,29 @@ def build_candidate_product_context(
         )
     if preview_plan.proxy_universe_summary is not None and preview_plan.proxy_universe_summary.disclosure:
         notes.append(preview_plan.proxy_universe_summary.disclosure)
+    product_simulation_input = _build_product_simulation_input(
+        preview_plan.items,
+        historical_dataset=historical_dataset,
+        history_window=history_window,
+    )
+    product_probability_method = "product_proxy_adjustment_estimate"
+    if product_simulation_input is not None:
+        coverage_summary = dict(product_simulation_input.get("coverage_summary") or {})
+        if int(coverage_summary.get("observed_product_count") or 0) == int(
+            coverage_summary.get("selected_product_count") or 0
+        ):
+            product_probability_method = "product_independent_path"
+        else:
+            product_probability_method = "product_proxy_path"
     return {
         "allocation_name": source_allocation_id,
-        "product_probability_method": "product_proxy_adjustment_estimate",
+        "product_probability_method": product_probability_method,
         "bucket_expected_return_adjustments": bucket_expected_return_adjustments,
         "bucket_volatility_multipliers": bucket_volatility_multipliers,
         "selected_product_ids": selected_product_ids,
         "selected_proxy_refs": selected_proxy_refs,
         "product_history_profiles": history_profiles,
+        "product_simulation_input": product_simulation_input,
         "notes": notes,
     }
 
@@ -1313,7 +1446,15 @@ def build_execution_plan(
     normalized_targets = _normalize_bucket_targets(bucket_targets)
     normalized_current_weights = _normalize_bucket_targets(current_weights or {})
     restriction_filter = _compile_restrictions(restrictions)
-    registry = list(catalog or load_builtin_catalog())
+    if catalog is not None:
+        registry = list(catalog)
+    elif runtime_candidates is not None:
+        registry = [
+            entry.candidate if isinstance(entry, RuntimeProductCandidate) else entry
+            for entry in runtime_candidates
+        ]
+    else:
+        registry = list(load_builtin_catalog())
     runtime_candidate_pool, candidate_filter_breakdown = _build_runtime_candidate_pool(
         registry,
         restriction_filter,
@@ -1336,7 +1477,7 @@ def build_execution_plan(
     if not grouped_candidates.get("cash_liquidity"):
         cash_fallback_candidates = [
             RuntimeProductCandidate(candidate=item, registry_index=-1)
-            for item in registry
+            for item in (list(catalog) if catalog is not None else list(load_builtin_catalog()))
             if _normalize_bucket(item.asset_bucket) == "cash_liquidity"
         ]
         if cash_fallback_candidates:
