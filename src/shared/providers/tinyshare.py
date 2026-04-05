@@ -166,15 +166,15 @@ def _normalize_history_rows(df: Any, *, ts_code: str) -> list[dict[str, Any]]:
 
 
 def _stock_candidate_signature(candidates: list[ProductCandidate]) -> tuple[int, str]:
-    stock_symbols = sorted(
+    stock_entries = sorted(
         {
-            str(candidate.provider_symbol or "").strip().upper()
+            f"{candidate.product_id}:{str(candidate.provider_symbol or '').strip().upper()}"
             for candidate in candidates
             if candidate.wrapper_type == "stock" and str(candidate.provider_symbol or "").strip()
         }
     )
-    digest = hashlib.sha1(",".join(stock_symbols).encode("utf-8")).hexdigest()
-    return len(stock_symbols), digest
+    digest = hashlib.sha1(",".join(stock_entries).encode("utf-8")).hexdigest()
+    return len(stock_entries), digest
 
 
 def fetch_history_rows(

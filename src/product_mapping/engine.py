@@ -968,6 +968,7 @@ def _build_execution_realism_summary(
     *,
     items: list[ExecutionPlanItem],
     account_total_value: float | None,
+    requested_total_amount: float | None,
     available_cash: float | None,
     liquidity_reserve_min: float | None,
     minimum_trade_amount: float | None,
@@ -985,7 +986,13 @@ def _build_execution_realism_summary(
         sum(float(item.target_amount or 0.0) for item in items if item.asset_bucket == "cash_liquidity"),
         2,
     )
-    implicit_cash_target_amount = round(max(total_value - total_target_amount, 0.0), 2)
+    effective_requested_total_amount = (
+        total_target_amount if requested_total_amount is None else round(float(requested_total_amount), 2)
+    )
+    implicit_cash_target_amount = round(
+        max(total_value - max(total_target_amount, effective_requested_total_amount), 0.0),
+        2,
+    )
     cash_target_amount = round(explicit_cash_target_amount + implicit_cash_target_amount, 2)
     amount_closure_delta = round(total_target_amount + implicit_cash_target_amount - total_value, 2)
     cash_reserve_target_amount = (
@@ -1327,6 +1334,11 @@ def build_execution_plan(
     execution_realism_summary = _build_execution_realism_summary(
         items=items,
         account_total_value=account_total_value,
+        requested_total_amount=(
+            None
+            if account_total_value is None
+            else sum(max(float(weight or 0.0), 0.0) * float(account_total_value) for weight in normalized_targets.values())
+        ),
         available_cash=available_cash,
         liquidity_reserve_min=liquidity_reserve_min,
         minimum_trade_amount=minimum_trade_amount,

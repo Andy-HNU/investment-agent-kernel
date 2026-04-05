@@ -638,6 +638,41 @@ def test_build_execution_plan_treats_unallocated_residual_as_cash_for_closure_ch
     assert plan.execution_realism_summary.amount_closure_delta == pytest.approx(0.0, abs=1e-6)
     assert "account_amount_not_closed" not in plan.execution_realism_summary.reasons
     assert "cash_reserve_conflict" in plan.execution_realism_summary.reasons
+
+
+@pytest.mark.contract
+def test_build_execution_plan_does_not_treat_missing_requested_bucket_as_implicit_cash():
+    catalog = [
+        ProductCandidate(
+            product_id="eq1",
+            product_name="Equity ETF",
+            asset_bucket="equity_cn",
+            product_family="core",
+            wrapper_type="etf",
+            provider_source="unit_test",
+            provider_symbol="EQ1",
+            tags=["equity"],
+        )
+    ]
+
+    plan = build_execution_plan(
+        source_run_id="run_execution_realism_missing_bucket",
+        source_allocation_id="allocation_execution_realism_missing_bucket",
+        bucket_targets={"equity_cn": 0.4, "bond_cn": 0.6},
+        restrictions=[],
+        catalog=catalog,
+        account_total_value=1_000.0,
+        current_weights={"cash_liquidity": 1.0},
+        available_cash=1_000.0,
+        liquidity_reserve_min=0.0,
+        minimum_trade_amount=50.0,
+    )
+
+    assert plan.execution_realism_summary is not None
+    assert plan.execution_realism_summary.executable is False
+    assert plan.execution_realism_summary.cash_target_amount == pytest.approx(0.0, abs=1e-6)
+    assert plan.execution_realism_summary.amount_closure_delta == pytest.approx(-600.0, abs=1e-6)
+    assert "account_amount_not_closed" in plan.execution_realism_summary.reasons
 def test_build_execution_plan_flags_tiny_trade_buckets_below_minimum_amount():
     plan = build_execution_plan(
         source_run_id="run_execution_realism_tiny_trade",

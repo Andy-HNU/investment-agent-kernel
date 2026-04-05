@@ -390,6 +390,50 @@ def test_build_runtime_valuation_result_ignores_stale_missing_cache_from_non_sto
     assert second["products"]["ts_stock_000001_sz"]["status"] == "observed"
 
 
+
+
+@pytest.mark.contract
+def test_build_runtime_valuation_result_recomputes_when_product_ids_change_for_same_symbol(monkeypatch, tmp_path):
+    first_candidates = [
+        ProductCandidate(
+            product_id="ts_stock_alias_a",
+            product_name="平安银行A",
+            asset_bucket="equity_cn",
+            product_family="a_share_stock",
+            wrapper_type="stock",
+            provider_source="tinyshare_stock_basic",
+            provider_symbol="000001.SZ",
+            tags=["equity", "stock_wrapper", "cn"],
+        )
+    ]
+    second_candidates = [
+        ProductCandidate(
+            product_id="ts_stock_alias_b",
+            product_name="平安银行B",
+            asset_bucket="equity_cn",
+            product_family="a_share_stock",
+            wrapper_type="stock",
+            provider_source="tinyshare_stock_basic",
+            provider_symbol="000001.SZ",
+            tags=["equity", "stock_wrapper", "cn"],
+        )
+    ]
+
+    class _FakePro:
+        def trade_cal(self, exchange, start_date, end_date):  # type: ignore[no-untyped-def]
+            return pd.DataFrame([{"exchange": "SSE", "cal_date": "20260403", "is_open": 1, "pretrade_date": "20260402"}])
+
+        def daily_basic(self, **kwargs):  # type: ignore[no-untyped-def]
+            return pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20260403", "pe": 4.7, "pe_ttm": 4.6, "pb": 0.44}])
+
+    monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
+    monkeypatch.setattr("shared.providers.tinyshare._pro_api", lambda token=None: _FakePro())
+
+    first = tinyshare_provider.build_runtime_valuation_result(first_candidates, as_of="2026-04-05", cache_dir=tmp_path)
+    second = tinyshare_provider.build_runtime_valuation_result(second_candidates, as_of="2026-04-05", cache_dir=tmp_path)
+
+    assert list(first["products"].keys()) == ["ts_stock_alias_a"]
+    assert list(second["products"].keys()) == ["ts_stock_alias_b"]
 @pytest.mark.contract
 def test_tinyshare_provider_ignores_repo_local_token_file_under_pytest_by_default(monkeypatch, tmp_path):
     token_file = tmp_path / ".secrets" / "tinyshare.token"
