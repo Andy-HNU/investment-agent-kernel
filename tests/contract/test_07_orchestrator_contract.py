@@ -212,6 +212,46 @@ def test_run_orchestrator_onboarding_persistence_plan_includes_execution_plan_ar
 
 
 @pytest.mark.contract
+def test_run_orchestrator_attaches_candidate_product_contexts_before_solver(
+    goal_solver_input_base,
+    calibration_result_base,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "_build_solver_candidate_product_contexts",
+        lambda **_kwargs: {
+            "balanced_core__moderate__02": {
+                "allocation_name": "balanced_core__moderate__02",
+                "product_probability_method": "product_proxy_adjustment_estimate",
+                "selected_product_ids": ["510300", "511010"],
+                "bucket_expected_return_adjustments": {"equity_cn": 0.01},
+                "bucket_volatility_multipliers": {"equity_cn": 1.08},
+            }
+        },
+    )
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "run_onboarding_product_context"},
+        raw_inputs={
+            "bundle_id": "bundle_acc001_20260329T120000Z",
+            "snapshot_bundle": {"bundle_id": "bundle_acc001_20260329T120000Z"},
+            "calibration_result": calibration_result_base,
+            "allocation_engine_input": _allocation_input(goal_solver_input_base),
+            "goal_solver_input": goal_solver_input_base,
+        },
+    )
+
+    assert result.status == WorkflowStatus.COMPLETED
+    contexts = result.card_build_input.goal_solver_input["candidate_product_contexts"]
+    assert contexts
+    for context in contexts.values():
+        assert context["product_probability_method"] == "product_proxy_adjustment_estimate"
+        assert context["selected_product_ids"]
+        assert "bucket_expected_return_adjustments" in context
+
+
+@pytest.mark.contract
 def test_run_orchestrator_execution_plan_respects_user_restrictions():
     profile = UserOnboardingProfile(
         account_profile_id="orchestrator_plan_restrictions",

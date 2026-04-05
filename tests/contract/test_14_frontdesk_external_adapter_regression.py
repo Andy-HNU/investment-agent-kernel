@@ -95,12 +95,36 @@ def _external_followup_raw_inputs_factory(market_url: str, behavior_url: str, re
                     "field": "market_raw",
                     "label": "市场输入",
                     "value": market_raw,
+                    "source_ref": market_url,
+                    "as_of": str(raw_inputs.get("as_of") or ""),
+                    "fetched_at": str(raw_inputs.get("as_of") or ""),
+                    "data_status": "observed",
+                    "freshness_state": "fresh",
+                    "audit_window": {
+                        "start_date": "2024-01-01",
+                        "end_date": "2026-03-31",
+                        "trading_days": 500,
+                        "observed_days": 500,
+                        "inferred_days": 0,
+                    },
                     "note": "fetched from local fixture JSON",
                 },
                 {
                     "field": "behavior_raw",
                     "label": "行为输入",
                     "value": behavior_raw,
+                    "source_ref": behavior_url,
+                    "as_of": str(raw_inputs.get("as_of") or ""),
+                    "fetched_at": str(raw_inputs.get("as_of") or ""),
+                    "data_status": "observed",
+                    "freshness_state": "fresh",
+                    "audit_window": {
+                        "start_date": str(raw_inputs.get("as_of") or "")[:10],
+                        "end_date": str(raw_inputs.get("as_of") or "")[:10],
+                        "trading_days": 1,
+                        "observed_days": 1,
+                        "inferred_days": 0,
+                    },
                     "note": "fetched from local fixture JSON",
                 },
             ]
@@ -254,12 +278,14 @@ def test_frontdesk_monthly_followup_can_apply_fixture_fetch_override(
 
     store = FrontdeskStore(onboarding_db)
     snapshot = store.get_frontdesk_snapshot(profile.account_profile_id)
-    assert summary["status"] == "completed"
+    assert summary["status"] == "degraded"
     assert requests == [market_url, behavior_url]
     assert snapshot is not None
     latest_run = snapshot["latest_run"]
     assert latest_run["workflow_type"] == "monthly"
     assert latest_run["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 2
     assert latest_run["decision_card"]["input_provenance"]["externally_fetched"][0]["field"] == "market_raw"
+    assert latest_run["decision_card"]["formal_path_visibility"]["status"] == "degraded"
+    assert latest_run["decision_card"]["formal_path_visibility"]["missing_audit_fields"] == []
     serialized = json.dumps(latest_run["decision_card"], ensure_ascii=False, sort_keys=True)
     assert "外部抓取" in serialized

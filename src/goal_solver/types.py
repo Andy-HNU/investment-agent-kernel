@@ -117,6 +117,43 @@ class StrategicAllocation:
 
 
 @dataclass
+class ProductHistoryProfile:
+    product_id: str
+    source_ref: str | None = None
+    observed_history_days: int | None = None
+    inferred_history_days: int | None = None
+    inference_weight: float = 1.0
+    data_status: str = "manual_annotation"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class CandidateProductContext:
+    allocation_name: str
+    product_probability_method: str = "product_proxy_adjustment_estimate"
+    bucket_expected_return_adjustments: dict[str, float] = field(default_factory=dict)
+    bucket_volatility_multipliers: dict[str, float] = field(default_factory=dict)
+    selected_product_ids: list[str] = field(default_factory=list)
+    selected_proxy_refs: list[str] = field(default_factory=list)
+    product_history_profiles: list[ProductHistoryProfile] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "allocation_name": self.allocation_name,
+            "product_probability_method": self.product_probability_method,
+            "bucket_expected_return_adjustments": dict(self.bucket_expected_return_adjustments),
+            "bucket_volatility_multipliers": dict(self.bucket_volatility_multipliers),
+            "selected_product_ids": list(self.selected_product_ids),
+            "selected_proxy_refs": list(self.selected_proxy_refs),
+            "product_history_profiles": [item.to_dict() for item in self.product_history_profiles],
+            "notes": list(self.notes),
+        }
+
+
+@dataclass
 class GoalSolverParams:
     version: str
     n_paths: int
@@ -141,6 +178,7 @@ class GoalSolverInput:
     constraints: AccountConstraints
     solver_params: GoalSolverParams
     ranking_mode_override: RankingMode | None = None
+    candidate_product_contexts: dict[str, CandidateProductContext] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

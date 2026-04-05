@@ -164,8 +164,11 @@ def test_frontdesk_cli_text_summary_surfaces_readable_candidates_and_disclaimer(
     assert "bucket_success=" in output
     assert "product_success=" in output
     assert "required_return=" in output
+    assert "expected_return=" in output
     assert "input_sources=" in output
     assert "model_disclaimer=" in output
+    assert "probability_recommended=" in output
+    assert "frontier_raw_candidate_count=" in output
     assert "goal_semantics:" in output
     assert "profile_model:" in output
     assert "refresh:" in output
@@ -518,6 +521,76 @@ def test_render_frontdesk_summary_surfaces_execution_plan_valuation_audit():
     assert "valuation:pe_above_40" in output
     assert "pending_execution_plan_valuation_audit=" in output
     assert "akshare_dynamic_valuation" in output
+
+
+@pytest.mark.smoke
+def test_render_frontdesk_summary_surfaces_layer1_probability_and_frontier_fields():
+    from frontdesk.cli import render_frontdesk_summary
+
+    output = render_frontdesk_summary(
+        {
+            "account_profile_id": "layer1_frontdesk_user",
+            "display_name": "Andy",
+            "workflow_type": "onboarding",
+            "status": "completed",
+            "decision_card": {
+                "card_type": "goal_baseline",
+                "summary": "Layer 1 probability summary",
+                "primary_recommendation": "平衡推进方案",
+                "recommended_action": "adopt_recommended_plan",
+                "probability_explanation": {
+                    "recommended_allocation_label": "平衡推进方案",
+                    "recommended_success_probability": "65.00%",
+                    "recommended_expected_annual_return": "6.10%",
+                    "highest_probability_allocation_label": "冲目标方案",
+                    "highest_probability_success_probability": "70.00%",
+                    "highest_probability_expected_annual_return": "7.90%",
+                    "target_return_priority_allocation_label": "",
+                    "target_return_priority_success_probability": "",
+                    "target_return_priority_expected_annual_return": "",
+                    "drawdown_priority_allocation_label": "平衡推进方案",
+                    "drawdown_priority_success_probability": "65.00%",
+                    "drawdown_priority_expected_annual_return": "6.10%",
+                    "implied_required_annual_return": "8.00%",
+                    "product_probability_method": "product_proxy_adjustment_estimate",
+                },
+                "frontier_analysis": {
+                    "frontier_diagnostics": {
+                        "raw_candidate_count": 4,
+                        "feasible_candidate_count": 3,
+                        "frontier_max_expected_annual_return": 0.079,
+                        "candidate_families": ["balanced_core", "growth_tilt", "max_return_unconstrained"],
+                        "binding_constraints": [
+                            {"constraint_name": "required_annual_return", "reason": "no_candidate_meets_required_annual_return"}
+                        ],
+                        "structural_limitations": ["expected_return_shrinkage_applied"],
+                    }
+                },
+                "input_provenance": {},
+            },
+            "key_metrics": {
+                "success_probability": "65.00%",
+                "product_adjusted_success_probability": "65.00%",
+                "product_probability_method": "product_proxy_adjustment_estimate",
+                "implied_required_annual_return": "8.00%",
+                "expected_annual_return": "6.10%",
+            },
+            "input_provenance": {},
+            "refresh_summary": {},
+            "candidate_options": [],
+            "goal_alternatives": [],
+            "formal_path_visibility": {},
+        }
+    )
+
+    assert "expected_annual_return=6.10%" in output
+    assert "probability_recommended=平衡推进方案 | success=65.00% | expected_return=6.10%" in output
+    assert "probability_highest=冲目标方案 | success=70.00% | expected_return=7.90%" in output
+    assert "probability_target_return= | success= | expected_return= | required_return=8.00%" in output
+    assert "probability_drawdown=平衡推进方案 | success=65.00% | expected_return=6.10%" in output
+    assert "frontier_raw_candidate_count=4" in output
+    assert "frontier_candidate_families=['balanced_core', 'growth_tilt', 'max_return_unconstrained']" in output
+    assert "frontier_binding_constraints=[{'constraint_name': 'required_annual_return', 'reason': 'no_candidate_meets_required_annual_return'}]" in output
 
 
 @pytest.mark.smoke

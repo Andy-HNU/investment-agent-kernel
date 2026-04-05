@@ -9,7 +9,7 @@ from calibration.engine import run_calibration
 from decision_card.builder import build_decision_card
 from decision_card.types import DecisionCardBuildInput, DecisionCardType
 from goal_solver.engine import run_goal_solver
-from product_mapping import build_execution_plan
+from product_mapping import build_candidate_product_context, build_execution_plan
 from runtime_optimizer.engine import run_runtime_optimizer
 from runtime_optimizer.types import RuntimeOptimizerMode
 from snapshot_ingestion.engine import build_snapshot_bundle
@@ -1616,6 +1616,16 @@ def _extract_execution_plan_product_proxy_context(
     return proxy_result or None
 
 
+def _extract_market_historical_dataset(envelope: dict[str, Any], snapshot_bundle: Any | None) -> dict[str, Any] | None:
+    market_raw = _as_dict(envelope.get("market_raw"))
+    historical_dataset = _as_dict(market_raw.get("historical_dataset"))
+    if historical_dataset:
+        return historical_dataset
+    snapshot_market = _as_dict(_as_dict(snapshot_bundle).get("market"))
+    historical_dataset = _as_dict(snapshot_market.get("historical_dataset"))
+    return historical_dataset or None
+
+
 def _extract_execution_plan_account_context(
     envelope: dict[str, Any],
 ) -> tuple[float | None, dict[str, float] | None, float | None, float | None, dict[str, float] | None]:
@@ -1694,6 +1704,40 @@ def _maybe_build_execution_plan(
         liquidity_reserve_min=liquidity_reserve_min,
         transaction_fee_rate=transaction_fee_rate,
     )
+
+
+def _build_solver_candidate_product_contexts(
+    *,
+    candidate_allocations: list[Any],
+    envelope: dict[str, Any],
+    snapshot_bundle: Any | None,
+) -> dict[str, Any]:
+    restrictions = _extract_execution_plan_restrictions(envelope)
+    valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
+    product_universe_inputs, product_universe_result = _extract_execution_plan_product_universe_context(envelope)
+    product_proxy_result = _extract_execution_plan_product_proxy_context(envelope)
+    policy_news_signals = _extract_execution_plan_policy_news_signals(envelope)
+    historical_dataset = _extract_market_historical_dataset(envelope, snapshot_bundle)
+    contexts: dict[str, Any] = {}
+    for allocation in candidate_allocations:
+        allocation_payload = _as_dict(allocation)
+        allocation_name = _first_text(allocation_payload.get("name")) or ""
+        weights = _as_dict(allocation_payload.get("weights"))
+        if not allocation_name or not weights:
+            continue
+        contexts[allocation_name] = build_candidate_product_context(
+            source_allocation_id=allocation_name,
+            bucket_targets={bucket: float(weight) for bucket, weight in weights.items()},
+            restrictions=restrictions,
+            product_universe_inputs=product_universe_inputs,
+            product_universe_result=product_universe_result,
+            valuation_inputs=valuation_inputs,
+            valuation_result=valuation_result,
+            policy_news_signals=policy_news_signals,
+            product_proxy_result=product_proxy_result,
+            historical_dataset=historical_dataset,
+        )
+    return contexts
 
 
 def _build_persistence_plan(
@@ -1880,6 +1924,11 @@ def run_orchestrator(
                     solver_input = _apply_calibration_to_goal_solver_input(
                         solver_input,
                         calibration_data,
+                    )
+                    solver_input["candidate_product_contexts"] = _build_solver_candidate_product_contexts(
+                        candidate_allocations=allocation_result.candidate_allocations,
+                        envelope=envelope,
+                        snapshot_bundle=snapshot_bundle,
                     )
                     goal_solver_input_used = solver_input
                     goal_solver_output = run_goal_solver(solver_input)

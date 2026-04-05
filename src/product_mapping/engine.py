@@ -60,6 +60,25 @@ _WRAPPER_SLIPPAGE_RATE = {
     "bond": 0.0004,
     "other": 0.0010,
 }
+_FEE_RETURN_DRAG = {"low": 0.0015, "medium": 0.0030, "high": 0.0050}
+_LIQUIDITY_RETURN_DRAG = {"high": 0.0, "medium": 0.0010, "low": 0.0025}
+_LIQUIDITY_VOL_MULTIPLIER = {"high": 1.00, "medium": 1.04, "low": 1.10}
+_WRAPPER_RETURN_PREMIUM = {
+    "stock": 0.0060,
+    "etf": 0.0010,
+    "fund": 0.0,
+    "cash_mgmt": -0.0010,
+    "bond": 0.0,
+    "other": 0.0,
+}
+_WRAPPER_VOL_MULTIPLIER = {
+    "stock": 1.12,
+    "etf": 1.02,
+    "fund": 1.04,
+    "cash_mgmt": 0.30,
+    "bond": 0.95,
+    "other": 1.05,
+}
 
 
 @dataclass(frozen=True)
@@ -754,6 +773,142 @@ def _build_selected_plan_proxy_specs(
         _build_product_proxy_spec(candidate, proxy_result)
         for candidate in sorted(selected_products.values(), key=lambda candidate: candidate.product_id)
     ]
+
+
+def _proxy_spec_by_product_id(product_proxy_specs: list[ProductProxySpec]) -> dict[str, ProductProxySpec]:
+    return {spec.product_id: spec for spec in product_proxy_specs}
+
+
+def _policy_return_adjustment(policy_news_audit: ProductPolicyNewsAudit | None) -> float:
+    if policy_news_audit is None or not policy_news_audit.realtime_eligible:
+        return 0.0
+    score = float(policy_news_audit.score or 0.0)
+    if policy_news_audit.influence_scope == "satellite_dynamic":
+        return max(min(score * 0.010, 0.010), -0.010)
+    if policy_news_audit.influence_scope == "core_mild":
+        return max(min(score * 0.004, 0.004), -0.004)
+    return 0.0
+
+
+def _policy_volatility_multiplier(policy_news_audit: ProductPolicyNewsAudit | None) -> float:
+    if policy_news_audit is None or not policy_news_audit.realtime_eligible:
+        return 1.0
+    score = abs(float(policy_news_audit.score or 0.0))
+    if policy_news_audit.influence_scope == "satellite_dynamic":
+        return 1.0 + min(score * 0.08, 0.12)
+    if policy_news_audit.influence_scope == "core_mild":
+        return 1.0 + min(score * 0.03, 0.05)
+    return 1.0
+
+
+def _product_context_adjustment(
+    item: ExecutionPlanItem,
+    proxy_spec: ProductProxySpec | None,
+) -> tuple[float, float]:
+    primary = item.primary_product
+    return_adjustment = 0.0
+    volatility_multiplier = 1.0
+
+    return_adjustment -= _FEE_RETURN_DRAG.get(primary.fee_tier, 0.0030)
+    return_adjustment -= _LIQUIDITY_RETURN_DRAG.get(primary.liquidity_tier, 0.0010)
+    return_adjustment += _WRAPPER_RETURN_PREMIUM.get(primary.wrapper_type, 0.0)
+    volatility_multiplier *= _LIQUIDITY_VOL_MULTIPLIER.get(primary.liquidity_tier, 1.04)
+    volatility_multiplier *= _WRAPPER_VOL_MULTIPLIER.get(primary.wrapper_type, 1.04)
+
+    if "qdii" in primary.tags or str(primary.region or "").upper() != "CN":
+        return_adjustment += 0.0030
+        volatility_multiplier *= 1.08
+
+    if item.valuation_audit is not None and item.valuation_audit.status == "observed":
+        if item.valuation_audit.passed_filters:
+            return_adjustment += 0.0040
+        elif item.valuation_audit.passed_filters is False:
+            return_adjustment -= 0.0030
+
+    return_adjustment += _policy_return_adjustment(item.policy_news_audit)
+    volatility_multiplier *= _policy_volatility_multiplier(item.policy_news_audit)
+
+    if proxy_spec is not None:
+        confidence_penalty = max(0.0, 0.90 - float(proxy_spec.confidence or 0.0))
+        return_adjustment -= confidence_penalty * 0.02
+        if str(proxy_spec.data_status or "").strip() != "observed":
+            volatility_multiplier *= 1.04
+
+    return round(return_adjustment, 6), round(volatility_multiplier, 6)
+
+
+def build_candidate_product_context(
+    *,
+    source_allocation_id: str,
+    bucket_targets: dict[str, float],
+    restrictions: list[str] | None = None,
+    catalog: list[ProductCandidate] | None = None,
+    runtime_candidates: list[ProductCandidate] | list[RuntimeProductCandidate] | None = None,
+    product_universe_inputs: dict[str, Any] | None = None,
+    product_universe_result: dict[str, Any] | None = None,
+    valuation_inputs: dict[str, Any] | None = None,
+    valuation_result: dict[str, Any] | None = None,
+    policy_news_signals: list[dict[str, Any]] | list[Any] | None = None,
+    product_proxy_result: dict[str, Any] | None = None,
+    historical_dataset: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    preview_plan = build_execution_plan(
+        source_run_id="solver_preview",
+        source_allocation_id=source_allocation_id,
+        bucket_targets=bucket_targets,
+        restrictions=restrictions,
+        catalog=catalog,
+        runtime_candidates=runtime_candidates,
+        product_universe_inputs=product_universe_inputs,
+        product_universe_result=product_universe_result,
+        valuation_inputs=valuation_inputs,
+        valuation_result=valuation_result,
+        policy_news_signals=policy_news_signals,
+        product_proxy_result=product_proxy_result,
+        account_total_value=None,
+        current_weights=None,
+        available_cash=None,
+        liquidity_reserve_min=None,
+        minimum_trade_amount=None,
+    )
+    proxy_specs = _proxy_spec_by_product_id(preview_plan.product_proxy_specs)
+    history_window = AuditWindow.from_any((historical_dataset or {}).get("audit_window"))
+    bucket_expected_return_adjustments: dict[str, float] = {}
+    bucket_volatility_multipliers: dict[str, float] = {}
+    selected_product_ids: list[str] = []
+    selected_proxy_refs: list[str] = []
+    history_profiles: list[dict[str, Any]] = []
+    notes: list[str] = list(preview_plan.warnings)
+    for item in preview_plan.items:
+        proxy_spec = proxy_specs.get(item.primary_product.product_id)
+        return_adjustment, volatility_multiplier = _product_context_adjustment(item, proxy_spec)
+        bucket_expected_return_adjustments[item.asset_bucket] = return_adjustment
+        bucket_volatility_multipliers[item.asset_bucket] = volatility_multiplier
+        selected_product_ids.append(item.primary_product.product_id)
+        if proxy_spec is not None:
+            selected_proxy_refs.append(proxy_spec.proxy_ref)
+        history_profiles.append(
+            {
+                "product_id": item.primary_product.product_id,
+                "source_ref": None if proxy_spec is None else proxy_spec.source_ref,
+                "observed_history_days": None if history_window is None else history_window.trading_days,
+                "inferred_history_days": None if history_window is None else history_window.inferred_days,
+                "inference_weight": 1.0 if proxy_spec is not None and proxy_spec.data_status == "observed" else 0.85,
+                "data_status": "manual_annotation" if proxy_spec is None else proxy_spec.data_status,
+            }
+        )
+    if preview_plan.proxy_universe_summary is not None and preview_plan.proxy_universe_summary.disclosure:
+        notes.append(preview_plan.proxy_universe_summary.disclosure)
+    return {
+        "allocation_name": source_allocation_id,
+        "product_probability_method": "product_proxy_adjustment_estimate",
+        "bucket_expected_return_adjustments": bucket_expected_return_adjustments,
+        "bucket_volatility_multipliers": bucket_volatility_multipliers,
+        "selected_product_ids": selected_product_ids,
+        "selected_proxy_refs": selected_proxy_refs,
+        "product_history_profiles": history_profiles,
+        "notes": notes,
+    }
 
 
 def _build_execution_realism_summary(

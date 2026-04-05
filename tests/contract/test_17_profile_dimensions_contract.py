@@ -95,3 +95,27 @@ def test_onboarding_persists_profile_dimensions_and_applies_risk_overlay():
     assert constraints["liquidity_reserve_min"] >= 0.08
     assert allocation_input["account_profile"]["complexity_tolerance"] == "low"
     assert allocation_input["account_profile"]["profile_flags"]["goal_priority"] == dimensions["model_inputs"]["goal_priority"]
+
+
+@pytest.mark.contract
+def test_high_return_pressure_profiles_emit_pressure_flags_and_relax_caps():
+    profile = _base_profile(
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=124_203.16,
+        goal_horizon_months=36,
+        max_drawdown_tolerance=0.20,
+        current_holdings="",
+        restrictions=[],
+    )
+
+    bundle = build_user_onboarding_inputs(profile)
+    dimensions = bundle.profile.profile_dimensions
+    model_inputs = dimensions["model_inputs"]
+    constraints = bundle.goal_solver_input["constraints"]
+
+    assert model_inputs["target_return_pressure"] == "high"
+    assert model_inputs["implied_required_annual_return"] == pytest.approx(0.083, abs=1e-3)
+    assert constraints["satellite_cap"] >= 0.12
+    assert constraints["ips_bucket_boundaries"]["equity_cn"][1] >= 0.70
+    assert constraints["qdii_cap"] >= 0.25

@@ -189,6 +189,7 @@ def _render_candidate_lines(options: list[dict[str, Any]], *, prefix: str) -> li
             f"product_success={option.get('product_adjusted_success_probability')} "
             f"probability_method={option.get('product_probability_method')} "
             f"required_return={option.get('implied_required_annual_return')} "
+            f"expected_return={option.get('expected_annual_return')} "
             f"dd90={option.get('max_drawdown_90pct')} "
             f"shortfall={option.get('shortfall_probability')}"
         )
@@ -202,6 +203,46 @@ def _render_candidate_lines(options: list[dict[str, Any]], *, prefix: str) -> li
                 f"complexity={option.get('complexity_label')}"
             )
     return lines
+
+
+def _render_probability_explanation_block(decision_card: dict[str, Any]) -> list[str]:
+    explanation = decision_card.get("probability_explanation") or {}
+    if not explanation:
+        return []
+    return [
+        "probability_recommended="
+        f"{explanation.get('recommended_allocation_label')} | "
+        f"success={explanation.get('recommended_success_probability')} | "
+        f"expected_return={explanation.get('recommended_expected_annual_return')}",
+        "probability_highest="
+        f"{explanation.get('highest_probability_allocation_label')} | "
+        f"success={explanation.get('highest_probability_success_probability')} | "
+        f"expected_return={explanation.get('highest_probability_expected_annual_return')}",
+        "probability_target_return="
+        f"{explanation.get('target_return_priority_allocation_label')} | "
+        f"success={explanation.get('target_return_priority_success_probability')} | "
+        f"expected_return={explanation.get('target_return_priority_expected_annual_return')} | "
+        f"required_return={explanation.get('implied_required_annual_return')}",
+        "probability_drawdown="
+        f"{explanation.get('drawdown_priority_allocation_label')} | "
+        f"success={explanation.get('drawdown_priority_success_probability')} | "
+        f"expected_return={explanation.get('drawdown_priority_expected_annual_return')}",
+    ]
+
+
+def _render_frontier_diagnostics_block(decision_card: dict[str, Any]) -> list[str]:
+    frontier_analysis = decision_card.get("frontier_analysis") or {}
+    diagnostics = frontier_analysis.get("frontier_diagnostics") or {}
+    if not diagnostics:
+        return []
+    return [
+        f"frontier_raw_candidate_count={diagnostics.get('raw_candidate_count')}",
+        f"frontier_feasible_candidate_count={diagnostics.get('feasible_candidate_count')}",
+        f"frontier_max_expected_annual_return={diagnostics.get('frontier_max_expected_annual_return')}",
+        f"frontier_candidate_families={diagnostics.get('candidate_families')}",
+        f"frontier_binding_constraints={diagnostics.get('binding_constraints')}",
+        f"frontier_structural_limitations={diagnostics.get('structural_limitations')}",
+    ]
 
 
 def _render_refresh_block(refresh_summary: dict[str, Any]) -> list[str]:
@@ -663,6 +704,21 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
                     f"recommended_action={decision_card.get('recommended_action')}",
                 ]
             )
+        key_metrics = decision_card.get("key_metrics") or {}
+        if key_metrics:
+            for key in (
+                "success_probability",
+                "max_drawdown_90pct",
+                "shortfall_probability",
+                "expected_terminal_value",
+                "implied_required_annual_return",
+                "expected_annual_return",
+                "product_adjusted_success_probability",
+                "product_probability_method",
+            ):
+                value = key_metrics.get(key)
+                if value is not None:
+                    lines.append(f"{key}={value}")
         lines.extend(_render_provenance_block(decision_card.get("input_provenance") or {}))
         lines.extend(_render_input_source_summary(decision_card.get("input_provenance") or {}))
         lines.extend(_render_candidate_lines(decision_card.get("candidate_options") or [], prefix="candidate"))
@@ -676,6 +732,8 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison") or user_state.get("execution_plan_comparison")))
         lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
         lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
+        lines.extend(_render_probability_explanation_block(decision_card))
+        lines.extend(_render_frontier_diagnostics_block(decision_card))
         lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
         lines.extend(
             _render_feedback_block(
@@ -739,7 +797,16 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         )
     key_metrics = payload.get("key_metrics") or {}
     if key_metrics:
-        for key in ("success_probability", "max_drawdown_90pct", "shortfall_probability", "expected_terminal_value"):
+        for key in (
+            "success_probability",
+            "max_drawdown_90pct",
+            "shortfall_probability",
+            "expected_terminal_value",
+            "implied_required_annual_return",
+            "expected_annual_return",
+            "product_adjusted_success_probability",
+            "product_probability_method",
+        ):
             value = key_metrics.get(key)
             if value is not None:
                 lines.append(f"{key}={value}")
@@ -751,6 +818,8 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
     lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
     lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
+    lines.extend(_render_probability_explanation_block(decision_card))
+    lines.extend(_render_frontier_diagnostics_block(decision_card))
     lines.extend(
         _render_feedback_block(
             payload.get("execution_feedback"),

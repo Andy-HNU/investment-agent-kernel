@@ -91,6 +91,21 @@ _FORMAL_PATH_SOURCE_STATUS = {
     "default_assumed": DataStatus.PRIOR_DEFAULT,
     "externally_fetched": DataStatus.OBSERVED,
 }
+_AUDIT_SOURCE_PRIORITY = {
+    "externally_fetched": 5,
+    "user_provided": 4,
+    "system_inferred": 3,
+    "default_assumed": 2,
+    "synthetic_demo": 1,
+}
+_AUDIT_DATA_STATUS_PRIORITY = {
+    DataStatus.OBSERVED: 5,
+    DataStatus.COMPUTED_FROM_OBSERVED: 4,
+    DataStatus.INFERRED: 3,
+    DataStatus.PRIOR_DEFAULT: 2,
+    DataStatus.MANUAL_ANNOTATION: 1,
+    DataStatus.SYNTHETIC_DEMO: 0,
+}
 
 
 def _now_iso() -> str:
@@ -384,7 +399,31 @@ def _normalize_audit_records(
             }
         )
         records.append(record.to_dict())
-    return records
+    preferred_by_field: dict[str, dict[str, Any]] = {}
+    for record in records:
+        field = str(record.get("field") or "").strip()
+        if not field:
+            continue
+        current = preferred_by_field.get(field)
+        if current is None or _audit_record_priority(record) > _audit_record_priority(current):
+            preferred_by_field[field] = record
+    ordered_fields: list[str] = []
+    for record in records:
+        field = str(record.get("field") or "").strip()
+        if field and field not in ordered_fields:
+            ordered_fields.append(field)
+    return [preferred_by_field[field] for field in ordered_fields if field in preferred_by_field]
+
+
+def _audit_record_priority(record: dict[str, Any]) -> tuple[int, int, int, int]:
+    data_status = coerce_data_status(record.get("data_status"))
+    audit_window = _coerce_audit_window(record.get("audit_window"))
+    return (
+        _AUDIT_SOURCE_PRIORITY.get(str(record.get("source_type") or "").strip(), 0),
+        _AUDIT_DATA_STATUS_PRIORITY.get(data_status, 0),
+        1 if str(record.get("source_ref") or "").strip() else 0,
+        1 if audit_window is not None and audit_window.has_required_window() else 0,
+    )
 
 
 def _classify_formal_path_visibility(
@@ -1733,6 +1772,11 @@ def load_frontdesk_snapshot(
         or decision_card.get("audit_records")
         or _normalize_audit_records(decision_card.get("input_provenance", {}) or {}, snapshot.get("refresh_summary"))
     )
+    if decision_card:
+        decision_card["formal_path_visibility"] = snapshot["formal_path_visibility"]
+        decision_card["audit_records"] = snapshot["audit_records"]
+        latest_run["decision_card"] = decision_card
+        snapshot["latest_run"] = latest_run
     return snapshot
 
 

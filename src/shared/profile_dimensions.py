@@ -176,6 +176,110 @@ def _infer_liquidity_need_level(*, cash_fraction: float, max_drawdown_tolerance:
     return "low", "由较低现金缓冲和较高回撤容忍度推断为较低流动性需求。"
 
 
+def _project_terminal_value(
+    *,
+    initial_value: float,
+    monthly_contribution: float,
+    goal_horizon_months: int,
+    monthly_rate: float,
+) -> float:
+    value = float(initial_value)
+    contribution = max(monthly_contribution, 0.0)
+    for _month in range(max(goal_horizon_months, 0)):
+        value = value * (1.0 + monthly_rate) + contribution
+    return float(value)
+
+
+def _infer_implied_required_annual_return(
+    *,
+    initial_value: float,
+    monthly_contribution: float,
+    goal_horizon_months: int,
+    goal_amount: float,
+) -> float | None:
+    target = float(goal_amount)
+    if target <= 0.0 or goal_horizon_months <= 0:
+        return None
+
+    lower = -0.999
+    upper = 0.02
+    lower_value = _project_terminal_value(
+        initial_value=initial_value,
+        monthly_contribution=monthly_contribution,
+        goal_horizon_months=goal_horizon_months,
+        monthly_rate=lower,
+    )
+    upper_value = _project_terminal_value(
+        initial_value=initial_value,
+        monthly_contribution=monthly_contribution,
+        goal_horizon_months=goal_horizon_months,
+        monthly_rate=upper,
+    )
+    while upper_value < target and upper < 5.0:
+        upper = upper * 2.0 + 0.01
+        upper_value = _project_terminal_value(
+            initial_value=initial_value,
+            monthly_contribution=monthly_contribution,
+            goal_horizon_months=goal_horizon_months,
+            monthly_rate=upper,
+        )
+
+    if lower_value > target:
+        return (1.0 + lower) ** 12 - 1.0
+    if upper_value < target:
+        return None
+
+    for _ in range(100):
+        mid = (lower + upper) / 2.0
+        mid_value = _project_terminal_value(
+            initial_value=initial_value,
+            monthly_contribution=monthly_contribution,
+            goal_horizon_months=goal_horizon_months,
+            monthly_rate=mid,
+        )
+        if mid_value >= target:
+            upper = mid
+        else:
+            lower = mid
+    return (1.0 + upper) ** 12 - 1.0
+
+
+def _classify_target_return_pressure(
+    *,
+    implied_required_annual_return: float | None,
+    projected_funding_ratio: float,
+) -> tuple[str, str]:
+    if implied_required_annual_return is None:
+        return "unknown", "目标收益要求当前不可可靠反推。"
+
+    annual_return = float(implied_required_annual_return)
+    if annual_return <= 0.04:
+        pressure = "low"
+    elif annual_return <= 0.07:
+        pressure = "medium"
+    elif annual_return <= 0.10:
+        pressure = "high"
+    else:
+        pressure = "very_high"
+
+    if projected_funding_ratio < 0.55:
+        pressure = {
+            "low": "medium",
+            "medium": "high",
+            "high": "very_high",
+            "very_high": "very_high",
+        }[pressure]
+    elif projected_funding_ratio > 0.95:
+        pressure = {
+            "low": "low",
+            "medium": "low",
+            "high": "medium",
+            "very_high": "high",
+        }[pressure]
+
+    return pressure, "由目标隐含所需年化与现有资产/计划投入覆盖度共同推断。"
+
+
 def _manual_confirmation_threshold(
     *,
     requires_confirmation: bool,
@@ -420,16 +524,39 @@ def build_profile_dimensions(
         risk_tolerance_score=risk_tolerance_score,
         risk_capacity_score=risk_capacity_score,
     )
+    projected_contributions = max(monthly_contribution, 0.0) * max(goal_horizon_months, 0)
+    projected_funding_ratio = (
+        1.0
+        if goal_amount <= 0.0
+        else _clamp((max(current_total_assets, 0.0) + projected_contributions) / goal_amount, 0.0, 1.0)
+    )
+    implied_required_annual_return = _infer_implied_required_annual_return(
+        initial_value=current_total_assets,
+        monthly_contribution=monthly_contribution,
+        goal_horizon_months=goal_horizon_months,
+        goal_amount=goal_amount,
+    )
+    target_return_pressure, target_return_pressure_basis = _classify_target_return_pressure(
+        implied_required_annual_return=implied_required_annual_return,
+        projected_funding_ratio=projected_funding_ratio,
+    )
 
     goal_gap = max(goal_amount - current_total_assets, 0.0)
     goal_profile = {
         "goal_type": _text(profile_data.get("goal_type")) or "wealth_accumulation",
         "goal_priority": goal_priority,
         "goal_gap": round(goal_gap, 2),
+        "projected_funding_ratio": round(projected_funding_ratio, 4),
+        "implied_required_annual_return": (
+            None if implied_required_annual_return is None else round(implied_required_annual_return, 4)
+        ),
+        "target_return_pressure": target_return_pressure,
         "goal_amount_basis": _text(goal_semantics_data.get("goal_amount_basis")) or "nominal",
         "goal_amount_scope": _text(goal_semantics_data.get("goal_amount_scope")) or "total_assets",
         "goal_priority_source": goal_priority_source,
         "goal_priority_basis": goal_priority_basis,
+        "target_return_pressure_source": "system_inferred",
+        "target_return_pressure_basis": target_return_pressure_basis,
     }
     risk_profile = {
         "risk_preference_label": risk_preference,
@@ -475,6 +602,7 @@ def build_profile_dimensions(
 
     provenance = {
         "goal_priority": goal_priority_source,
+        "target_return_pressure": "system_inferred",
         "risk_tolerance_score": risk_tolerance_source,
         "risk_capacity_score": risk_capacity_source,
         "loss_limit": loss_limit_source,
@@ -504,6 +632,11 @@ def build_profile_dimensions(
             "liquidity_need_level": liquidity_need_level,
             "liquidity_need_score": liquidity_need_score,
             "goal_priority": goal_priority,
+            "projected_funding_ratio": round(projected_funding_ratio, 4),
+            "implied_required_annual_return": (
+                None if implied_required_annual_return is None else round(implied_required_annual_return, 4)
+            ),
+            "target_return_pressure": target_return_pressure,
             "contribution_commitment_confidence": contribution_sustainability_score,
         },
         parsed_profile_snapshot=dict(parsed_profile_data),
@@ -527,9 +660,13 @@ def constraint_profile_from_dimensions(dimensions: ProfileDimensions | Mapping[s
     )
     liquidity = str(risk.get("liquidity_need_level") or "medium").lower()
     contribution_confidence = float(cashflow.get("contribution_commitment_confidence", 0.80))
+    target_return_pressure = str((data.get("model_inputs") or {}).get("target_return_pressure") or "").lower()
     satellite_cap = 0.15 if headroom >= 0.75 else 0.08 if headroom >= 0.45 else 0.05
     liquidity_reserve_min = 0.10 if liquidity == "high" else 0.08 if contribution_confidence < 0.70 else 0.05
     equity_cap = 0.75 if headroom >= 0.75 else 0.60 if headroom >= 0.45 else 0.45
+    if target_return_pressure in {"high", "very_high"} and headroom >= 0.45 and liquidity != "high":
+        satellite_cap = max(satellite_cap, 0.12 if target_return_pressure == "high" else 0.15)
+        equity_cap = max(equity_cap, 0.70 if target_return_pressure == "high" else 0.75)
     goal_priority = str(goal.get("goal_priority") or "important")
     success_prob_threshold = 0.75 if goal_priority == "essential" else 0.70 if goal_priority == "important" else 0.60
     return {

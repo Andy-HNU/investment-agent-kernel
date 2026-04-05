@@ -82,8 +82,8 @@ def test_frontdesk_repeated_onboarding_and_monthly_keep_history(tmp_path):
 
     assert first_onboarding["status"] == "completed"
     assert second_onboarding["status"] == "completed"
-    assert first_monthly["status"] == "completed"
-    assert second_monthly["status"] == "completed"
+    assert first_monthly["status"] == "degraded"
+    assert second_monthly["status"] == "degraded"
     assert counts["workflow_runs"] == 4
     assert counts["onboarding_sessions"] == 2
     assert counts["decision_cards"] == 4
@@ -151,13 +151,47 @@ def test_frontdesk_followup_persists_decision_card_and_provenance(tmp_path):
     serialized = json.dumps(latest_decision_card, ensure_ascii=False, sort_keys=True)
 
     assert onboarding_summary["status"] == "completed"
-    assert followup_summary["status"] == "completed"
+    assert followup_summary["status"] == "degraded"
     assert latest_run["workflow_type"] == "monthly"
     assert latest_decision_card["card_type"] == "runtime_action"
+    assert latest_decision_card["formal_path_visibility"]["status"] == "degraded"
     assert latest_decision_card["input_provenance"]["counts"]["user_provided"] == 0
     assert latest_decision_card["input_provenance"]["counts"]["system_inferred"] >= 1
     for label in ("用户提供", "系统推断", "默认假设"):
         assert label in serialized
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_surfaces_product_aware_probability_and_expanded_frontier(tmp_path):
+    profile = _profile(account_profile_id="frontier_layer1_user")
+    profile.current_total_assets = 18_000.0
+    profile.monthly_contribution = 2_500.0
+    profile.goal_amount = 124_203.16
+    profile.goal_horizon_months = 36
+    profile.max_drawdown_tolerance = 0.20
+    profile.current_holdings = ""
+    profile.current_weights = None
+    db_path = tmp_path / "frontier_layer1.sqlite"
+
+    summary = run_frontdesk_onboarding(profile, db_path=db_path)
+    card = summary["user_state"]["decision_card"]
+    frontier = card["frontier_analysis"]["frontier_diagnostics"]
+    probability_explanation = card["probability_explanation"]
+
+    assert summary["status"] in {"completed", "degraded"}
+    assert card["key_metrics"]["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert card["key_metrics"]["product_adjusted_success_probability"]
+    assert set(frontier["candidate_families"]) >= {"growth_tilt", "max_return_unconstrained"}
+    assert probability_explanation["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert card["frontier_analysis"]["recommended"]["expected_annual_return"]
+    assert (
+        probability_explanation["target_return_priority_allocation_label"]
+        or probability_explanation["why_not_target_return_priority"]
+    )
+    assert (
+        probability_explanation["drawdown_priority_allocation_label"]
+        or probability_explanation["why_not_drawdown_priority"]
+    )
 
 
 @pytest.mark.contract
@@ -194,6 +228,43 @@ def test_frontdesk_external_snapshot_without_audit_window_is_non_formal(tmp_path
     assert "market_raw.audit_window" in visibility["missing_audit_fields"]
     assert summary["user_state"]["formal_path_visibility"]["status"] == "degraded"
     assert any(record["field"] == "market_raw" and record["data_status"] == "observed" for record in summary["audit_records"])
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_surfaces_layer1_product_aware_frontier_fields(tmp_path):
+    profile = _profile(account_profile_id="layer1_frontier_user")
+    profile.current_total_assets = 18_000.0
+    profile.monthly_contribution = 2_500.0
+    profile.goal_amount = 124_203.16
+    profile.goal_horizon_months = 36
+    profile.max_drawdown_tolerance = 0.20
+    profile.goal_priority = "aspirational"
+    profile.current_holdings = "cash, gold"
+    profile.current_weights = None
+    profile.restrictions = ["no_stock_picking", "no_high_risk_products"]
+    profile.forbidden_themes = ["technology"]
+    db_path = tmp_path / "layer1.sqlite"
+
+    summary = run_frontdesk_onboarding(profile, db_path=db_path)
+
+    decision_card = summary["user_state"]["decision_card"]
+    key_metrics = decision_card["key_metrics"]
+    probability_explanation = decision_card["probability_explanation"]
+    frontier = decision_card["frontier_analysis"]
+    diagnostics = frontier["frontier_diagnostics"]
+
+    assert key_metrics["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert key_metrics["product_adjusted_success_probability"]
+    assert probability_explanation["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert frontier["recommended"]["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert frontier["recommended"]["expected_annual_return"]
+    assert frontier["drawdown_priority"]["expected_annual_return"]
+    assert frontier["target_return_priority"]["why_selected"] == "当前候选里没有方案满足目标收益约束。"
+    assert "max_return_unconstrained" in diagnostics["candidate_families"]
+    assert "growth_tilt_family_not_present_after_allocation_generation" not in diagnostics["structural_limitations"]
+    assert "return_seeking_families_not_generated_under_current_solver_inputs" not in diagnostics["structural_limitations"]
+    assert diagnostics["frontier_max_expected_annual_return"] is not None
+    assert diagnostics["binding_constraints"]
 
 
 @pytest.mark.contract

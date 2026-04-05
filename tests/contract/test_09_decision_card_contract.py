@@ -352,8 +352,14 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
     assert card["key_metrics"]["product_adjusted_success_probability"] == "65.00%"
     assert card["key_metrics"]["product_probability_method"] == "product_proxy_adjustment_estimate"
     assert card["key_metrics"]["implied_required_annual_return"] == "8.00%"
+    assert card["key_metrics"]["expected_annual_return"] == "6.10%"
+    assert card["candidate_options"][0]["expected_annual_return"] == "6.10%"
+    assert card["goal_alternatives"][0]["expected_annual_return"] == "7.90%"
     assert card["probability_explanation"]["highest_probability_allocation_label"] == "冲目标方案"
     assert card["probability_explanation"]["recommended_allocation_label"] == "平衡推进方案"
+    assert card["probability_explanation"]["recommended_expected_annual_return"] == "6.10%"
+    assert card["probability_explanation"]["highest_probability_expected_annual_return"] == "7.90%"
+    assert card["probability_explanation"]["implied_required_annual_return"] == "8.00%"
     assert "recommended_allocation_name" not in card["probability_explanation"]
     assert "highest_probability_allocation_name" not in card["probability_explanation"]
     assert "不是最高达成率方案" in card["probability_explanation"]["why_not_highest_probability"]
