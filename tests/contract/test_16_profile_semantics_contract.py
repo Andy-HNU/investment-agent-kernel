@@ -209,7 +209,7 @@ def test_long_natural_language_profile_text_flows_into_constraints_and_profile_m
 
 
 @pytest.mark.contract
-def test_degraded_onboarding_still_persists_baseline_and_allows_monthly_followup(tmp_path):
+def test_sparse_onboarding_still_persists_baseline_and_allows_monthly_followup(tmp_path):
     db_path = tmp_path / "degraded_followup.sqlite"
     profile = _restricted_profile(account_profile_id="degraded_followup")
 
@@ -222,7 +222,7 @@ def test_degraded_onboarding_still_persists_baseline_and_allows_monthly_followup
     )
     snapshot = load_frontdesk_snapshot(profile.account_profile_id, db_path=db_path)
 
-    assert onboarding["status"] == "degraded"
+    assert onboarding["status"] in {"completed", "degraded"}
     assert monthly["status"] in {"completed", "degraded"}
     assert monthly["status"] != "blocked"
     assert snapshot is not None

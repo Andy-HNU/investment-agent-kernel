@@ -295,6 +295,16 @@ def test_build_runtime_valuation_result_uses_bulk_daily_basic_snapshot(monkeypat
             provider_symbol="600519.SH",
             tags=["equity", "stock_wrapper", "cn"],
         ),
+        ProductCandidate(
+            product_id="ts_fund_510300_sh",
+            product_name="沪深300ETF",
+            asset_bucket="equity_cn",
+            product_family="core",
+            wrapper_type="etf",
+            provider_source="tinyshare_fund_basic",
+            provider_symbol="510300.SH",
+            tags=["equity", "etf", "cn"],
+        ),
     ]
 
     class _FakePro:
@@ -335,6 +345,9 @@ def test_build_runtime_valuation_result_uses_bulk_daily_basic_snapshot(monkeypat
     assert result["products"]["ts_stock_000001_sz"]["pe_ratio"] == pytest.approx(4.7, abs=1e-6)
     assert result["products"]["ts_stock_600519_sh"]["pb_ratio"] == pytest.approx(8.05, abs=1e-6)
     assert result["products"]["ts_stock_600519_sh"]["audit_window"]["trading_days"] == 1
+    assert result["bucket_proxies"]["equity_cn"]["status"] == "observed"
+    assert result["bucket_proxies"]["equity_cn"]["pe_ratio"] == pytest.approx(12.95, abs=1e-6)
+    assert result["bucket_proxies"]["equity_cn"]["percentile"] > 0.0
 
 
 @pytest.mark.contract
@@ -434,6 +447,73 @@ def test_build_runtime_valuation_result_recomputes_when_product_ids_change_for_s
 
     assert list(first["products"].keys()) == ["ts_stock_alias_a"]
     assert list(second["products"].keys()) == ["ts_stock_alias_b"]
+
+
+@pytest.mark.contract
+def test_build_runtime_valuation_result_invalidates_old_cache_without_bucket_proxies(monkeypatch, tmp_path):
+    candidates = [
+        ProductCandidate(
+            product_id="ts_stock_000001_sz",
+            product_name="平安银行",
+            asset_bucket="equity_cn",
+            product_family="a_share_stock",
+            wrapper_type="stock",
+            provider_source="tinyshare_stock_basic",
+            provider_symbol="000001.SZ",
+            tags=["equity", "stock_wrapper", "cn"],
+        ),
+        ProductCandidate(
+            product_id="ts_fund_510300_sh",
+            product_name="沪深300ETF",
+            asset_bucket="equity_cn",
+            product_family="core",
+            wrapper_type="etf",
+            provider_source="tinyshare_fund_basic",
+            provider_symbol="510300.SH",
+            tags=["equity", "etf", "cn"],
+        ),
+    ]
+
+    class _FakePro:
+        def trade_cal(self, exchange, start_date, end_date):  # type: ignore[no-untyped-def]
+            return pd.DataFrame([{"exchange": "SSE", "cal_date": "20260403", "is_open": 1, "pretrade_date": "20260402"}])
+
+        def daily_basic(self, **kwargs):  # type: ignore[no-untyped-def]
+            return pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20260403", "pe": 4.7, "pe_ttm": 4.6, "pb": 0.44}])
+
+    monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
+    monkeypatch.setattr("shared.providers.tinyshare._pro_api", lambda token=None: _FakePro())
+
+    old_cache = tmp_path / "runtime_valuation_2026-04-05.json"
+    old_cache.write_text(
+        """
+{
+  "source_status": "observed",
+  "source_name": "tinyshare_runtime_valuation",
+  "source_ref": "tinyshare://daily_basic?trade_date=20260403",
+  "as_of": "2026-04-05",
+  "products": {
+    "ts_stock_000001_sz": {
+      "status": "observed",
+      "pe_ratio": 4.7,
+      "pb_ratio": 0.44,
+      "percentile": 0.05875,
+      "data_status": "computed_from_observed",
+      "source_ref": "tinyshare://daily_basic?trade_date=20260403&ts_code=000001.SZ",
+      "as_of": "2026-04-05"
+    }
+  },
+  "stock_candidate_count": 1,
+  "stock_candidate_signature": "ts_stock_000001_sz:000001.SZ"
+}
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    result = tinyshare_provider.build_runtime_valuation_result(candidates, as_of="2026-04-05", cache_dir=tmp_path)
+
+    assert result["bucket_proxies"]["equity_cn"]["status"] == "observed"
+    assert result["cache_format_version"] >= 2
 @pytest.mark.contract
 def test_tinyshare_provider_ignores_repo_local_token_file_under_pytest_by_default(monkeypatch, tmp_path):
     token_file = tmp_path / ".secrets" / "tinyshare.token"

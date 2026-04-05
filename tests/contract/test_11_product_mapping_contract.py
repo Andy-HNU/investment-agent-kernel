@@ -420,6 +420,65 @@ def test_build_execution_plan_marks_non_applicable_products_with_explicit_valuat
 
 
 @pytest.mark.contract
+def test_build_execution_plan_uses_bucket_proxy_valuation_for_equity_fund_wrappers():
+    plan = build_execution_plan(
+        source_run_id="run_bucket_proxy_valuation",
+        source_allocation_id="allocation_bucket_proxy_valuation",
+        bucket_targets={"equity_cn": 1.0},
+        restrictions=[],
+        catalog=[
+            ProductCandidate(
+                product_id="eq_fund",
+                product_name="宽基指数基金",
+                asset_bucket="equity_cn",
+                product_family="core",
+                wrapper_type="fund",
+                provider_source="unit_test",
+                provider_symbol="EQFUND",
+                tags=["equity", "core"],
+            )
+        ],
+        valuation_inputs={"requested": True, "require_observed_source": True},
+        valuation_result={
+            "source_status": "observed",
+            "source_name": "tinyshare_runtime_valuation",
+            "source_ref": "tinyshare://daily_basic?trade_date=20260403",
+            "as_of": "2026-04-05",
+            "products": {},
+            "bucket_proxies": {
+                "equity_cn": {
+                    "status": "observed",
+                    "pe_ratio": 18.0,
+                    "pb_ratio": 2.1,
+                    "percentile": 0.22,
+                    "data_status": "computed_from_observed",
+                    "audit_window": {
+                        "start_date": "2026-04-03",
+                        "end_date": "2026-04-03",
+                        "trading_days": 1,
+                        "observed_days": 1,
+                        "inferred_days": 0,
+                    },
+                    "source_ref": "tinyshare://daily_basic?trade_date=20260403&subject=equity_cn_proxy",
+                    "as_of": "2026-04-05",
+                }
+            },
+        },
+    )
+
+    equity_item = next(item for item in plan.items if item.asset_bucket == "equity_cn")
+
+    assert equity_item.valuation_audit is not None
+    assert equity_item.valuation_audit.status == "observed"
+    assert equity_item.valuation_audit.pe_ratio == pytest.approx(18.0, abs=1e-6)
+    assert equity_item.valuation_audit.passed_filters is True
+    assert equity_item.valuation_audit.audit_window is not None
+    assert equity_item.valuation_audit.audit_window.trading_days == 1
+    assert plan.valuation_audit_summary["applicable_candidate_count"] == 1
+    assert plan.valuation_audit_summary["passed_candidate_count"] == 1
+
+
+@pytest.mark.contract
 def test_build_execution_plan_uses_dynamic_policy_news_score_for_satellite_ranking():
     plan = build_execution_plan(
         source_run_id="run_policy_news_satellite",
@@ -595,17 +654,22 @@ def test_build_execution_plan_surfaces_execution_realism_amounts_and_cash_reserv
     )
 
     gold_item = next(item for item in plan.items if item.asset_bucket == "gold")
+    cash_item = next(item for item in plan.items if item.asset_bucket == "cash_liquidity")
 
     assert gold_item.current_amount == pytest.approx(9_999.5, abs=1.0)
-    assert gold_item.target_amount == pytest.approx(5_250.0, abs=1e-6)
+    assert gold_item.target_amount == pytest.approx(4_725.0, abs=1e-6)
     assert gold_item.trade_direction == "sell"
-    assert gold_item.trade_amount == pytest.approx(4_749.5, abs=1.0)
+    assert gold_item.trade_amount == pytest.approx(5_274.5, abs=1.0)
+    assert cash_item.target_amount == pytest.approx(3_500.0, abs=1e-6)
     assert plan.execution_realism_summary is not None
-    assert plan.execution_realism_summary.executable is False
+    assert plan.execution_realism_summary.executable is True
     assert plan.execution_realism_summary.cash_reserve_target_amount == pytest.approx(3_500.0, abs=1e-6)
+    assert plan.execution_realism_summary.cash_target_amount == pytest.approx(3_500.0, abs=1e-6)
+    assert plan.execution_realism_summary.amount_closure_delta == pytest.approx(0.0, abs=1e-6)
     assert plan.execution_realism_summary.estimated_total_fee is not None
     assert plan.execution_realism_summary.estimated_total_fee > 0.0
-    assert "cash_reserve_conflict" in plan.execution_realism_summary.reasons
+    assert plan.execution_realism_summary.reasons == []
+    assert any("现金/流动性底仓" in warning for warning in plan.warnings)
 
 @pytest.mark.contract
 def test_build_execution_plan_treats_unallocated_residual_as_cash_for_closure_checks():
@@ -633,11 +697,95 @@ def test_build_execution_plan_treats_unallocated_residual_as_cash_for_closure_ch
         },
     )
 
+    cash_item = next(item for item in plan.items if item.asset_bucket == "cash_liquidity")
+
     assert plan.execution_realism_summary is not None
-    assert plan.execution_realism_summary.cash_target_amount == pytest.approx(817.2, abs=1e-6)
+    assert cash_item.target_amount == pytest.approx(1_800.0, abs=1e-6)
+    assert plan.execution_realism_summary.cash_target_amount == pytest.approx(1_800.0, abs=1e-6)
+    assert plan.execution_realism_summary.amount_closure_delta == pytest.approx(0.0, abs=1e-6)
+    assert plan.execution_realism_summary.executable is True
+    assert "account_amount_not_closed" not in plan.execution_realism_summary.reasons
+    assert "cash_reserve_conflict" not in plan.execution_realism_summary.reasons
+
+
+@pytest.mark.contract
+def test_build_execution_plan_parks_missing_bucket_weight_into_cash_liquidity_bucket():
+    plan = build_execution_plan(
+        source_run_id="run_execution_realism_missing_bucket_parked",
+        source_allocation_id="allocation_execution_realism_missing_bucket_parked",
+        bucket_targets={
+            "equity_cn": 0.4864,
+            "bond_cn": 0.3182,
+            "gold": 0.15,
+            "satellite": 0.0454,
+        },
+        restrictions=[],
+        catalog=[
+            ProductCandidate(
+                product_id="eq1",
+                product_name="Equity ETF",
+                asset_bucket="equity_cn",
+                product_family="core",
+                wrapper_type="etf",
+                provider_source="unit_test",
+                provider_symbol="EQ1",
+                tags=["equity"],
+            ),
+            ProductCandidate(
+                product_id="bond1",
+                product_name="Bond ETF",
+                asset_bucket="bond_cn",
+                product_family="defense",
+                wrapper_type="etf",
+                provider_source="unit_test",
+                provider_symbol="BOND1",
+                tags=["bond"],
+            ),
+            ProductCandidate(
+                product_id="gold1",
+                product_name="Gold ETF",
+                asset_bucket="gold",
+                product_family="defense",
+                wrapper_type="etf",
+                provider_source="unit_test",
+                provider_symbol="GOLD1",
+                tags=["gold"],
+            ),
+            ProductCandidate(
+                product_id="cash1",
+                product_name="Money Fund",
+                asset_bucket="cash_liquidity",
+                product_family="cash",
+                wrapper_type="cash_mgmt",
+                provider_source="unit_test",
+                provider_symbol="CASH1",
+                tags=["cash", "liquidity"],
+            ),
+        ],
+        account_total_value=18_000.0,
+        current_weights={
+            "cash_liquidity": 12_000.0 / 18_000.0,
+            "gold": 6_000.0 / 18_000.0,
+        },
+        available_cash=12_000.0,
+        liquidity_reserve_min=0.10,
+        minimum_trade_amount=500.0,
+        transaction_fee_rate={
+            "equity_cn": 0.003,
+            "bond_cn": 0.001,
+            "gold": 0.001,
+            "cash_liquidity": 0.0,
+        },
+    )
+
+    cash_item = next(item for item in plan.items if item.asset_bucket == "cash_liquidity")
+
+    assert cash_item.target_amount == pytest.approx(1_800.0, abs=1e-6)
+    assert plan.execution_realism_summary is not None
+    assert plan.execution_realism_summary.cash_target_amount == pytest.approx(1_800.0, abs=1e-6)
     assert plan.execution_realism_summary.amount_closure_delta == pytest.approx(0.0, abs=1e-6)
     assert "account_amount_not_closed" not in plan.execution_realism_summary.reasons
-    assert "cash_reserve_conflict" in plan.execution_realism_summary.reasons
+    assert any("satellite" in warning and "现金/流动性桶" in warning for warning in plan.warnings)
 
 
 @pytest.mark.contract
@@ -725,7 +873,9 @@ def test_build_execution_plan_flags_initial_deploy_cash_shortfall_after_reserve_
 
     assert plan.execution_realism_summary is not None
     assert plan.execution_realism_summary.executable is False
-    assert plan.execution_realism_summary.initial_buy_amount == pytest.approx(400.0, abs=1e-6)
+    assert plan.execution_realism_summary.initial_buy_amount == pytest.approx(80.0, abs=1e-6)
     assert plan.execution_realism_summary.fundable_initial_cash is not None
-    assert plan.execution_realism_summary.fundable_initial_cash < plan.execution_realism_summary.initial_buy_amount
-    assert "initial_deploy_cash_shortfall" in plan.execution_realism_summary.reasons
+    assert plan.execution_realism_summary.fundable_initial_cash > plan.execution_realism_summary.initial_buy_amount
+    assert "initial_deploy_cash_shortfall" not in plan.execution_realism_summary.reasons
+    assert "tiny_trade:gold" in plan.execution_realism_summary.reasons
+    assert "tiny_trade:satellite" in plan.execution_realism_summary.reasons

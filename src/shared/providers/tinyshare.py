@@ -6,6 +6,7 @@ import os
 from dataclasses import asdict
 from datetime import date, timedelta
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from product_mapping.types import ProductCandidate
@@ -15,6 +16,7 @@ _TOKEN_ENV = "TINYSHARE_TOKEN"
 _TOKEN_FILE_ENV = "TINYSHARE_TOKEN_FILE"
 _ALLOW_REPO_TOKEN_FILE_UNDER_PYTEST_ENV = "TINYSHARE_ALLOW_REPO_TOKEN_FILE_UNDER_PYTEST"
 _CACHE_NAMESPACE = "tinyshare"
+_VALUATION_CACHE_FORMAT_VERSION = 2
 
 _SATELLITE_KEYWORDS = {
     "芯片": "technology",
@@ -368,6 +370,7 @@ def build_runtime_valuation_result(
     if (
         isinstance(cached, dict)
         and isinstance(cached.get("products"), dict)
+        and int(cached.get("cache_format_version") or 0) >= _VALUATION_CACHE_FORMAT_VERSION
         and int(cached.get("stock_candidate_count") or 0) == stock_candidate_count
         and str(cached.get("stock_candidate_signature") or "") == stock_candidate_signature
     ):
@@ -380,6 +383,8 @@ def build_runtime_valuation_result(
             "source_ref": "tinyshare://daily_basic?trade_date=not_applicable",
             "as_of": as_of_date,
             "products": {},
+            "bucket_proxies": {},
+            "cache_format_version": _VALUATION_CACHE_FORMAT_VERSION,
             "stock_candidate_count": stock_candidate_count,
             "stock_candidate_signature": stock_candidate_signature,
         }
@@ -389,6 +394,7 @@ def build_runtime_valuation_result(
     trade_date = _latest_trade_date(as_of_date, cache_dir=cache_dir, token=token)
     pro = _pro_api(token)
     products: dict[str, Any] = {}
+    bucket_proxies: dict[str, Any] = {}
     audit_window = AuditWindow(
         start_date=_normalize_iso_date(trade_date),
         end_date=_normalize_iso_date(trade_date),
@@ -425,12 +431,32 @@ def build_runtime_valuation_result(
             "as_of": as_of_date,
         }
 
+    equity_pe_values = [
+        float(payload["pe_ratio"])
+        for payload in products.values()
+        if payload.get("pe_ratio") is not None
+    ]
+    if equity_pe_values:
+        equity_proxy_pe = float(median(equity_pe_values))
+        bucket_proxies["equity_cn"] = {
+            "status": "observed",
+            "pe_ratio": equity_proxy_pe,
+            "pb_ratio": None,
+            "percentile": min(max(equity_proxy_pe / 80.0, 0.0), 1.0),
+            "data_status": DataStatus.COMPUTED_FROM_OBSERVED.value,
+            "audit_window": asdict(audit_window),
+            "source_ref": f"tinyshare://daily_basic?trade_date={trade_date}&subject=equity_cn_proxy",
+            "as_of": as_of_date,
+        }
+
     result = {
         "source_status": "observed" if products else "missing",
         "source_name": "tinyshare_runtime_valuation",
         "source_ref": f"tinyshare://daily_basic?trade_date={trade_date}",
         "as_of": as_of_date,
         "products": products,
+        "bucket_proxies": bucket_proxies,
+        "cache_format_version": _VALUATION_CACHE_FORMAT_VERSION,
         "stock_candidate_count": stock_candidate_count,
         "stock_candidate_signature": stock_candidate_signature,
     }

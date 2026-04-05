@@ -128,6 +128,34 @@ def test_build_snapshot_bundle_treats_all_cash_account_as_full_coverage(
 
 
 @pytest.mark.contract
+def test_build_snapshot_bundle_treats_sparse_starting_buckets_as_full_coverage(
+    goal_solver_input_base,
+    calibration_result_base,
+):
+    bundle = build_snapshot_bundle(
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        as_of=datetime(2026, 3, 29, 12, 0, tzinfo=timezone.utc),
+        market_raw=_market_raw(goal_solver_input_base),
+        account_raw={
+            "weights": {
+                "cash_liquidity": 0.6667,
+                "gold": 0.3333,
+            },
+            "total_value": 18_000.0,
+            "available_cash": 12_000.0,
+            "remaining_horizon_months": goal_solver_input_base["goal"]["horizon_months"],
+        },
+        goal_raw=_goal_raw(goal_solver_input_base),
+        constraint_raw=_constraint_raw(goal_solver_input_base),
+        behavior_raw=calibration_result_base["behavior_state"],
+        remaining_horizon_months=goal_solver_input_base["goal"]["horizon_months"],
+    )
+
+    assert bundle.bundle_quality.value == "full"
+    assert any(flag.code == "PARTIAL_BUCKET_COVERAGE" for flag in bundle.quality_summary)
+
+
+@pytest.mark.contract
 def test_run_calibration_consumes_snapshot_bundle_and_emits_canonical_types(
     goal_solver_input_base,
     live_portfolio_base,

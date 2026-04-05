@@ -250,6 +250,7 @@ def _derive_bundle_quality(
     flags: list[QualityFlag],
     missing_domains: list[str],
 ) -> CompletenessLevel:
+    ignorable_partial_codes = {"PARTIAL_BUCKET_COVERAGE"}
     error_domains = {
         flag.domain
         for flag in flags
@@ -257,7 +258,8 @@ def _derive_bundle_quality(
     }
     if error_domains or any(domain in {"market", "account", "goal", "constraint"} for domain in missing_domains):
         return CompletenessLevel.DEGRADED
-    if missing_domains or flags:
+    actionable_flags = [flag for flag in flags if flag.code not in ignorable_partial_codes]
+    if missing_domains or actionable_flags:
         return CompletenessLevel.PARTIAL
     return CompletenessLevel.FULL
 

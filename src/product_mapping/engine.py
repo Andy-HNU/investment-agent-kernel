@@ -147,6 +147,30 @@ def _normalize_bucket_targets(bucket_targets: dict[str, float]) -> dict[str, flo
     return normalized
 
 
+def _merge_cash_parking_and_reserve(
+    bucket_targets: dict[str, float],
+    *,
+    parked_cash_weight: float,
+    liquidity_reserve_min: float | None,
+) -> dict[str, float]:
+    adjusted = {bucket: max(float(weight or 0.0), 0.0) for bucket, weight in bucket_targets.items()}
+    if parked_cash_weight > 0.0:
+        adjusted["cash_liquidity"] = adjusted.get("cash_liquidity", 0.0) + parked_cash_weight
+    current_non_cash = sum(weight for bucket, weight in adjusted.items() if bucket != "cash_liquidity")
+    current_cash = max(adjusted.get("cash_liquidity", 0.0), max(1.0 - current_non_cash, 0.0))
+    desired_cash = max(current_cash, float(liquidity_reserve_min or 0.0))
+    if current_non_cash > 0.0 and current_non_cash > max(1.0 - desired_cash, 0.0) + 1e-9:
+        scale = max(1.0 - desired_cash, 0.0) / current_non_cash
+        for bucket, weight in list(adjusted.items()):
+            if bucket == "cash_liquidity":
+                continue
+            adjusted[bucket] = weight * scale
+        adjusted["cash_liquidity"] = desired_cash
+    else:
+        adjusted["cash_liquidity"] = desired_cash
+    return _normalize_bucket_targets(adjusted)
+
+
 def _compile_restrictions(restrictions: list[str] | None) -> _RestrictionFilter:
     raw_restrictions = [str(item).strip() for item in restrictions or [] if str(item).strip()]
     parsed = parse_profile_semantics(current_holdings="", restrictions=raw_restrictions)
@@ -295,6 +319,13 @@ def _resolve_valuation_payload(
         if key and key in product_map:
             payload = dict(product_map.get(key) or {})
             payload.setdefault("product_key", key)
+            return payload
+    if candidate.wrapper_type != "stock":
+        bucket_map = dict(valuation_result.get("bucket_proxies") or {})
+        bucket_key = _normalize_bucket(candidate.asset_bucket)
+        if bucket_key and bucket_key in bucket_map:
+            payload = dict(bucket_map.get(bucket_key) or {})
+            payload.setdefault("product_key", f"bucket:{bucket_key}")
             return payload
     return None
 
@@ -1302,20 +1333,63 @@ def build_execution_plan(
     for runtime_candidate in runtime_candidate_pool:
         grouped_candidates[_normalize_bucket(runtime_candidate.candidate.asset_bucket)].append(runtime_candidate)
 
-    items: list[ExecutionPlanItem] = []
+    if not grouped_candidates.get("cash_liquidity"):
+        cash_fallback_candidates = [
+            RuntimeProductCandidate(candidate=item, registry_index=-1)
+            for item in registry
+            if _normalize_bucket(item.asset_bucket) == "cash_liquidity"
+        ]
+        if cash_fallback_candidates:
+            grouped_candidates["cash_liquidity"].extend(cash_fallback_candidates)
+
+    parked_cash_weight = 0.0
+    adjusted_targets = dict(normalized_targets)
     warnings = list(restriction_filter.warnings)
-    for bucket, target_weight in normalized_targets.items():
+    for bucket, target_weight in list(normalized_targets.items()):
         if target_weight <= 0:
+            continue
+        if bucket == "cash_liquidity":
             continue
         if bucket in restriction_filter.forbidden_buckets:
             warnings.append(f"资金桶 {bucket} 因用户限制被排除。")
+            warnings.append(f"资金桶 {bucket} 的目标权重已临时停泊到现金/流动性桶。")
+            parked_cash_weight += float(target_weight)
+            adjusted_targets[bucket] = 0.0
             continue
         if restriction_filter.allowed_buckets and bucket not in restriction_filter.allowed_buckets:
             warnings.append(f"资金桶 {bucket} 不在用户允许范围内，已从执行计划移除。")
+            warnings.append(f"资金桶 {bucket} 的目标权重已临时停泊到现金/流动性桶。")
+            parked_cash_weight += float(target_weight)
+            adjusted_targets[bucket] = 0.0
             continue
         bucket_candidates = grouped_candidates.get(bucket, [])
         if not bucket_candidates:
             warnings.append(f"资金桶 {bucket} 当前没有可用产品候选。")
+            warnings.append(f"资金桶 {bucket} 的目标权重已临时停泊到现金/流动性桶。")
+            parked_cash_weight += float(target_weight)
+            adjusted_targets[bucket] = 0.0
+
+    if parked_cash_weight > 0.0 or liquidity_reserve_min is not None:
+        adjusted_targets = _merge_cash_parking_and_reserve(
+            adjusted_targets,
+            parked_cash_weight=parked_cash_weight,
+            liquidity_reserve_min=liquidity_reserve_min,
+        )
+        if liquidity_reserve_min is not None:
+            warnings.append(
+                f"已为执行计划预留现金/流动性底仓 {float(liquidity_reserve_min):.0%}，并按比例缩放非现金目标。"
+            )
+
+    items: list[ExecutionPlanItem] = []
+    for bucket, target_weight in adjusted_targets.items():
+        if target_weight <= 0:
+            continue
+        if bucket in restriction_filter.forbidden_buckets:
+            continue
+        if restriction_filter.allowed_buckets and bucket not in restriction_filter.allowed_buckets:
+            continue
+        bucket_candidates = grouped_candidates.get(bucket, [])
+        if not bucket_candidates:
             continue
         items.append(
             _build_item(
@@ -1337,7 +1411,7 @@ def build_execution_plan(
         requested_total_amount=(
             None
             if account_total_value is None
-            else sum(max(float(weight or 0.0), 0.0) * float(account_total_value) for weight in normalized_targets.values())
+            else sum(max(float(weight or 0.0), 0.0) * float(account_total_value) for weight in adjusted_targets.values())
         ),
         available_cash=available_cash,
         liquidity_reserve_min=liquidity_reserve_min,
@@ -1358,7 +1432,7 @@ def build_execution_plan(
         proxy_result=product_proxy_result,
     )
     proxy_universe_summary = _build_proxy_universe_summary(
-        normalized_targets=normalized_targets,
+        normalized_targets=adjusted_targets,
         runtime_candidates=runtime_candidate_pool,
         selected_items=items,
         product_proxy_specs=product_proxy_specs,
