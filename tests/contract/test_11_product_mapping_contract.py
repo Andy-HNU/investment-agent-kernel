@@ -607,8 +607,37 @@ def test_build_execution_plan_surfaces_execution_realism_amounts_and_cash_reserv
     assert plan.execution_realism_summary.estimated_total_fee > 0.0
     assert "cash_reserve_conflict" in plan.execution_realism_summary.reasons
 
-
 @pytest.mark.contract
+def test_build_execution_plan_treats_unallocated_residual_as_cash_for_closure_checks():
+    plan = build_execution_plan(
+        source_run_id="run_execution_realism_implicit_cash",
+        source_allocation_id="allocation_execution_realism_implicit_cash",
+        bucket_targets={
+            "equity_cn": 0.4864,
+            "bond_cn": 0.3182,
+            "gold": 0.15,
+        },
+        restrictions=[],
+        account_total_value=18_000.0,
+        current_weights={
+            "cash_liquidity": 12_000.0 / 18_000.0,
+            "gold": 6_000.0 / 18_000.0,
+        },
+        available_cash=12_000.0,
+        liquidity_reserve_min=0.10,
+        minimum_trade_amount=500.0,
+        transaction_fee_rate={
+            "equity_cn": 0.003,
+            "bond_cn": 0.001,
+            "gold": 0.001,
+        },
+    )
+
+    assert plan.execution_realism_summary is not None
+    assert plan.execution_realism_summary.cash_target_amount == pytest.approx(817.2, abs=1e-6)
+    assert plan.execution_realism_summary.amount_closure_delta == pytest.approx(0.0, abs=1e-6)
+    assert "account_amount_not_closed" not in plan.execution_realism_summary.reasons
+    assert "cash_reserve_conflict" in plan.execution_realism_summary.reasons
 def test_build_execution_plan_flags_tiny_trade_buckets_below_minimum_amount():
     plan = build_execution_plan(
         source_run_id="run_execution_realism_tiny_trade",

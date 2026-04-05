@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import asdict
@@ -162,6 +163,18 @@ def _normalize_history_rows(df: Any, *, ts_code: str) -> list[dict[str, Any]]:
         )
     rows.sort(key=lambda item: item["date"])
     return rows
+
+
+def _stock_candidate_signature(candidates: list[ProductCandidate]) -> tuple[int, str]:
+    stock_symbols = sorted(
+        {
+            str(candidate.provider_symbol or "").strip().upper()
+            for candidate in candidates
+            if candidate.wrapper_type == "stock" and str(candidate.provider_symbol or "").strip()
+        }
+    )
+    digest = hashlib.sha1(",".join(stock_symbols).encode("utf-8")).hexdigest()
+    return len(stock_symbols), digest
 
 
 def fetch_history_rows(
@@ -349,9 +362,29 @@ def build_runtime_valuation_result(
 ) -> dict[str, Any]:
     as_of_date = _normalize_iso_date(str(as_of).split("T", 1)[0])
     cache_path = _cache_path(cache_dir, "runtime_valuation", as_of=as_of_date)
+    stock_candidates = [candidate for candidate in candidates if candidate.wrapper_type == "stock"]
+    stock_candidate_count, stock_candidate_signature = _stock_candidate_signature(stock_candidates)
     cached = _read_json_cache(cache_path)
-    if isinstance(cached, dict) and isinstance(cached.get("products"), dict):
+    if (
+        isinstance(cached, dict)
+        and isinstance(cached.get("products"), dict)
+        and int(cached.get("stock_candidate_count") or 0) == stock_candidate_count
+        and str(cached.get("stock_candidate_signature") or "") == stock_candidate_signature
+    ):
         return dict(cached)
+
+    if not stock_candidates:
+        result = {
+            "source_status": "missing",
+            "source_name": "tinyshare_runtime_valuation",
+            "source_ref": "tinyshare://daily_basic?trade_date=not_applicable",
+            "as_of": as_of_date,
+            "products": {},
+            "stock_candidate_count": stock_candidate_count,
+            "stock_candidate_signature": stock_candidate_signature,
+        }
+        _write_json_cache(cache_path, result)
+        return result
 
     trade_date = _latest_trade_date(as_of_date, cache_dir=cache_dir, token=token)
     pro = _pro_api(token)
@@ -363,12 +396,19 @@ def build_runtime_valuation_result(
         observed_days=1,
         inferred_days=0,
     )
-    stock_candidates = [candidate for candidate in candidates if candidate.wrapper_type == "stock"]
+    df = pro.daily_basic(trade_date=trade_date, fields="ts_code,trade_date,pe,pe_ttm,pb")
+    by_code: dict[str, dict[str, Any]] = {}
+    if df is not None and not getattr(df, "empty", True):
+        for _, row in df.iterrows():
+            payload = row.to_dict()
+            ts_code = str(payload.get("ts_code") or "").strip().upper()
+            if ts_code:
+                by_code[ts_code] = payload
+
     for candidate in stock_candidates:
-        df = pro.daily_basic(ts_code=str(candidate.provider_symbol), trade_date=trade_date)
-        if df is None or getattr(df, "empty", True):
+        row = by_code.get(str(candidate.provider_symbol or "").strip().upper())
+        if not row:
             continue
-        row = df.iloc[0].to_dict()
         pe_ratio = row.get("pe") or row.get("pe_ttm")
         pb_ratio = row.get("pb")
         if pe_ratio is None:
@@ -391,6 +431,8 @@ def build_runtime_valuation_result(
         "source_ref": f"tinyshare://daily_basic?trade_date={trade_date}",
         "as_of": as_of_date,
         "products": products,
+        "stock_candidate_count": stock_candidate_count,
+        "stock_candidate_signature": stock_candidate_signature,
     }
     _write_json_cache(cache_path, result)
     return result

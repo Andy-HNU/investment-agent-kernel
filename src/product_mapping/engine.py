@@ -981,11 +981,13 @@ def _build_execution_realism_summary(
         sum(float(item.target_amount or 0.0) for item in items),
         2,
     )
-    cash_target_amount = round(
+    explicit_cash_target_amount = round(
         sum(float(item.target_amount or 0.0) for item in items if item.asset_bucket == "cash_liquidity"),
         2,
     )
-    amount_closure_delta = round(total_target_amount - total_value, 2)
+    implicit_cash_target_amount = round(max(total_value - total_target_amount, 0.0), 2)
+    cash_target_amount = round(explicit_cash_target_amount + implicit_cash_target_amount, 2)
+    amount_closure_delta = round(total_target_amount + implicit_cash_target_amount - total_value, 2)
     cash_reserve_target_amount = (
         None
         if liquidity_reserve_min is None
