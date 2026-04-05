@@ -346,6 +346,16 @@ def _build_valuation_audit(
         or not payload
         or str(payload.get("status") or "missing") != "observed"
     ):
+        if summary["source_status"] == "observed" and payload is None and candidate.wrapper_type != "stock":
+            return ProductValuationAudit(
+                status="not_applicable",
+                source_name=summary["source_name"],
+                source_ref=summary["source_ref"],
+                as_of=summary["as_of"],
+                data_status=payload_data_status or DataStatus.MANUAL_ANNOTATION.value,
+                passed_filters=None,
+                reason="valuation:not_applicable",
+            ), None
         reason = "valuation:missing_observed_source"
         audit = ProductValuationAudit(
             status="missing_source",

@@ -10,13 +10,35 @@ from product_mapping.types import ProductCandidate
 from shared.audit import AuditWindow, DataStatus
 from shared.datasets.cache import DatasetCache
 from shared.datasets.types import DatasetSpec, VersionPin
+from shared.providers.tinyshare import (
+    build_runtime_valuation_result as _build_tinyshare_runtime_valuation_result,
+    has_token as _tinyshare_has_token,
+    load_runtime_catalog as _load_tinyshare_runtime_catalog,
+)
 from shared.providers.timeseries import fetch_timeseries
 from snapshot_ingestion.provider_matrix import find_provider_coverage
 from snapshot_ingestion.valuation import build_valuation_percentile_results
 
-_SUPPORTED_PROBE_PROVIDERS = {"yfinance", "akshare", "baostock"}
+_SUPPORTED_PROBE_PROVIDERS = {"yfinance", "akshare", "baostock", "tinyshare"}
 _PROBE_LOOKBACK_DAYS = 21
 _VALUATION_BUCKETS = ("equity_cn", "bond_cn", "gold", "satellite")
+
+
+def load_tinyshare_runtime_catalog(
+    *,
+    as_of: str,
+    cache_dir: Path | None = None,
+) -> tuple[list[ProductCandidate], dict[str, Any]]:
+    return _load_tinyshare_runtime_catalog(as_of=as_of, cache_dir=cache_dir)
+
+
+def build_tinyshare_runtime_valuation_result(
+    candidates: list[ProductCandidate],
+    *,
+    as_of: str,
+    cache_dir: Path | None = None,
+) -> dict[str, Any]:
+    return _build_tinyshare_runtime_valuation_result(candidates, as_of=as_of, cache_dir=cache_dir)
 
 
 def _as_of_date(as_of: str) -> str:
@@ -241,13 +263,24 @@ def build_runtime_product_universe_context(
         result = dict(market.get("product_universe_result") or market.get("runtime_product_universe_result") or {})
         return inputs, result
 
+    effective_cache_dir = cache_dir or Path.home() / ".cache" / "investment_system" / "timeseries"
+    if _tinyshare_has_token():
+        candidates, result = load_tinyshare_runtime_catalog(
+            as_of=_as_of_date(as_of),
+            cache_dir=effective_cache_dir,
+        )
+        return {
+            "requested": True,
+            "require_observed_source": True,
+            "source_kind": "tinyshare_runtime_catalog",
+        }, result
+
     historical_dataset = dict(market.get("historical_dataset") or {})
     if not historical_dataset:
         return {"requested": False, "require_observed_source": True}, None
 
     preferred_provider = str(historical_dataset.get("source_name") or "").strip().lower() or None
     source_ref = str(historical_dataset.get("source_ref") or "")
-    effective_cache_dir = cache_dir or Path.home() / ".cache" / "investment_system" / "timeseries"
     provider_limits: dict[str, str] = {}
 
     products: dict[str, Any] = {}
@@ -299,6 +332,21 @@ def build_runtime_product_valuation_context(
     if existing_result:
         inputs = dict(market.get("product_valuation_inputs") or market.get("valuation_inputs") or {})
         return inputs, existing_result
+
+    if _tinyshare_has_token():
+        runtime_candidates: list[ProductCandidate] = []
+        universe_result = dict(market.get("product_universe_result") or market.get("runtime_product_universe_result") or {})
+        for payload in list(universe_result.get("runtime_candidates") or []):
+            if isinstance(payload, dict):
+                runtime_candidates.append(ProductCandidate(**dict(payload)))
+        if not runtime_candidates:
+            runtime_candidates, _ = load_tinyshare_runtime_catalog(as_of=_as_of_date(as_of))
+        result = build_tinyshare_runtime_valuation_result(runtime_candidates, as_of=_as_of_date(as_of))
+        return {
+            "requested": True,
+            "require_observed_source": True,
+            "source_kind": "tinyshare_runtime_valuation",
+        }, result
 
     observed_inputs = _observed_valuation_inputs(market)
     if not observed_inputs:
@@ -384,7 +432,9 @@ def enrich_market_raw_with_runtime_product_inputs(
 
 
 __all__ = [
+    "build_tinyshare_runtime_valuation_result",
     "build_runtime_product_universe_context",
     "build_runtime_product_valuation_context",
     "enrich_market_raw_with_runtime_product_inputs",
+    "load_tinyshare_runtime_catalog",
 ]

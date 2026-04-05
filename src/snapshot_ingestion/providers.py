@@ -24,23 +24,27 @@ _ALLOWED_INLINE_KEYS = {
     "live_portfolio",
 }
 
-_SUPPORTED_MARKET_HISTORY_PROVIDERS = {"csv", "yfinance", "akshare", "baostock"}
+_SUPPORTED_MARKET_HISTORY_PROVIDERS = {"csv", "yfinance", "akshare", "baostock", "tinyshare"}
 _DEFAULT_MARKET_HISTORY_SYMBOL_MAP: dict[str, dict[str, str]] = {
     "equity_cn": {
         "akshare": "510300",
         "yfinance": "510300.SS",
+        "tinyshare": "510300.SH",
     },
     "bond_cn": {
         "akshare": "511010",
         "yfinance": "511010.SS",
+        "tinyshare": "511010.SH",
     },
     "gold": {
         "akshare": "518880",
         "yfinance": "518880.SS",
+        "tinyshare": "518880.SH",
     },
     "satellite": {
         "akshare": "159915",
         "yfinance": "159915.SZ",
+        "tinyshare": "159915.SZ",
     },
 }
 

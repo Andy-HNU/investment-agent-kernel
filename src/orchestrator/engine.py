@@ -10,6 +10,7 @@ from decision_card.builder import build_decision_card
 from decision_card.types import DecisionCardBuildInput, DecisionCardType
 from goal_solver.engine import run_goal_solver
 from product_mapping import build_candidate_product_context, build_execution_plan
+from product_mapping.types import ProductCandidate
 from product_mapping.runtime_inputs import enrich_market_raw_with_runtime_product_inputs
 from runtime_optimizer.engine import run_runtime_optimizer
 from runtime_optimizer.types import RuntimeOptimizerMode
@@ -1605,6 +1606,26 @@ def _extract_execution_plan_product_universe_context(
     )
 
 
+def _extract_execution_plan_runtime_candidates(
+    envelope: dict[str, Any],
+) -> list[ProductCandidate] | None:
+    market_raw = _as_dict(envelope.get("market_raw"))
+    universe_result = _as_dict(
+        market_raw.get("product_universe_result")
+        or market_raw.get("runtime_product_universe_result")
+        or {}
+    )
+    candidates: list[ProductCandidate] = []
+    for payload in list(universe_result.get("runtime_candidates") or []):
+        if not isinstance(payload, dict):
+            continue
+        try:
+            candidates.append(ProductCandidate(**dict(payload)))
+        except TypeError:
+            continue
+    return candidates or None
+
+
 def _extract_execution_plan_product_proxy_context(
     envelope: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -1683,6 +1704,7 @@ def _maybe_build_execution_plan(
         return None
     valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
     product_universe_inputs, product_universe_result = _extract_execution_plan_product_universe_context(envelope)
+    runtime_candidates = _extract_execution_plan_runtime_candidates(envelope)
     product_proxy_result = _extract_execution_plan_product_proxy_context(envelope)
     policy_news_signals = _extract_execution_plan_policy_news_signals(envelope)
     account_total_value, current_weights, available_cash, liquidity_reserve_min, transaction_fee_rate = (
@@ -1693,6 +1715,8 @@ def _maybe_build_execution_plan(
         source_allocation_id=allocation_name,
         bucket_targets={bucket: float(weight) for bucket, weight in weights.items()},
         restrictions=_extract_execution_plan_restrictions(envelope),
+        catalog=runtime_candidates,
+        runtime_candidates=runtime_candidates,
         product_universe_inputs=product_universe_inputs,
         product_universe_result=product_universe_result,
         valuation_inputs=valuation_inputs,
@@ -1716,6 +1740,7 @@ def _build_solver_candidate_product_contexts(
     restrictions = _extract_execution_plan_restrictions(envelope)
     valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
     product_universe_inputs, product_universe_result = _extract_execution_plan_product_universe_context(envelope)
+    runtime_candidates = _extract_execution_plan_runtime_candidates(envelope)
     product_proxy_result = _extract_execution_plan_product_proxy_context(envelope)
     policy_news_signals = _extract_execution_plan_policy_news_signals(envelope)
     historical_dataset = _extract_market_historical_dataset(envelope, snapshot_bundle)
@@ -1730,6 +1755,7 @@ def _build_solver_candidate_product_contexts(
             source_allocation_id=allocation_name,
             bucket_targets={bucket: float(weight) for bucket, weight in weights.items()},
             restrictions=restrictions,
+            runtime_candidates=runtime_candidates,
             product_universe_inputs=product_universe_inputs,
             product_universe_result=product_universe_result,
             valuation_inputs=valuation_inputs,

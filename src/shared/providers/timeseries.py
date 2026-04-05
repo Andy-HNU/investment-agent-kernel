@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from shared.datasets.cache import DatasetCache
 from shared.datasets.types import DatasetSpec, VersionPin, HistoryBar
+from shared.providers.tinyshare import fetch_history_rows as _fetch_tinyshare_rows
 
 
 def _fetch_csv(spec: DatasetSpec, pin: VersionPin) -> list[dict[str, Any]]:
@@ -86,6 +87,10 @@ def _normalize_provider_error(spec: DatasetSpec, exc: Exception) -> RuntimeError
         if "empty_dataset" in lower:
             return RuntimeError("historical_provider_unavailable:baostock_empty_or_unsupported_symbol")
         return RuntimeError(f"historical_provider_unavailable:baostock:{exc}")
+    if spec.provider == "tinyshare":
+        if "empty_dataset" in lower:
+            return RuntimeError("historical_provider_unavailable:tinyshare_empty_dataset")
+        return RuntimeError(f"historical_provider_unavailable:tinyshare:{exc}")
     return RuntimeError(f"historical_provider_unavailable:{spec.provider}:{exc}")
 
 
@@ -231,6 +236,22 @@ def _fetch_baostock(spec: DatasetSpec, pin: VersionPin) -> list[dict[str, Any]]:
             pass
 
 
+def _fetch_tinyshare(spec: DatasetSpec, pin: VersionPin) -> list[dict[str, Any]]:
+    symbol = str(spec.symbol or "").strip().upper()
+    if not symbol:
+        raise ValueError("tinyshare provider requires spec.symbol")
+    start, end = _window_from_source_ref(pin)
+    if not start or not end:
+        raise ValueError("tinyshare provider requires start/end window")
+    return HistoryBar.coerce_many(
+        _fetch_tinyshare_rows(
+            symbol,
+            start_date=start,
+            end_date=end,
+        )
+    )
+
+
 def fetch_timeseries(
     spec: DatasetSpec,
     *,
@@ -248,6 +269,8 @@ def fetch_timeseries(
             rows = _fetch_akshare(spec, pin)
         elif spec.provider == "baostock":
             rows = _fetch_baostock(spec, pin)
+        elif spec.provider == "tinyshare":
+            rows = _fetch_tinyshare(spec, pin)
         else:
             raise ValueError(f"unsupported timeseries provider: {spec.provider}")
     except Exception as exc:
