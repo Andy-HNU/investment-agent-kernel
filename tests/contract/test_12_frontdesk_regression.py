@@ -180,10 +180,12 @@ def test_frontdesk_onboarding_surfaces_product_aware_probability_and_expanded_fr
 
     assert summary["status"] in {"completed", "degraded"}
     assert card["key_metrics"]["product_probability_method"] == "product_proxy_adjustment_estimate"
-    assert card["key_metrics"]["product_adjusted_success_probability"]
+    assert card["key_metrics"]["product_proxy_adjusted_success_probability"]
     assert set(frontier["candidate_families"]) >= {"growth_tilt", "max_return_unconstrained"}
     assert probability_explanation["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert "逐产品独立模拟" in probability_explanation["product_probability_disclosure"]
     assert card["frontier_analysis"]["recommended"]["expected_annual_return"]
+    assert all(option["expected_annual_return"] for option in card["candidate_options"])
     assert (
         probability_explanation["target_return_priority_allocation_label"]
         or probability_explanation["why_not_target_return_priority"]
@@ -254,11 +256,13 @@ def test_frontdesk_onboarding_surfaces_layer1_product_aware_frontier_fields(tmp_
     diagnostics = frontier["frontier_diagnostics"]
 
     assert key_metrics["product_probability_method"] == "product_proxy_adjustment_estimate"
-    assert key_metrics["product_adjusted_success_probability"]
+    assert key_metrics["product_proxy_adjusted_success_probability"]
     assert probability_explanation["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert "逐产品独立模拟" in probability_explanation["product_probability_disclosure"]
     assert frontier["recommended"]["product_probability_method"] == "product_proxy_adjustment_estimate"
     assert frontier["recommended"]["expected_annual_return"]
     assert frontier["drawdown_priority"]["expected_annual_return"]
+    assert all(option["expected_annual_return"] for option in decision_card["candidate_options"])
     assert frontier["target_return_priority"]["why_selected"] == "当前候选里没有方案满足目标收益约束。"
     assert "max_return_unconstrained" in diagnostics["candidate_families"]
     assert "growth_tilt_family_not_present_after_allocation_generation" not in diagnostics["structural_limitations"]

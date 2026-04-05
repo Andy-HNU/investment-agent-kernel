@@ -66,7 +66,7 @@ def test_bridge_preserves_probability_explanation_payload(tmp_path):
     assert "frontier_analysis" in decision_card
     assert "product_evidence_panel" in decision_card
     assert "bucket_success_probability" in decision_card["key_metrics"]
-    assert "product_adjusted_success_probability" in decision_card["key_metrics"]
+    assert "product_proxy_adjusted_success_probability" in decision_card["key_metrics"]
 
 
 def test_acceptance_cli_writes_logs(tmp_path, capsys):

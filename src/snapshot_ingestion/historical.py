@@ -7,6 +7,8 @@ from math import sqrt
 from pathlib import Path
 from typing import Any
 
+from shared.audit import AuditWindow
+
 
 @dataclass(frozen=True)
 class HistoricalDatasetSnapshot:
@@ -20,10 +22,13 @@ class HistoricalDatasetSnapshot:
     frequency: str = "monthly"
     coverage_status: str = "verified"
     cached_at: str | None = None
+    audit_window: AuditWindow | None = None
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["audit_window"] = None if self.audit_window is None else self.audit_window.to_dict()
+        return payload
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "HistoricalDatasetSnapshot":
@@ -41,6 +46,7 @@ class HistoricalDatasetSnapshot:
             },
             coverage_status=str(payload.get("coverage_status") or "verified"),
             cached_at=payload.get("cached_at"),
+            audit_window=AuditWindow.from_any(payload.get("audit_window")),
             notes=[str(item) for item in list(payload.get("notes") or []) if str(item).strip()],
         )
 

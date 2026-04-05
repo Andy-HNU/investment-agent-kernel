@@ -6,6 +6,7 @@ from product_mapping import (
     ExecutionPlan,
     ExecutionPlanItem,
     ProductCandidate,
+    build_candidate_product_context,
     build_execution_plan,
     load_builtin_catalog,
 )
@@ -156,6 +157,28 @@ def test_build_execution_plan_accepts_explicit_runtime_candidate_pool():
         "cn_bond_gov_etf",
         "cn_gold_etf",
     }
+
+
+@pytest.mark.contract
+def test_build_candidate_product_context_preserves_history_window_days():
+    context = build_candidate_product_context(
+        source_allocation_id="allocation_history_window",
+        bucket_targets={"equity_cn": 0.60, "bond_cn": 0.25, "gold": 0.15},
+        restrictions=[],
+        historical_dataset={
+            "audit_window": {
+                "start_date": "2024-01-02",
+                "end_date": "2026-04-03",
+                "trading_days": 492,
+                "observed_days": 480,
+                "inferred_days": 12,
+            }
+        },
+    )
+
+    assert context["product_history_profiles"]
+    assert all(item["observed_history_days"] == 492 for item in context["product_history_profiles"])
+    assert all(item["inferred_history_days"] == 12 for item in context["product_history_profiles"])
 
 
 @pytest.mark.contract

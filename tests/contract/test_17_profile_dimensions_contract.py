@@ -119,3 +119,22 @@ def test_high_return_pressure_profiles_emit_pressure_flags_and_relax_caps():
     assert constraints["satellite_cap"] >= 0.12
     assert constraints["ips_bucket_boundaries"]["equity_cn"][1] >= 0.70
     assert constraints["qdii_cap"] >= 0.25
+
+
+@pytest.mark.contract
+def test_profile_dimensions_do_not_treat_negative_monthly_cashflow_as_zero():
+    profile = _base_profile(
+        current_total_assets=100_000.0,
+        monthly_contribution=-2_000.0,
+        goal_amount=100_000.0,
+        goal_horizon_months=36,
+        current_holdings="现金",
+        restrictions=[],
+    )
+
+    bundle = build_user_onboarding_inputs(profile)
+    model_inputs = bundle.profile.profile_dimensions["model_inputs"]
+
+    assert model_inputs["projected_funding_ratio"] < 1.0
+    assert model_inputs["implied_required_annual_return"] > 0.0
+    assert model_inputs["target_return_pressure"] != "low"

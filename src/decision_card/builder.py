@@ -393,8 +393,11 @@ def _build_goal_candidate_options(inp: DecisionCardBuildInput, goal_output: dict
                 metrics_pool,
                 key=lambda item: _coalesce_metric(
                     item.get(
-                        "product_adjusted_success_probability",
-                        item.get("bucket_success_probability", item.get("success_probability")),
+                        "product_proxy_adjusted_success_probability",
+                        item.get(
+                            "product_adjusted_success_probability",
+                            item.get("bucket_success_probability", item.get("success_probability")),
+                        ),
                     ),
                     float("-inf"),
                 ),
@@ -449,7 +452,12 @@ def _build_goal_candidate_options(inp: DecisionCardBuildInput, goal_output: dict
         bucket_success_probability = _percent_metric(
             result.get("bucket_success_probability", result.get("success_probability"))
         )
-        product_adjusted_success_probability = _percent_metric(result.get("product_adjusted_success_probability"))
+        product_proxy_adjusted_success_probability = _percent_metric(
+            result.get(
+                "product_proxy_adjusted_success_probability",
+                result.get("product_adjusted_success_probability"),
+            )
+        )
         product_probability_method = _metric(result.get("product_probability_method")) or "bucket_only_no_product_proxy_adjustment"
         implied_required_annual_return = _percent_metric(result.get("implied_required_annual_return"))
         expected_annual_return = _percent_metric(
@@ -473,7 +481,7 @@ def _build_goal_candidate_options(inp: DecisionCardBuildInput, goal_output: dict
             "allocation_mix": _candidate_mix(result.get("weights")),
             "success_probability": success_probability,
             "bucket_success_probability": bucket_success_probability,
-            "product_adjusted_success_probability": product_adjusted_success_probability,
+            "product_proxy_adjusted_success_probability": product_proxy_adjusted_success_probability,
             "product_probability_method": product_probability_method,
             "implied_required_annual_return": implied_required_annual_return,
             "expected_annual_return": expected_annual_return,
@@ -483,7 +491,7 @@ def _build_goal_candidate_options(inp: DecisionCardBuildInput, goal_output: dict
             "metrics": {
                 "success_probability": success_probability,
                 "bucket_success_probability": bucket_success_probability,
-                "product_adjusted_success_probability": product_adjusted_success_probability,
+                "product_proxy_adjusted_success_probability": product_proxy_adjusted_success_probability,
                 "product_probability_method": product_probability_method,
                 "implied_required_annual_return": implied_required_annual_return,
                 "expected_annual_return": expected_annual_return,
@@ -497,6 +505,11 @@ def _build_goal_candidate_options(inp: DecisionCardBuildInput, goal_output: dict
             "complexity_label": _metric(result.get("complexity_label")) or "",
             "risk_label": _risk_level(risk_summary.get("max_drawdown_90pct")),
             "liquidity_label": _liquidity_label(result.get("weights")),
+            "probability_disclosure": (
+                "当前产品层概率使用代理修正口径，仍不是逐产品独立模拟。"
+                if product_probability_method != "bucket_only_no_product_proxy_adjustment"
+                else "当前产品层概率尚未启用代理修正，产品相关成功率字段只展示桶级基线，不应解读为逐产品独立模拟。"
+            ),
             "why_selected": _candidate_highlight(
                 result,
                 recommended_name=recommended_name,
@@ -545,10 +558,18 @@ def _frontier_scenario(
         "allocation_name": allocation_name,
         "label": label,
         "success_probability": _percent_metric(
-            data.get("product_adjusted_success_probability", data.get("success_probability"))
+            data.get(
+                "product_proxy_adjusted_success_probability",
+                data.get("product_adjusted_success_probability", data.get("success_probability")),
+            )
         ),
         "bucket_success_probability": _percent_metric(data.get("bucket_success_probability", data.get("success_probability"))),
-        "product_adjusted_success_probability": _percent_metric(data.get("product_adjusted_success_probability")),
+        "product_proxy_adjusted_success_probability": _percent_metric(
+            data.get(
+                "product_proxy_adjusted_success_probability",
+                data.get("product_adjusted_success_probability"),
+            )
+        ),
         "product_probability_method": _metric(data.get("product_probability_method"))
         or "bucket_only_no_product_proxy_adjustment",
         "expected_terminal_value": _currency_metric(data.get("expected_terminal_value")),
@@ -603,8 +624,11 @@ def _build_probability_explanation(
     )
     recommended_probability = _percent_metric(
         recommended_result.get(
-            "product_adjusted_success_probability",
-            recommended_result.get("bucket_success_probability", recommended_result.get("success_probability")),
+            "product_proxy_adjusted_success_probability",
+            recommended_result.get(
+                "product_adjusted_success_probability",
+                recommended_result.get("bucket_success_probability", recommended_result.get("success_probability")),
+            ),
         )
     )
     recommended_expected_annual_return = _metric(frontier_analysis.get("recommended", {}).get("expected_annual_return")) or ""
@@ -617,7 +641,10 @@ def _build_probability_explanation(
         highest_candidate = max(
             [_obj(item) for item in goal_output.get("candidate_menu", []) or goal_output.get("all_results", [])],
             key=lambda item: _coalesce_metric(
-                item.get("product_adjusted_success_probability", item.get("success_probability")),
+                item.get(
+                    "product_proxy_adjusted_success_probability",
+                    item.get("product_adjusted_success_probability", item.get("success_probability")),
+                ),
                 float("-inf"),
             ),
             default=recommended_result,
@@ -632,7 +659,10 @@ def _build_probability_explanation(
             _metric(highest_candidate.get("display_name")) or _candidate_label(highest_name),
         )
         highest_probability = _percent_metric(
-            highest_candidate.get("product_adjusted_success_probability", highest_candidate.get("success_probability"))
+            highest_candidate.get(
+                "product_proxy_adjusted_success_probability",
+                highest_candidate.get("product_adjusted_success_probability", highest_candidate.get("success_probability")),
+            )
         )
         highest_expected_annual_return = _percent_metric(highest_candidate.get("expected_annual_return"))
     if highest_name and recommended_name and highest_name != recommended_name:
@@ -751,7 +781,13 @@ def _build_user_visible_candidate_alternatives(candidate_options: list[dict[str,
                 "description": _metric(data.get("description")) or "",
                 "success_probability": _metric(data.get("success_probability")) or "",
                 "bucket_success_probability": _metric(data.get("bucket_success_probability")) or "",
-                "product_adjusted_success_probability": _metric(data.get("product_adjusted_success_probability")) or "",
+                "product_proxy_adjusted_success_probability": _metric(
+                    data.get(
+                        "product_proxy_adjusted_success_probability",
+                        data.get("product_adjusted_success_probability"),
+                    )
+                )
+                or "",
                 "product_probability_method": _metric(data.get("product_probability_method")) or "",
                 "implied_required_annual_return": _metric(data.get("implied_required_annual_return")) or "",
                 "expected_annual_return": _metric(data.get("expected_annual_return")) or "",
@@ -759,6 +795,7 @@ def _build_user_visible_candidate_alternatives(candidate_options: list[dict[str,
                 "max_drawdown_90pct": _metric(data.get("max_drawdown_90pct")) or "",
                 "shortfall_probability": _metric(data.get("shortfall_probability")) or "",
                 "metrics": dict(_obj(data.get("metrics"))),
+                "probability_disclosure": _metric(data.get("probability_disclosure")) or "",
                 "model_disclaimer": _metric(data.get("model_disclaimer")) or "",
                 "evidence_source": _metric(data.get("evidence_source")) or "model_estimate",
             }
@@ -1110,7 +1147,7 @@ def _build_goal_evidence(inp: DecisionCardBuildInput, goal_output: dict[str, Any
     evidence = [
         f"success_probability={_metric(result.get('success_probability'))}",
         f"bucket_success_probability={_metric(result.get('bucket_success_probability'))}",
-        f"product_adjusted_success_probability={_metric(result.get('product_adjusted_success_probability'))}",
+        f"product_proxy_adjusted_success_probability={_metric(result.get('product_proxy_adjusted_success_probability', result.get('product_adjusted_success_probability')))}",
         f"product_probability_method={_metric(result.get('product_probability_method'))}",
         f"implied_required_annual_return={_metric(result.get('implied_required_annual_return'))}",
         f"max_drawdown_90pct={_metric(risk_summary.get('max_drawdown_90pct'))}",
@@ -1121,7 +1158,7 @@ def _build_goal_evidence(inp: DecisionCardBuildInput, goal_output: dict[str, Any
     formatted = [
         f"success_probability_display={_percent_metric(result.get('success_probability'))}",
         f"bucket_success_probability_display={_percent_metric(result.get('bucket_success_probability'))}",
-        f"product_adjusted_success_probability_display={_percent_metric(result.get('product_adjusted_success_probability'))}",
+        f"product_proxy_adjusted_success_probability_display={_percent_metric(result.get('product_proxy_adjusted_success_probability', result.get('product_adjusted_success_probability')))}",
         f"implied_required_annual_return_display={_percent_metric(result.get('implied_required_annual_return'))}",
         f"max_drawdown_90pct_display={_percent_metric(risk_summary.get('max_drawdown_90pct'))}",
         f"shortfall_probability_display={_percent_metric(risk_summary.get('shortfall_probability'))}",
@@ -1352,7 +1389,12 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
             "bucket_success_probability": _percent_metric(
                 result.get("bucket_success_probability", result.get("success_probability"))
             ),
-            "product_adjusted_success_probability": _percent_metric(result.get("product_adjusted_success_probability")),
+            "product_proxy_adjusted_success_probability": _percent_metric(
+                result.get(
+                    "product_proxy_adjusted_success_probability",
+                    result.get("product_adjusted_success_probability"),
+                )
+            ),
             "product_probability_method": _metric(result.get("product_probability_method"))
             or "bucket_only_no_product_proxy_adjustment",
             "implied_required_annual_return": _percent_metric(result.get("implied_required_annual_return")),
@@ -1489,7 +1531,12 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
             "bucket_success_probability": _percent_metric(
                 result.get("bucket_success_probability", result.get("success_probability"))
             ),
-            "product_adjusted_success_probability": _percent_metric(result.get("product_adjusted_success_probability")),
+            "product_proxy_adjusted_success_probability": _percent_metric(
+                result.get(
+                    "product_proxy_adjusted_success_probability",
+                    result.get("product_adjusted_success_probability"),
+                )
+            ),
             "product_probability_method": _metric(result.get("product_probability_method"))
             or "bucket_only_no_product_proxy_adjustment",
             "implied_required_annual_return": _percent_metric(result.get("implied_required_annual_return")),

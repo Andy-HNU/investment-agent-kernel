@@ -203,7 +203,7 @@ def _project_terminal_value(
 
 
 def _effective_success_probability(result: SuccessProbabilityResult) -> float:
-    adjusted = result.product_adjusted_success_probability
+    adjusted = result.product_proxy_adjusted_success_probability
     if adjusted is not None:
         return float(adjusted)
     return float(result.success_probability)
@@ -634,7 +634,7 @@ def _build_unavailable_frontier_scenario(
         success_probability=0.0,
         expected_terminal_value=0.0,
         max_drawdown_90pct=0.0,
-        product_adjusted_success_probability=None,
+        product_proxy_adjusted_success_probability=None,
         product_probability_method="bucket_only_no_product_proxy_adjustment",
         expected_annual_return=None,
         meets_success_threshold=False,
@@ -678,7 +678,7 @@ def _build_frontier_scenario(
         allocation_name=allocation.name,
         weights=dict(result.weights),
         success_probability=result.success_probability,
-        product_adjusted_success_probability=result.product_adjusted_success_probability,
+        product_proxy_adjusted_success_probability=result.product_proxy_adjusted_success_probability,
         product_probability_method=result.product_probability_method,
         expected_terminal_value=result.expected_terminal_value,
         max_drawdown_90pct=result.risk_summary.max_drawdown_90pct,
@@ -1207,7 +1207,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
         effective_probability = probability
         effective_extra = extra
         effective_risk = risk
-        product_adjusted_success_probability = None
+        product_proxy_adjusted_success_probability = None
         product_probability_method = "bucket_only_no_product_proxy_adjustment"
         product_context = inp.candidate_product_contexts.get(allocation.name)
         if product_context is not None:
@@ -1227,15 +1227,21 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             effective_probability = adjusted_probability
             effective_extra = adjusted_extra
             effective_risk = adjusted_risk
-            product_adjusted_success_probability = adjusted_probability
+            product_proxy_adjusted_success_probability = adjusted_probability
+        expected_annual_return = _scenario_expected_annual_return(
+            initial_value=inp.current_portfolio_value,
+            cashflow_schedule=cashflow_schedule,
+            expected_terminal_value=effective_extra["expected_terminal_value"],
+        )
         interim_result = SuccessProbabilityResult(
             allocation_name=allocation.name,
             weights=allocation.weights,
             success_probability=effective_probability,
             bucket_success_probability=bucket_probability,
-            product_adjusted_success_probability=product_adjusted_success_probability,
+            product_proxy_adjusted_success_probability=product_proxy_adjusted_success_probability,
             product_probability_method=product_probability_method,
             implied_required_annual_return=implied_required_annual_return,
+            expected_annual_return=expected_annual_return,
             expected_terminal_value=effective_extra["expected_terminal_value"],
             risk_summary=effective_risk,
             is_feasible=True,
@@ -1252,9 +1258,10 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
                 weights=allocation.weights,
                 success_probability=effective_probability,
                 bucket_success_probability=bucket_probability,
-                product_adjusted_success_probability=product_adjusted_success_probability,
+                product_proxy_adjusted_success_probability=product_proxy_adjusted_success_probability,
                 product_probability_method=product_probability_method,
                 implied_required_annual_return=implied_required_annual_return,
+                expected_annual_return=expected_annual_return,
                 expected_terminal_value=effective_extra["expected_terminal_value"],
                 risk_summary=effective_risk,
                 is_feasible=is_feasible,
@@ -1283,9 +1290,14 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             weights=fallback.weights,
             success_probability=probability,
             bucket_success_probability=probability,
-            product_adjusted_success_probability=None,
+            product_proxy_adjusted_success_probability=None,
             product_probability_method="bucket_only_no_product_proxy_adjustment",
             implied_required_annual_return=implied_required_annual_return,
+            expected_annual_return=_scenario_expected_annual_return(
+                initial_value=inp.current_portfolio_value,
+                cashflow_schedule=cashflow_schedule,
+                expected_terminal_value=extra["expected_terminal_value"],
+            ),
             expected_terminal_value=extra["expected_terminal_value"],
             risk_summary=risk,
             is_feasible=True,

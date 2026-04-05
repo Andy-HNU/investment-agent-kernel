@@ -224,9 +224,10 @@ class SuccessProbabilityResult:
     risk_summary: RiskSummary
     is_feasible: bool
     bucket_success_probability: float | None = None
-    product_adjusted_success_probability: float | None = None
+    product_proxy_adjusted_success_probability: float | None = None
     product_probability_method: str = "bucket_only_no_product_proxy_adjustment"
     implied_required_annual_return: float | None = None
+    expected_annual_return: float | None = None
     display_name: str = ""
     summary: str = ""
     complexity_label: str = ""
@@ -246,7 +247,7 @@ class FrontierScenario:
     success_probability: float
     expected_terminal_value: float
     max_drawdown_90pct: float
-    product_adjusted_success_probability: float | None = None
+    product_proxy_adjusted_success_probability: float | None = None
     product_probability_method: str = "bucket_only_no_product_proxy_adjustment"
     expected_annual_return: float | None = None
     meets_success_threshold: bool = False

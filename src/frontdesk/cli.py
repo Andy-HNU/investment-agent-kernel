@@ -186,7 +186,7 @@ def _render_candidate_lines(options: list[dict[str, Any]], *, prefix: str) -> li
             f"{prefix}_{index}={option.get('label')} | {option.get('highlight')} | "
             f"success={option.get('success_probability')} "
             f"bucket_success={option.get('bucket_success_probability')} "
-            f"product_success={option.get('product_adjusted_success_probability')} "
+            f"product_success={option.get('product_proxy_adjusted_success_probability')} "
             f"probability_method={option.get('product_probability_method')} "
             f"required_return={option.get('implied_required_annual_return')} "
             f"expected_return={option.get('expected_annual_return')} "
@@ -195,6 +195,8 @@ def _render_candidate_lines(options: list[dict[str, Any]], *, prefix: str) -> li
         )
         if option.get("description"):
             lines.append(f"{prefix}_{index}_note={option.get('description')}")
+        if option.get("probability_disclosure"):
+            lines.append(f"{prefix}_{index}_probability_disclosure={option.get('probability_disclosure')}")
         if option.get("risk_label") or option.get("liquidity_label") or option.get("complexity_label"):
             lines.append(
                 f"{prefix}_{index}_tags="
@@ -209,7 +211,37 @@ def _render_probability_explanation_block(decision_card: dict[str, Any]) -> list
     explanation = decision_card.get("probability_explanation") or {}
     if not explanation:
         return []
-    return [
+    target_label = explanation.get("target_return_priority_allocation_label") or ""
+    target_reason = explanation.get("why_not_target_return_priority") or ""
+    if target_label:
+        target_line = (
+            "probability_target_return="
+            f"{target_label} | "
+            f"success={explanation.get('target_return_priority_success_probability')} | "
+            f"expected_return={explanation.get('target_return_priority_expected_annual_return')} | "
+            f"required_return={explanation.get('implied_required_annual_return')}"
+        )
+    else:
+        target_line = (
+            "probability_target_return="
+            f"unavailable | "
+            f"reason={target_reason} | "
+            f"required_return={explanation.get('implied_required_annual_return')}"
+        )
+
+    drawdown_label = explanation.get("drawdown_priority_allocation_label") or ""
+    drawdown_reason = explanation.get("why_not_drawdown_priority") or ""
+    if drawdown_label:
+        drawdown_line = (
+            "probability_drawdown="
+            f"{drawdown_label} | "
+            f"success={explanation.get('drawdown_priority_success_probability')} | "
+            f"expected_return={explanation.get('drawdown_priority_expected_annual_return')}"
+        )
+    else:
+        drawdown_line = f"probability_drawdown=unavailable | reason={drawdown_reason}"
+
+    lines = [
         "probability_recommended="
         f"{explanation.get('recommended_allocation_label')} | "
         f"success={explanation.get('recommended_success_probability')} | "
@@ -218,16 +250,12 @@ def _render_probability_explanation_block(decision_card: dict[str, Any]) -> list
         f"{explanation.get('highest_probability_allocation_label')} | "
         f"success={explanation.get('highest_probability_success_probability')} | "
         f"expected_return={explanation.get('highest_probability_expected_annual_return')}",
-        "probability_target_return="
-        f"{explanation.get('target_return_priority_allocation_label')} | "
-        f"success={explanation.get('target_return_priority_success_probability')} | "
-        f"expected_return={explanation.get('target_return_priority_expected_annual_return')} | "
-        f"required_return={explanation.get('implied_required_annual_return')}",
-        "probability_drawdown="
-        f"{explanation.get('drawdown_priority_allocation_label')} | "
-        f"success={explanation.get('drawdown_priority_success_probability')} | "
-        f"expected_return={explanation.get('drawdown_priority_expected_annual_return')}",
+        target_line,
+        drawdown_line,
     ]
+    if explanation.get("product_probability_disclosure"):
+        lines.append(f"probability_method_disclosure={explanation.get('product_probability_disclosure')}")
+    return lines
 
 
 def _render_frontier_diagnostics_block(decision_card: dict[str, Any]) -> list[str]:
@@ -713,7 +741,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
                 "expected_terminal_value",
                 "implied_required_annual_return",
                 "expected_annual_return",
-                "product_adjusted_success_probability",
+                "product_proxy_adjusted_success_probability",
                 "product_probability_method",
             ):
                 value = key_metrics.get(key)
@@ -804,7 +832,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
             "expected_terminal_value",
             "implied_required_annual_return",
             "expected_annual_return",
-            "product_adjusted_success_probability",
+            "product_proxy_adjusted_success_probability",
             "product_probability_method",
         ):
             value = key_metrics.get(key)

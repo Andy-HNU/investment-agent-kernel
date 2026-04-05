@@ -184,7 +184,7 @@ def _project_terminal_value(
     monthly_rate: float,
 ) -> float:
     value = float(initial_value)
-    contribution = max(monthly_contribution, 0.0)
+    contribution = float(monthly_contribution)
     for _month in range(max(goal_horizon_months, 0)):
         value = value * (1.0 + monthly_rate) + contribution
     return float(value)
@@ -524,7 +524,7 @@ def build_profile_dimensions(
         risk_tolerance_score=risk_tolerance_score,
         risk_capacity_score=risk_capacity_score,
     )
-    projected_contributions = max(monthly_contribution, 0.0) * max(goal_horizon_months, 0)
+    projected_contributions = float(monthly_contribution) * max(goal_horizon_months, 0)
     projected_funding_ratio = (
         1.0
         if goal_amount <= 0.0

@@ -250,7 +250,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                     "allocation_name": "balanced_progression__moderate__02",
                     "success_probability": 0.68,
                     "bucket_success_probability": 0.68,
-                    "product_adjusted_success_probability": 0.65,
+                    "product_proxy_adjusted_success_probability": 0.65,
                     "product_probability_method": "product_proxy_adjustment_estimate",
                     "implied_required_annual_return": 0.08,
                     "expected_terminal_value": 1_030_000.0,
@@ -263,7 +263,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                         "summary": "在提高达成率的同时，尽量守住波动体验。",
                         "success_probability": 0.68,
                         "bucket_success_probability": 0.68,
-                        "product_adjusted_success_probability": 0.65,
+                        "product_proxy_adjusted_success_probability": 0.65,
                         "product_probability_method": "product_proxy_adjustment_estimate",
                         "implied_required_annual_return": 0.08,
                         "expected_terminal_value": 1_030_000.0,
@@ -277,7 +277,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                         "summary": "达成率更高，但回撤和复杂度也更高。",
                         "success_probability": 0.74,
                         "bucket_success_probability": 0.74,
-                        "product_adjusted_success_probability": 0.70,
+                        "product_proxy_adjusted_success_probability": 0.70,
                         "product_probability_method": "product_proxy_adjustment_estimate",
                         "implied_required_annual_return": 0.08,
                         "expected_terminal_value": 1_080_000.0,
@@ -290,7 +290,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                     "recommended": {
                         "allocation_name": "balanced_progression__moderate__02",
                         "display_name": "平衡推进方案",
-                        "product_adjusted_success_probability": 0.65,
+                        "product_proxy_adjusted_success_probability": 0.65,
                         "product_probability_method": "product_proxy_adjustment_estimate",
                         "expected_terminal_value": 1_030_000.0,
                         "expected_annual_return": 0.061,
@@ -300,7 +300,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                     "highest_probability": {
                         "allocation_name": "goal_chasing__aggressive__01",
                         "display_name": "冲目标方案",
-                        "product_adjusted_success_probability": 0.70,
+                        "product_proxy_adjusted_success_probability": 0.70,
                         "product_probability_method": "product_proxy_adjustment_estimate",
                         "expected_terminal_value": 1_080_000.0,
                         "expected_annual_return": 0.079,
@@ -315,7 +315,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                     "drawdown_priority": {
                         "allocation_name": "balanced_progression__moderate__02",
                         "display_name": "平衡推进方案",
-                        "product_adjusted_success_probability": 0.65,
+                        "product_proxy_adjusted_success_probability": 0.65,
                         "product_probability_method": "product_proxy_adjustment_estimate",
                         "expected_terminal_value": 1_030_000.0,
                         "expected_annual_return": 0.061,
@@ -349,7 +349,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
     )
 
     assert card["key_metrics"]["bucket_success_probability"] == "68.00%"
-    assert card["key_metrics"]["product_adjusted_success_probability"] == "65.00%"
+    assert card["key_metrics"]["product_proxy_adjusted_success_probability"] == "65.00%"
     assert card["key_metrics"]["product_probability_method"] == "product_proxy_adjustment_estimate"
     assert card["key_metrics"]["implied_required_annual_return"] == "8.00%"
     assert card["key_metrics"]["expected_annual_return"] == "6.10%"
@@ -381,7 +381,7 @@ def test_goal_baseline_card_surfaces_unavailable_frontier_reasons():
                     "allocation_name": "balanced_progression__moderate__02",
                     "success_probability": 0.68,
                     "bucket_success_probability": 0.68,
-                    "product_adjusted_success_probability": 0.65,
+                    "product_proxy_adjusted_success_probability": 0.65,
                     "product_probability_method": "product_proxy_adjustment_estimate",
                     "implied_required_annual_return": 0.08,
                     "expected_terminal_value": 1_030_000.0,
@@ -393,7 +393,7 @@ def test_goal_baseline_card_surfaces_unavailable_frontier_reasons():
                         "display_name": "平衡推进方案",
                         "success_probability": 0.68,
                         "bucket_success_probability": 0.68,
-                        "product_adjusted_success_probability": 0.65,
+                        "product_proxy_adjusted_success_probability": 0.65,
                         "product_probability_method": "product_proxy_adjustment_estimate",
                         "implied_required_annual_return": 0.08,
                         "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
@@ -405,7 +405,7 @@ def test_goal_baseline_card_surfaces_unavailable_frontier_reasons():
                     "recommended": {
                         "allocation_name": "balanced_progression__moderate__02",
                         "display_name": "平衡推进方案",
-                        "product_adjusted_success_probability": 0.65,
+                        "product_proxy_adjusted_success_probability": 0.65,
                         "product_probability_method": "product_proxy_adjustment_estimate",
                         "expected_terminal_value": 1_030_000.0,
                         "expected_annual_return": 0.061,
@@ -415,7 +415,7 @@ def test_goal_baseline_card_surfaces_unavailable_frontier_reasons():
                     "highest_probability": {
                         "allocation_name": "balanced_progression__moderate__02",
                         "display_name": "平衡推进方案",
-                        "product_adjusted_success_probability": 0.65,
+                        "product_proxy_adjusted_success_probability": 0.65,
                         "product_probability_method": "product_proxy_adjustment_estimate",
                         "expected_terminal_value": 1_030_000.0,
                         "expected_annual_return": 0.061,

@@ -279,9 +279,10 @@ def test_run_goal_solver_emits_dual_probability_and_frontier_diagnostics(goal_so
     assert result.recommended_result.bucket_success_probability == pytest.approx(
         result.recommended_result.success_probability
     )
-    assert result.recommended_result.product_adjusted_success_probability is None
+    assert result.recommended_result.product_proxy_adjusted_success_probability is None
     assert result.recommended_result.product_probability_method == "bucket_only_no_product_proxy_adjustment"
     assert result.recommended_result.implied_required_annual_return is not None
+    assert result.recommended_result.expected_annual_return is not None
     assert result.frontier_analysis is not None
     assert result.frontier_analysis.scenario_status["target_return_priority"]["available"] is False
     assert result.frontier_analysis.scenario_status["drawdown_priority"]["available"] is False
@@ -391,10 +392,11 @@ def test_run_goal_solver_applies_product_proxy_adjustments_when_context_present(
     assert observed_expected_returns[0]["equity_cn"] == pytest.approx(0.08)
     assert observed_expected_returns[1]["equity_cn"] == pytest.approx(0.10)
     assert result.recommended_result.bucket_success_probability == pytest.approx(0.51)
-    assert result.recommended_result.product_adjusted_success_probability == pytest.approx(0.63)
+    assert result.recommended_result.product_proxy_adjusted_success_probability == pytest.approx(0.63)
     assert result.recommended_result.product_probability_method == "product_proxy_adjustment_estimate"
     assert result.recommended_result.success_probability == pytest.approx(0.63)
     assert result.recommended_result.expected_terminal_value == pytest.approx(2_350_000.0)
+    assert result.recommended_result.expected_annual_return is not None
     assert result.recommended_result.risk_summary.max_drawdown_90pct == pytest.approx(0.17)
 
 

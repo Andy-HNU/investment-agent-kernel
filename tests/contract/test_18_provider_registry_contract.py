@@ -74,6 +74,13 @@ def test_historical_dataset_cache_roundtrip_preserves_version_pin(tmp_path):
             "as_of": "2026-03-29",
             "lookback_months": 24,
             "version_id": "fixture_history:2026-03-29:v1",
+            "audit_window": {
+                "start_date": "2024-03-29",
+                "end_date": "2026-03-29",
+                "trading_days": 480,
+                "observed_days": 480,
+                "inferred_days": 0,
+            },
             "return_series": {
                 "equity_cn": [0.01, 0.02, -0.01, 0.03],
                 "bond_cn": [0.002, 0.004, 0.001, 0.003],
@@ -89,6 +96,8 @@ def test_historical_dataset_cache_roundtrip_preserves_version_pin(tmp_path):
     assert reloaded is not None
     assert reloaded.version_id == dataset.version_id
     assert reloaded.return_series == dataset.return_series
+    assert reloaded.audit_window is not None
+    assert reloaded.audit_window.trading_days == 480
 
     expected_returns, volatility, correlation_matrix = summarize_historical_dataset(reloaded)
     assert set(expected_returns) == {"equity_cn", "bond_cn"}

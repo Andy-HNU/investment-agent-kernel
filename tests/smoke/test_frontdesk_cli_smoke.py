@@ -553,6 +553,8 @@ def test_render_frontdesk_summary_surfaces_layer1_probability_and_frontier_field
                     "drawdown_priority_expected_annual_return": "6.10%",
                     "implied_required_annual_return": "8.00%",
                     "product_probability_method": "product_proxy_adjustment_estimate",
+                    "product_probability_disclosure": "当前产品层概率使用代理修正口径，仍不是逐产品独立模拟。",
+                    "why_not_target_return_priority": "no_candidate_meets_required_annual_return",
                 },
                 "frontier_analysis": {
                     "frontier_diagnostics": {
@@ -570,7 +572,7 @@ def test_render_frontdesk_summary_surfaces_layer1_probability_and_frontier_field
             },
             "key_metrics": {
                 "success_probability": "65.00%",
-                "product_adjusted_success_probability": "65.00%",
+                "product_proxy_adjusted_success_probability": "65.00%",
                 "product_probability_method": "product_proxy_adjustment_estimate",
                 "implied_required_annual_return": "8.00%",
                 "expected_annual_return": "6.10%",
@@ -586,8 +588,9 @@ def test_render_frontdesk_summary_surfaces_layer1_probability_and_frontier_field
     assert "expected_annual_return=6.10%" in output
     assert "probability_recommended=平衡推进方案 | success=65.00% | expected_return=6.10%" in output
     assert "probability_highest=冲目标方案 | success=70.00% | expected_return=7.90%" in output
-    assert "probability_target_return= | success= | expected_return= | required_return=8.00%" in output
+    assert "probability_target_return=unavailable | reason=no_candidate_meets_required_annual_return | required_return=8.00%" in output
     assert "probability_drawdown=平衡推进方案 | success=65.00% | expected_return=6.10%" in output
+    assert "probability_method_disclosure=当前产品层概率使用代理修正口径，仍不是逐产品独立模拟。" in output
     assert "frontier_raw_candidate_count=4" in output
     assert "frontier_candidate_families=['balanced_core', 'growth_tilt', 'max_return_unconstrained']" in output
     assert "frontier_binding_constraints=[{'constraint_name': 'required_annual_return', 'reason': 'no_candidate_meets_required_annual_return'}]" in output
