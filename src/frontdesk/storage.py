@@ -179,6 +179,38 @@ class FrontdeskExecutionPlanRecord:
     updated_at: str
 
 
+@dataclass
+class FrontdeskObservedPortfolioRecord:
+    account_profile_id: str
+    snapshot_id: str
+    source_kind: str
+    data_status: str
+    completeness_status: str
+    as_of: str | None
+    total_value: float | None
+    available_cash: float | None
+    weights: dict[str, Any]
+    holdings: list[dict[str, Any]]
+    missing_fields: list[str]
+    audit_window: dict[str, Any] | None
+    source_ref: str | None
+    payload: dict[str, Any]
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class FrontdeskReconciliationStateRecord:
+    account_profile_id: str
+    snapshot_id: str
+    status: str
+    compared_against: str
+    observed_snapshot_id: str | None
+    payload: dict[str, Any]
+    created_at: str
+    updated_at: str
+
+
 def _bool_from_db(value: Any) -> bool | None:
     if value is None:
         return None
@@ -316,6 +348,142 @@ def _execution_plan_record_from_row(row: sqlite3.Row | None) -> FrontdeskExecuti
         superseded_by_plan_id=row["superseded_by_plan_id"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _observed_portfolio_record_from_row(row: sqlite3.Row | None) -> FrontdeskObservedPortfolioRecord | None:
+    if row is None:
+        return None
+    return FrontdeskObservedPortfolioRecord(
+        account_profile_id=row["account_profile_id"],
+        snapshot_id=row["snapshot_id"],
+        source_kind=row["source_kind"],
+        data_status=row["data_status"],
+        completeness_status=row["completeness_status"],
+        as_of=row["as_of"],
+        total_value=row["total_value"],
+        available_cash=row["available_cash"],
+        weights=_json_loads(row["weights_json"]) or {},
+        holdings=list(_json_loads(row["holdings_json"]) or []),
+        missing_fields=list(_json_loads(row["missing_fields_json"]) or []),
+        audit_window=_json_loads(row["audit_window_json"]),
+        source_ref=row["source_ref"],
+        payload=_json_loads(row["payload_json"]) or {},
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _reconciliation_state_record_from_row(row: sqlite3.Row | None) -> FrontdeskReconciliationStateRecord | None:
+    if row is None:
+        return None
+    return FrontdeskReconciliationStateRecord(
+        account_profile_id=row["account_profile_id"],
+        snapshot_id=row["snapshot_id"],
+        status=row["status"],
+        compared_against=row["compared_against"],
+        observed_snapshot_id=row["observed_snapshot_id"],
+        payload=_json_loads(row["payload_json"]) or {},
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _observed_portfolio_record_summary(record: FrontdeskObservedPortfolioRecord | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    return {
+        "account_profile_id": record.account_profile_id,
+        "snapshot_id": record.snapshot_id,
+        "source_kind": record.source_kind,
+        "data_status": record.data_status,
+        "completeness_status": record.completeness_status,
+        "as_of": record.as_of,
+        "total_value": record.total_value,
+        "available_cash": record.available_cash,
+        "weights": dict(record.weights or {}),
+        "holdings": [dict(item) for item in record.holdings or []],
+        "missing_fields": list(record.missing_fields or []),
+        "audit_window": dict(record.audit_window) if record.audit_window is not None else None,
+        "source_ref": record.source_ref,
+        "payload": dict(record.payload or {}),
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+
+
+def _default_reconciliation_state_summary(
+    *,
+    account_profile_id: str,
+    observed_portfolio: FrontdeskObservedPortfolioRecord | None,
+    active_execution_plan: FrontdeskExecutionPlanRecord | None,
+    pending_execution_plan: FrontdeskExecutionPlanRecord | None,
+) -> dict[str, Any]:
+    if observed_portfolio is None:
+        return {
+            "account_profile_id": account_profile_id,
+            "snapshot_id": None,
+            "status": "no_observed_portfolio",
+            "compared_against": "none",
+            "observed_snapshot_id": None,
+            "summary": "no observed_portfolio has been synced yet",
+            "coverage_summary": {
+                "active": None if active_execution_plan is None else {"plan_id": active_execution_plan.plan_id},
+                "pending": None if pending_execution_plan is None else {"plan_id": pending_execution_plan.plan_id},
+                "primary_target": None,
+            },
+            "bucket_deltas": [],
+            "product_deltas": [],
+            "required_actions": ["sync observed_portfolio first"],
+            "blockers": ["no_observed_portfolio"],
+            "notes": [],
+            "created_at": None,
+            "updated_at": None,
+        }
+    compared_against = "both" if active_execution_plan and pending_execution_plan else "active" if active_execution_plan else "pending" if pending_execution_plan else "none"
+    return {
+        "account_profile_id": account_profile_id,
+        "snapshot_id": observed_portfolio.snapshot_id,
+        "status": "pending_user_action",
+        "compared_against": compared_against,
+        "observed_snapshot_id": observed_portfolio.snapshot_id,
+        "summary": "observed_portfolio present but no persisted reconciliation_state yet",
+        "coverage_summary": {
+            "active": None if active_execution_plan is None else {"plan_id": active_execution_plan.plan_id},
+            "pending": None if pending_execution_plan is None else {"plan_id": pending_execution_plan.plan_id},
+            "primary_target": compared_against,
+        },
+        "bucket_deltas": [],
+        "product_deltas": [],
+        "required_actions": ["re-sync observed_portfolio to compute reconciliation"],
+        "blockers": [],
+        "notes": ["reconciliation_state missing; using fallback placeholder"],
+        "created_at": observed_portfolio.created_at,
+        "updated_at": observed_portfolio.updated_at,
+    }
+
+
+def _reconciliation_state_record_summary(
+    record: FrontdeskReconciliationStateRecord | None,
+    *,
+    account_profile_id: str,
+    observed_portfolio: FrontdeskObservedPortfolioRecord | None,
+    active_execution_plan: FrontdeskExecutionPlanRecord | None,
+    pending_execution_plan: FrontdeskExecutionPlanRecord | None,
+) -> dict[str, Any]:
+    if record is not None:
+        payload = dict(record.payload or {})
+        payload.setdefault("account_profile_id", account_profile_id)
+        payload.setdefault("snapshot_id", record.snapshot_id)
+        payload.setdefault("status", record.status)
+        payload.setdefault("compared_against", record.compared_against)
+        payload.setdefault("observed_snapshot_id", record.observed_snapshot_id)
+        return payload
+    return _default_reconciliation_state_summary(
+        account_profile_id=account_profile_id,
+        observed_portfolio=observed_portfolio,
+        active_execution_plan=active_execution_plan,
+        pending_execution_plan=pending_execution_plan,
     )
 
 
@@ -649,6 +817,40 @@ class FrontdeskStore:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS observed_portfolio_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_profile_id TEXT NOT NULL,
+                    snapshot_id TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    data_status TEXT NOT NULL,
+                    completeness_status TEXT NOT NULL,
+                    as_of TEXT,
+                    total_value REAL,
+                    available_cash REAL,
+                    weights_json TEXT NOT NULL,
+                    holdings_json TEXT NOT NULL,
+                    missing_fields_json TEXT NOT NULL,
+                    audit_window_json TEXT,
+                    source_ref TEXT,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(account_profile_id, snapshot_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS reconciliation_state_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_profile_id TEXT NOT NULL,
+                    snapshot_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    compared_against TEXT NOT NULL,
+                    observed_snapshot_id TEXT,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(account_profile_id, snapshot_id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_frontdesk_baselines_account_created
                 ON frontdesk_baselines(account_profile_id, created_at DESC);
 
@@ -663,6 +865,12 @@ class FrontdeskStore:
 
                 CREATE INDEX IF NOT EXISTS idx_execution_feedback_records_account_updated
                 ON execution_feedback_records(account_profile_id, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_observed_portfolio_records_account_updated
+                ON observed_portfolio_records(account_profile_id, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_reconciliation_state_records_account_updated
+                ON reconciliation_state_records(account_profile_id, updated_at DESC);
                 """
             )
 
@@ -978,6 +1186,156 @@ class FrontdeskStore:
             feedback_status=payload["feedback_status"],
             feedback_source=feedback_source,
             payload=payload,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+    def save_observed_portfolio_record(
+        self,
+        *,
+        account_profile_id: str,
+        snapshot_id: str,
+        source_kind: str,
+        data_status: str,
+        completeness_status: str,
+        as_of: str | None,
+        total_value: float | None,
+        available_cash: float | None,
+        weights: dict[str, Any],
+        holdings: list[dict[str, Any]],
+        missing_fields: list[str],
+        audit_window: dict[str, Any] | None,
+        source_ref: str | None,
+        payload: dict[str, Any],
+        created_at: str,
+        updated_at: str,
+    ) -> FrontdeskObservedPortfolioRecord:
+        payload_data = dict(payload or {})
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO observed_portfolio_records(
+                    account_profile_id,
+                    snapshot_id,
+                    source_kind,
+                    data_status,
+                    completeness_status,
+                    as_of,
+                    total_value,
+                    available_cash,
+                    weights_json,
+                    holdings_json,
+                    missing_fields_json,
+                    audit_window_json,
+                    source_ref,
+                    payload_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_profile_id, snapshot_id) DO UPDATE SET
+                    source_kind=excluded.source_kind,
+                    data_status=excluded.data_status,
+                    completeness_status=excluded.completeness_status,
+                    as_of=excluded.as_of,
+                    total_value=excluded.total_value,
+                    available_cash=excluded.available_cash,
+                    weights_json=excluded.weights_json,
+                    holdings_json=excluded.holdings_json,
+                    missing_fields_json=excluded.missing_fields_json,
+                    audit_window_json=excluded.audit_window_json,
+                    source_ref=excluded.source_ref,
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    account_profile_id,
+                    snapshot_id,
+                    source_kind,
+                    data_status,
+                    completeness_status,
+                    as_of,
+                    total_value,
+                    available_cash,
+                    _json_dumps(weights or {}),
+                    _json_dumps(holdings or []),
+                    _json_dumps(missing_fields or []),
+                    _json_dumps(audit_window) if audit_window is not None else None,
+                    source_ref,
+                    _json_dumps(payload_data),
+                    created_at,
+                    updated_at,
+                ),
+            )
+        return FrontdeskObservedPortfolioRecord(
+            account_profile_id=account_profile_id,
+            snapshot_id=snapshot_id,
+            source_kind=source_kind,
+            data_status=data_status,
+            completeness_status=completeness_status,
+            as_of=as_of,
+            total_value=total_value,
+            available_cash=available_cash,
+            weights=dict(weights or {}),
+            holdings=[dict(item) for item in holdings or []],
+            missing_fields=list(missing_fields or []),
+            audit_window=dict(audit_window) if audit_window is not None else None,
+            source_ref=source_ref,
+            payload=payload_data,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+    def save_reconciliation_state_record(
+        self,
+        *,
+        account_profile_id: str,
+        snapshot_id: str,
+        status: str,
+        compared_against: str,
+        observed_snapshot_id: str | None,
+        payload: dict[str, Any],
+        created_at: str,
+        updated_at: str,
+    ) -> FrontdeskReconciliationStateRecord:
+        payload_data = dict(payload or {})
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO reconciliation_state_records(
+                    account_profile_id,
+                    snapshot_id,
+                    status,
+                    compared_against,
+                    observed_snapshot_id,
+                    payload_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_profile_id, snapshot_id) DO UPDATE SET
+                    status=excluded.status,
+                    compared_against=excluded.compared_against,
+                    observed_snapshot_id=excluded.observed_snapshot_id,
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    account_profile_id,
+                    snapshot_id,
+                    status,
+                    compared_against,
+                    observed_snapshot_id,
+                    _json_dumps(payload_data),
+                    created_at,
+                    updated_at,
+                ),
+            )
+        return FrontdeskReconciliationStateRecord(
+            account_profile_id=account_profile_id,
+            snapshot_id=snapshot_id,
+            status=status,
+            compared_against=compared_against,
+            observed_snapshot_id=observed_snapshot_id,
+            payload=payload_data,
             created_at=created_at,
             updated_at=updated_at,
         )
@@ -1335,6 +1693,8 @@ class FrontdeskStore:
             "active_execution_plan": snapshot.get("active_execution_plan"),
             "pending_execution_plan": snapshot.get("pending_execution_plan"),
             "execution_plan_comparison": snapshot.get("execution_plan_comparison"),
+            "observed_portfolio": snapshot.get("observed_portfolio"),
+            "reconciliation_state": snapshot.get("reconciliation_state"),
             "execution_feedback": snapshot.get("execution_feedback"),
             "execution_feedback_summary": snapshot.get("execution_feedback_summary"),
         }
@@ -1548,6 +1908,34 @@ class FrontdeskStore:
             return None
         return records[0]
 
+    def get_latest_observed_portfolio(self, account_profile_id: str) -> FrontdeskObservedPortfolioRecord | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM observed_portfolio_records
+                WHERE account_profile_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (account_profile_id,),
+            ).fetchone()
+        return _observed_portfolio_record_from_row(row)
+
+    def get_latest_reconciliation_state(self, account_profile_id: str) -> FrontdeskReconciliationStateRecord | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM reconciliation_state_records
+                WHERE account_profile_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (account_profile_id,),
+            ).fetchone()
+        return _reconciliation_state_record_from_row(row)
+
     def get_frontdesk_snapshot(self, account_profile_id: str) -> dict[str, Any] | None:
         profile = self.get_user_profile(account_profile_id)
         if profile is None:
@@ -1556,6 +1944,8 @@ class FrontdeskStore:
         latest_run = self.get_latest_run(account_profile_id)
         active_execution_plan = self.get_latest_active_execution_plan(account_profile_id)
         pending_execution_plan = self.get_latest_pending_execution_plan(account_profile_id)
+        observed_portfolio = self.get_latest_observed_portfolio(account_profile_id)
+        reconciliation_state = self.get_latest_reconciliation_state(account_profile_id)
         execution_feedback_summary = self.get_execution_feedback_summary(account_profile_id)
         return {
             "profile": profile,
@@ -1573,6 +1963,14 @@ class FrontdeskStore:
             "active_execution_plan": _execution_plan_record_summary(active_execution_plan),
             "pending_execution_plan": _execution_plan_record_summary(pending_execution_plan),
             "execution_plan_comparison": _compare_execution_plans(active_execution_plan, pending_execution_plan),
+            "observed_portfolio": _observed_portfolio_record_summary(observed_portfolio),
+            "reconciliation_state": _reconciliation_state_record_summary(
+                reconciliation_state,
+                account_profile_id=account_profile_id,
+                observed_portfolio=observed_portfolio,
+                active_execution_plan=active_execution_plan,
+                pending_execution_plan=pending_execution_plan,
+            ),
             "execution_feedback": execution_feedback_summary["latest_feedback"],
             "execution_feedback_summary": execution_feedback_summary,
         }

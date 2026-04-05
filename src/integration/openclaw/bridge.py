@@ -7,12 +7,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from agent.nli_router import Intent, parse_onboarding, parse_status, route
+from agent.nli_router import Intent, parse_onboarding, parse_status, parse_sync_portfolio, route
 from frontdesk.service import (
     DEFAULT_DB_PATH,
+    approve_frontdesk_execution_plan,
+    explain_frontdesk_plan_change,
+    explain_frontdesk_probability,
     load_user_state,
     record_frontdesk_execution_feedback,
-    approve_frontdesk_execution_plan,
+    run_frontdesk_daily_monitor,
+    sync_observed_portfolio,
     run_frontdesk_followup,
     run_frontdesk_onboarding,
 )
@@ -57,6 +61,21 @@ def handle_task(task: str, *, db_path: str | Path = DEFAULT_DB_PATH, now: Option
         )
         invocation = {"tool": "frontdesk.followup.monthly", **args}
         result = dict(summary)
+    elif intent.name == "daily_monitor":
+        args = parse_status(task)
+        summary = run_frontdesk_daily_monitor(account_profile_id=args["account_profile_id"], db_path=db_path)
+        invocation = {"tool": "frontdesk.daily_monitor", **args}
+        result = dict(summary)
+    elif intent.name == "explain_probability":
+        args = parse_status(task)
+        summary = explain_frontdesk_probability(account_profile_id=args["account_profile_id"], db_path=db_path)
+        invocation = {"tool": "frontdesk.explain_probability", **args}
+        result = dict(summary)
+    elif intent.name == "explain_plan_change":
+        args = parse_status(task)
+        summary = explain_frontdesk_plan_change(account_profile_id=args["account_profile_id"], db_path=db_path)
+        invocation = {"tool": "frontdesk.explain_plan_change", **args}
+        result = dict(summary)
     elif intent.name == "approve_plan":
         # approve plan <plan_id> v<version> for user <id>
         plan_id = _extract(r"plan\s+([a-zA-Z0-9_\-]+)", task) or "plan_0"
@@ -83,6 +102,15 @@ def handle_task(task: str, *, db_path: str | Path = DEFAULT_DB_PATH, now: Option
         )
         invocation = {"tool": "frontdesk.feedback", **args, "run_id": run_id, "executed": executed}
         result = dict(summary)
+    elif intent.name == "sync_portfolio":
+        args = parse_sync_portfolio(task)
+        summary = sync_observed_portfolio(
+            account_profile_id=args["account_profile_id"],
+            observed_portfolio=args["observed_portfolio"] or {},
+            db_path=db_path,
+        )
+        invocation = {"tool": "frontdesk.sync_portfolio", **args}
+        result = dict(summary)
     else:
         invocation = {"tool": "unknown"}
         result = {"workflow": "unknown", "status": "unsupported", "note": "intent not recognized"}
@@ -108,4 +136,3 @@ def write_log_record(task: str, *, output: dict[str, Any], log_dir: Path) -> Pat
         f.write(json.dumps({"task": task}, ensure_ascii=False) + "\n")
         f.write(json.dumps(output, ensure_ascii=False) + "\n")
     return path
-

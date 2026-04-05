@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -29,6 +30,14 @@ def _extract_number(pattern: str, text: str) -> Optional[float]:
 
 def route(text: str) -> Intent:
     t = text.strip().lower()
+    if re.search(r"\bsync\s+portfolio\b|\bupdate\s+portfolio\b|\bsync holdings\b", t):
+        return Intent(name="sync_portfolio", confidence=0.9)
+    if re.search(r"\bdaily\s+monitor\b|\bmonitor\b.*\bportfolio\b|\bmonitor\b.*\bposition", t):
+        return Intent(name="daily_monitor", confidence=0.85)
+    if re.search(r"\bexplain\b.*\bprobability\b|\bwhy\b.*\bprobability\b", t):
+        return Intent(name="explain_probability", confidence=0.85)
+    if re.search(r"\bexplain\b.*\bplan\b.*\bchange\b|\bplan diff\b|\bplan change\b", t):
+        return Intent(name="explain_plan_change", confidence=0.85)
     if re.search(r"\bonboard(ing)?\b", t):
         return Intent(name="onboarding", confidence=0.95)
     if re.search(r"\bstatus|show status|how am i doing\b", t):
@@ -74,3 +83,54 @@ def parse_onboarding(text: str) -> dict[str, Any]:
 def parse_status(text: str) -> dict[str, Any]:
     account_profile_id = _extract_first(r"user\s+([a-zA-Z0-9_\-]+)", text) or _extract_first(r"account\s+([a-zA-Z0-9_\-]+)", text) or "user001"
     return {"account_profile_id": account_profile_id}
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    candidate = text[start : end + 1]
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def parse_sync_portfolio(text: str) -> dict[str, Any]:
+    account_profile_id = parse_status(text)["account_profile_id"]
+    payload = _extract_json_object(text) or {}
+    if not payload:
+        total = _extract_number(r"\btotal\s+([0-9,\.]+)", text)
+        cash = _extract_number(r"\bcash\s+([0-9,\.]+)", text)
+        gold = _extract_number(r"\bgold\s+([0-9,\.]+)", text)
+        equity = _extract_number(r"\bequity\s+([0-9,\.]+)", text)
+        bond = _extract_number(r"\bbond\s+([0-9,\.]+)", text)
+        satellite = _extract_number(r"\bsatellite\s+([0-9,\.]+)", text)
+        weights: dict[str, float] = {}
+        if total and total > 0:
+            if equity:
+                weights["equity_cn"] = round(equity / total, 6)
+            if bond:
+                weights["bond_cn"] = round(bond / total, 6)
+            if gold:
+                weights["gold"] = round(gold / total, 6)
+            if cash:
+                weights["cash_liquidity"] = round(cash / total, 6)
+            if satellite:
+                weights["satellite"] = round(satellite / total, 6)
+        payload = {
+            "snapshot_id": f"sync_{account_profile_id}",
+            "source_kind": "manual_json",
+            "total_value": total,
+            "available_cash": cash,
+            "weights": weights,
+            "holdings": [],
+        }
+    return {
+        "account_profile_id": account_profile_id,
+        "observed_portfolio": payload,
+    }

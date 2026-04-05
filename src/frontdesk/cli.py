@@ -8,9 +8,13 @@ from typing import Any, Sequence
 from frontdesk.service import (
     DEFAULT_DB_PATH,
     approve_frontdesk_execution_plan,
+    explain_frontdesk_plan_change,
+    explain_frontdesk_probability,
     load_frontdesk_snapshot,
     load_user_state,
     record_frontdesk_execution_feedback,
+    run_frontdesk_daily_monitor,
+    sync_observed_portfolio,
     run_frontdesk_followup,
     run_frontdesk_onboarding,
 )
@@ -393,6 +397,70 @@ def _render_feedback_block(
     return lines
 
 
+def _render_observed_portfolio_block(observed_portfolio: dict[str, Any] | None) -> list[str]:
+    if not observed_portfolio:
+        return []
+    lines = [
+        "observed_portfolio: "
+        + ", ".join(
+            [
+                f"snapshot_id={observed_portfolio.get('snapshot_id')}",
+                f"source_kind={observed_portfolio.get('source_kind')}",
+                f"completeness_status={observed_portfolio.get('completeness_status')}",
+                f"data_status={observed_portfolio.get('data_status')}",
+                f"total_value={observed_portfolio.get('total_value')}",
+                f"available_cash={observed_portfolio.get('available_cash')}",
+            ]
+        )
+    ]
+    if observed_portfolio.get("missing_fields"):
+        lines.append(
+            "observed_portfolio_missing_fields="
+            + ",".join(str(item) for item in observed_portfolio.get("missing_fields") or [])
+        )
+    if observed_portfolio.get("weights"):
+        lines.append(f"observed_portfolio_weights={observed_portfolio.get('weights')}")
+    return lines
+
+
+def _render_reconciliation_state_block(reconciliation_state: dict[str, Any] | None) -> list[str]:
+    if not reconciliation_state:
+        return []
+    lines = [
+        "reconciliation_state: "
+        + ", ".join(
+            [
+                f"snapshot_id={reconciliation_state.get('snapshot_id')}",
+                f"status={reconciliation_state.get('status')}",
+                f"compared_against={reconciliation_state.get('compared_against')}",
+                f"observed_snapshot_id={reconciliation_state.get('observed_snapshot_id')}",
+            ]
+        )
+    ]
+    coverage = reconciliation_state.get("coverage_summary") or {}
+    if coverage:
+        lines.append(f"reconciliation_plan_coverage={coverage}")
+    if reconciliation_state.get("bucket_deltas"):
+        lines.append(f"reconciliation_bucket_deltas={reconciliation_state.get('bucket_deltas')}")
+    if reconciliation_state.get("product_deltas"):
+        lines.append(f"reconciliation_product_deltas={reconciliation_state.get('product_deltas')}")
+    if reconciliation_state.get("required_actions"):
+        lines.append(
+            "reconciliation_required_actions="
+            + ",".join(str(item) for item in reconciliation_state.get("required_actions") or [])
+        )
+    if reconciliation_state.get("blockers"):
+        lines.append(
+            "reconciliation_blockers="
+            + ",".join(str(item) for item in reconciliation_state.get("blockers") or [])
+        )
+    if reconciliation_state.get("notes"):
+        lines.append("reconciliation_notes=" + "; ".join(str(item) for item in reconciliation_state.get("notes") or []))
+    if reconciliation_state.get("summary"):
+        lines.append(f"reconciliation_summary={reconciliation_state.get('summary')}")
+    return lines
+
+
 def _render_execution_plan_block(
     execution_plan: dict[str, Any] | None,
     *,
@@ -591,6 +659,49 @@ def _render_execution_plan_guidance_block(guidance: dict[str, Any] | None) -> li
     ]
     if guidance.get("headline"):
         lines.append(f"execution_plan_guidance_headline={guidance.get('headline')}")
+    return lines
+
+
+def _render_observed_portfolio_block(observed_portfolio: dict[str, Any] | None) -> list[str]:
+    if not observed_portfolio:
+        return []
+    return [
+        "observed_portfolio: "
+        + ", ".join(
+            [
+                f"snapshot_id={observed_portfolio.get('snapshot_id')}",
+                f"source_kind={observed_portfolio.get('source_kind')}",
+                f"data_status={observed_portfolio.get('data_status')}",
+                f"completeness={observed_portfolio.get('completeness_status')}",
+                f"total_value={observed_portfolio.get('total_value')}",
+                f"available_cash={observed_portfolio.get('available_cash')}",
+            ]
+        ),
+        f"observed_portfolio_weights={observed_portfolio.get('weights')}",
+    ]
+
+
+def _render_reconciliation_state_block(reconciliation_state: dict[str, Any] | None) -> list[str]:
+    if not reconciliation_state:
+        return []
+    lines = [
+        "reconciliation_state: "
+        + ", ".join(
+            [
+                f"snapshot_id={reconciliation_state.get('snapshot_id')}",
+                f"status={reconciliation_state.get('status')}",
+                f"compared_against={reconciliation_state.get('compared_against')}",
+            ]
+        )
+    ]
+    if reconciliation_state.get("required_actions"):
+        lines.append(f"reconciliation_required_actions={reconciliation_state.get('required_actions')}")
+    if reconciliation_state.get("blockers"):
+        lines.append(f"reconciliation_blockers={reconciliation_state.get('blockers')}")
+    if reconciliation_state.get("bucket_deltas"):
+        lines.append(f"reconciliation_bucket_deltas={reconciliation_state.get('bucket_deltas')}")
+    if reconciliation_state.get("product_deltas"):
+        lines.append(f"reconciliation_product_deltas={reconciliation_state.get('product_deltas')}")
     return lines
 
 
@@ -798,6 +909,8 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         lines.extend(_render_execution_plan_block(active_execution_plan, label="active_execution_plan"))
         lines.extend(_render_execution_plan_block(pending_execution_plan, label="pending_execution_plan"))
         lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison") or user_state.get("execution_plan_comparison")))
+        lines.extend(_render_observed_portfolio_block(payload.get("observed_portfolio") or user_state.get("observed_portfolio")))
+        lines.extend(_render_reconciliation_state_block(payload.get("reconciliation_state") or user_state.get("reconciliation_state")))
         lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
         lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
         lines.extend(_render_probability_explanation_block(decision_card))
@@ -842,6 +955,8 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
         lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
         lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
+        lines.extend(_render_observed_portfolio_block((payload.get("user_state") or {}).get("observed_portfolio")))
+        lines.extend(_render_reconciliation_state_block((payload.get("user_state") or {}).get("reconciliation_state")))
         lines.extend(_render_execution_plan_guidance_block((payload.get("user_state") or {}).get("decision_card", {}).get("execution_plan_guidance")))
         lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
         lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
@@ -884,6 +999,8 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
     lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
     lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
+    lines.extend(_render_observed_portfolio_block(payload.get("observed_portfolio")))
+    lines.extend(_render_reconciliation_state_block(payload.get("reconciliation_state")))
     lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
     lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
     lines.extend(_render_probability_explanation_block(decision_card))
@@ -928,6 +1045,8 @@ def render_frontdesk_snapshot(payload: dict[str, Any]) -> str:
     lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
     lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
+    lines.extend(_render_observed_portfolio_block(payload.get("observed_portfolio")))
+    lines.extend(_render_reconciliation_state_block(payload.get("reconciliation_state")))
     lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
     lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
     lines.extend(
@@ -1001,7 +1120,7 @@ def build_parser() -> argparse.ArgumentParser:
     onboard.add_argument("--fee-assumption", choices=["transaction_cost_only", "platform_fee_excluded", "unknown"], default="transaction_cost_only")
     onboard.add_argument("--contribution-commitment-confidence", type=float)
 
-    for name in ("monthly", "event", "quarterly", "show-user"):
+    for name in ("monthly", "event", "quarterly", "show-user", "daily-monitor", "explain-probability", "explain-plan-change"):
         sub = subparsers.add_parser(name, help=f"Run {name} flow using saved SQLite state.")
         _add_common_flags(sub)
         sub.add_argument("--account-profile-id", required=True)
@@ -1033,6 +1152,15 @@ def build_parser() -> argparse.ArgumentParser:
     approve_plan.add_argument("--plan-id", required=True)
     approve_plan.add_argument("--plan-version", type=int, required=True)
     approve_plan.add_argument("--approved-at", help="Optional approval timestamp (ISO-8601).")
+
+    sync_portfolio = subparsers.add_parser("sync-portfolio", help="Sync an observed portfolio snapshot and reconcile it against saved plans.")
+    _add_common_flags(sync_portfolio)
+    sync_portfolio.add_argument("--account-profile-id", required=True)
+    sync_portfolio.add_argument(
+        "--observed-portfolio-json",
+        required=True,
+        help="Observed portfolio JSON file path or inline JSON; also accepts OCR merged_portfolio payloads.",
+    )
 
     return parser
 
@@ -1102,6 +1230,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             plan_id=args.plan_id,
             plan_version=args.plan_version,
             approved_at=args.approved_at,
+            db_path=db_path,
+        )
+    elif args.command == "sync-portfolio":
+        payload = sync_observed_portfolio(
+            account_profile_id=args.account_profile_id,
+            observed_portfolio=_json_object_from_source(
+                args.observed_portfolio_json,
+                option_name="observed-portfolio-json",
+            ),
+            db_path=db_path,
+        )
+    elif args.command == "daily-monitor":
+        payload = run_frontdesk_daily_monitor(
+            account_profile_id=args.account_profile_id,
+            db_path=db_path,
+        )
+    elif args.command == "explain-probability":
+        payload = explain_frontdesk_probability(
+            account_profile_id=args.account_profile_id,
+            db_path=db_path,
+        )
+    elif args.command == "explain-plan-change":
+        payload = explain_frontdesk_plan_change(
+            account_profile_id=args.account_profile_id,
             db_path=db_path,
         )
     else:

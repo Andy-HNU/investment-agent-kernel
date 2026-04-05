@@ -38,6 +38,7 @@ from frontdesk.external_data import (
     merge_external_input_provenance,
     profile_patch_from_external_snapshot,
 )
+from frontdesk.reconciliation import reconcile_observed_portfolio
 from frontdesk.storage import FrontdeskStore
 
 
@@ -830,6 +831,78 @@ def _apply_external_provider_config(
         status,
         warnings,
     )
+
+
+def _normalize_observed_portfolio_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(payload or {})
+    merged_portfolio = normalized.pop("merged_portfolio", None)
+    observed_portfolio = normalized.pop("observed_portfolio", None)
+    if isinstance(merged_portfolio, dict):
+        normalized = _deep_merge(merged_portfolio, normalized)
+        nested_observed = merged_portfolio.get("observed_portfolio")
+        if isinstance(nested_observed, dict):
+            normalized = _deep_merge(normalized, nested_observed)
+    elif isinstance(observed_portfolio, dict):
+        normalized = _deep_merge(normalized, observed_portfolio)
+
+    if not isinstance(normalized.get("weights"), dict):
+        normalized["weights"] = {}
+    if not isinstance(normalized.get("holdings"), list):
+        normalized["holdings"] = []
+    if not isinstance(normalized.get("missing_fields"), list):
+        normalized["missing_fields"] = list(normalized.get("missing_fields") or [])
+    if normalized.get("snapshot_id") is None:
+        normalized["snapshot_id"] = str(
+            normalized.get("observed_snapshot_id")
+            or normalized.get("snapshot_ref")
+            or normalized.get("source_ref")
+            or ""
+        ).strip()
+    if not str(normalized.get("source_kind") or "").strip():
+        normalized["source_kind"] = "ocr_snapshot" if isinstance(merged_portfolio, dict) else "manual_json"
+    if normalized.get("data_status") is None:
+        normalized["data_status"] = "observed"
+    if normalized.get("completeness_status") is None:
+        normalized["completeness_status"] = "partial" if normalized["missing_fields"] else "complete"
+    if normalized.get("as_of") is None and normalized.get("as_of_date") is not None:
+        normalized["as_of"] = str(normalized["as_of_date"])
+    if normalized.get("total_value") is not None:
+        normalized["total_value"] = float(normalized["total_value"])
+    if normalized.get("available_cash") is not None:
+        normalized["available_cash"] = float(normalized["available_cash"])
+    if normalized.get("snapshot_id"):
+        normalized["snapshot_id"] = str(normalized["snapshot_id"])
+    normalized["source_kind"] = str(normalized.get("source_kind") or "manual_json")
+    normalized["data_status"] = str(normalized.get("data_status") or "observed")
+    normalized["completeness_status"] = str(normalized.get("completeness_status") or "partial")
+    normalized["missing_fields"] = [str(item) for item in normalized.get("missing_fields") or [] if str(item).strip()]
+    normalized["holdings"] = [dict(item) for item in normalized.get("holdings") or [] if isinstance(item, dict)]
+    normalized["weights"] = {
+        str(bucket): float(weight)
+        for bucket, weight in dict(normalized.get("weights") or {}).items()
+        if str(bucket).strip() and weight is not None
+    }
+    if not normalized["weights"] and normalized["holdings"]:
+        derived_weights: dict[str, float] = {}
+        for holding in normalized["holdings"]:
+            bucket = str(holding.get("asset_bucket") or "").strip()
+            weight = holding.get("weight")
+            if bucket and weight is not None:
+                try:
+                    derived_weights[bucket] = float(weight)
+                except (TypeError, ValueError):
+                    continue
+        normalized["weights"] = derived_weights
+    if not normalized["snapshot_id"]:
+        normalized["snapshot_id"] = f"observed_{uuid4().hex[:12]}"
+    if normalized.get("source_ref") is not None:
+        normalized["source_ref"] = str(normalized["source_ref"])
+    audit_window = normalized.get("audit_window")
+    if isinstance(audit_window, dict):
+        normalized["audit_window"] = deepcopy(audit_window)
+    else:
+        normalized["audit_window"] = None
+    return normalized
 
 
 def _merge_profile_override(
@@ -1728,6 +1801,93 @@ def run_frontdesk_followup(
     return summary
 
 
+def sync_observed_portfolio(
+    *,
+    account_profile_id: str,
+    observed_portfolio: str | Path | dict[str, Any],
+    db_path: str | Path = DEFAULT_DB_PATH,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    db_path = Path(db_path)
+    store = FrontdeskStore(db_path)
+    store.init_schema()
+
+    snapshot = store.get_frontdesk_snapshot(account_profile_id)
+    if snapshot is None or snapshot.get("profile") is None:
+        raise ValueError(f"no saved frontdesk state for {account_profile_id}")
+    if observed_portfolio is None:
+        raise ValueError("observed_portfolio payload is required")
+
+    source_payload = _mapping_from_source(observed_portfolio, option_name="observed-portfolio-json")
+    if source_payload is None or not source_payload:
+        raise ValueError("observed_portfolio payload is required")
+    normalized = _normalize_observed_portfolio_payload(source_payload)
+    timestamp = created_at or _now_iso()
+    reconciliation_state = reconcile_observed_portfolio(
+        account_profile_id=account_profile_id,
+        observed_portfolio=dict(normalized),
+        active_execution_plan=_as_dict(snapshot.get("active_execution_plan")),
+        pending_execution_plan=_as_dict(snapshot.get("pending_execution_plan")),
+    ).to_dict()
+    observed_record = store.save_observed_portfolio_record(
+        account_profile_id=account_profile_id,
+        snapshot_id=str(normalized["snapshot_id"]),
+        source_kind=str(normalized["source_kind"]),
+        data_status=str(normalized["data_status"]),
+        completeness_status=str(normalized["completeness_status"]),
+        as_of=normalized.get("as_of"),
+        total_value=normalized.get("total_value"),
+        available_cash=normalized.get("available_cash"),
+        weights=dict(normalized.get("weights") or {}),
+        holdings=[dict(item) for item in normalized.get("holdings") or []],
+        missing_fields=[str(item) for item in normalized.get("missing_fields") or []],
+        audit_window=normalized.get("audit_window"),
+        source_ref=normalized.get("source_ref"),
+        payload=normalized,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    reconciliation_state["snapshot_id"] = observed_record.snapshot_id
+    reconciliation_state["observed_snapshot_id"] = observed_record.snapshot_id
+    reconciliation_state["observed_source_kind"] = normalized.get("source_kind")
+    reconciliation_state["observed_completeness_status"] = normalized.get("completeness_status")
+    reconciliation_state["observed_as_of"] = normalized.get("as_of")
+    reconciliation_state["observed_total_value"] = normalized.get("total_value")
+    reconciliation_state["observed_available_cash"] = normalized.get("available_cash")
+    reconciliation_state["observed_weights"] = dict(normalized.get("weights") or {})
+    reconciliation_state["summary"] = (
+        f"plan coverage against {reconciliation_state.get('compared_against')} plan; "
+        f"status={reconciliation_state.get('status')}; snapshot={observed_record.snapshot_id}"
+    )
+    reconciliation_state["created_at"] = timestamp
+    reconciliation_state["updated_at"] = timestamp
+    reconciliation_record = store.save_reconciliation_state_record(
+        account_profile_id=account_profile_id,
+        snapshot_id=observed_record.snapshot_id,
+        status=str(reconciliation_state["status"]),
+        compared_against=str(reconciliation_state["compared_against"]),
+        observed_snapshot_id=observed_record.snapshot_id,
+        payload=reconciliation_state,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    user_state = load_user_state(account_profile_id, db_path=db_path)
+    snapshot_after_sync = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
+    return {
+        "workflow": "sync_portfolio",
+        "workflow_type": "sync_portfolio",
+        "status": "synced",
+        "account_profile_id": account_profile_id,
+        "display_name": str((snapshot or {}).get("profile", {}).get("display_name") or account_profile_id),
+        "db_path": str(db_path),
+        "observed_portfolio": (snapshot_after_sync or {}).get("observed_portfolio") or _observed_portfolio_record_summary(observed_record),
+        "reconciliation_state": (snapshot_after_sync or {}).get("reconciliation_state") or dict(reconciliation_record.payload or {}),
+        "refresh_summary": (snapshot_after_sync or {}).get("refresh_summary"),
+        "user_state": user_state,
+        "snapshot": snapshot_after_sync,
+    }
+
+
 def load_frontdesk_snapshot(
     account_profile_id: str,
     *,
@@ -1797,6 +1957,92 @@ def load_user_state(
         user_state["formal_path_visibility"] = snapshot.get("formal_path_visibility")
         user_state["audit_records"] = snapshot.get("audit_records")
     return user_state
+
+
+def explain_frontdesk_probability(
+    *,
+    account_profile_id: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    snapshot = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
+    user_state = load_user_state(account_profile_id, db_path=db_path)
+    if snapshot is None or user_state is None:
+        raise ValueError(f"no saved frontdesk state for {account_profile_id}")
+    decision_card = dict(user_state.get("decision_card") or {})
+    return {
+        "workflow": "explain_probability",
+        "status": "explained",
+        "account_profile_id": account_profile_id,
+        "probability_explanation": dict(decision_card.get("probability_explanation") or {}),
+        "frontier_analysis": dict(decision_card.get("frontier_analysis") or {}),
+        "key_metrics": dict(decision_card.get("key_metrics") or {}),
+        "formal_path_visibility": snapshot.get("formal_path_visibility"),
+        "refresh_summary": snapshot.get("refresh_summary"),
+        "user_state": user_state,
+    }
+
+
+def explain_frontdesk_plan_change(
+    *,
+    account_profile_id: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    snapshot = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
+    user_state = load_user_state(account_profile_id, db_path=db_path)
+    if snapshot is None or user_state is None:
+        raise ValueError(f"no saved frontdesk state for {account_profile_id}")
+    decision_card = dict(user_state.get("decision_card") or {})
+    return {
+        "workflow": "explain_plan_change",
+        "status": "explained",
+        "account_profile_id": account_profile_id,
+        "active_execution_plan": snapshot.get("active_execution_plan"),
+        "pending_execution_plan": snapshot.get("pending_execution_plan"),
+        "execution_plan_comparison": snapshot.get("execution_plan_comparison"),
+        "execution_plan_guidance": dict(decision_card.get("execution_plan_guidance") or {}),
+        "formal_path_visibility": snapshot.get("formal_path_visibility"),
+        "refresh_summary": snapshot.get("refresh_summary"),
+        "user_state": user_state,
+    }
+
+
+def run_frontdesk_daily_monitor(
+    *,
+    account_profile_id: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    snapshot = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
+    user_state = load_user_state(account_profile_id, db_path=db_path)
+    if snapshot is None or user_state is None:
+        raise ValueError(f"no saved frontdesk state for {account_profile_id}")
+    plan = snapshot.get("pending_execution_plan") or snapshot.get("active_execution_plan") or {}
+    maintenance_policy = dict(plan.get("maintenance_policy_summary") or {})
+    monitoring_actions: list[dict[str, Any]] = []
+    for item in list(plan.get("items") or []):
+        payload = dict(item or {})
+        monitoring_actions.append(
+            {
+                "asset_bucket": payload.get("asset_bucket"),
+                "primary_product_id": payload.get("primary_product_id"),
+                "trade_direction": payload.get("trade_direction"),
+                "initial_trade_amount": payload.get("initial_trade_amount"),
+                "deferred_trade_amount": payload.get("deferred_trade_amount"),
+                "trigger_conditions": list(payload.get("trigger_conditions") or []),
+            }
+        )
+    monitoring_status = "monitoring_ready" if monitoring_actions else "no_monitorable_actions"
+    return {
+        "workflow": "daily_monitor",
+        "status": monitoring_status,
+        "account_profile_id": account_profile_id,
+        "monitoring_actions": monitoring_actions,
+        "maintenance_policy_summary": maintenance_policy,
+        "observed_portfolio": snapshot.get("observed_portfolio"),
+        "reconciliation_state": snapshot.get("reconciliation_state"),
+        "formal_path_visibility": snapshot.get("formal_path_visibility"),
+        "refresh_summary": snapshot.get("refresh_summary"),
+        "user_state": user_state,
+    }
 
 
 def record_frontdesk_execution_feedback(
