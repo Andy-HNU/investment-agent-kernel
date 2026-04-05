@@ -60,6 +60,14 @@
     - demo/test-only 内容必须与正式路径隔离
     - 正式路径判定与数据状态标签必须可审计
 
+- `handoff/CODEX_v1.2_patch_product_simulation_universe_explanation_2026-04-06.md`
+  - `v1.2` 后续核心补丁任务地图
+  - 覆盖：
+    - 逐产品独立模拟
+    - 全市场产品宇宙
+    - 估值链 / 政策新闻链入 kernel
+    - 成功率解释重构
+
 - `handoff/CODEX_v1.1_task_map_2026-04-02.md`
   - `v1.1` 阶段正式执行地图
   - 当前保留作上一版本历史执行参考
