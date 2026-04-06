@@ -38,6 +38,214 @@ def _json_loads(value: str | None) -> Any:
     return json.loads(value)
 
 
+_PROXY_SPEC_FIELDS = (
+    "product_id",
+    "proxy_kind",
+    "proxy_ref",
+    "confidence",
+    "confidence_data_status",
+    "confidence_disclosure",
+    "source_ref",
+    "data_status",
+    "as_of",
+)
+_PROXY_SPEC_SAMPLE_LIMIT = 24
+_ALTERNATE_PRODUCT_ID_SAMPLE_LIMIT = 24
+
+
+def _compact_product_proxy_specs(specs: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    normalized: list[dict[str, Any]] = []
+    data_statuses: set[str] = set()
+    confidence_statuses: set[str] = set()
+    for item in list(specs or []):
+        payload = dict(item or {})
+        compact = {field: payload.get(field) for field in _PROXY_SPEC_FIELDS if payload.get(field) is not None}
+        if compact.get("data_status"):
+            data_statuses.add(str(compact["data_status"]))
+        if compact.get("confidence_data_status"):
+            confidence_statuses.add(str(compact["confidence_data_status"]))
+        normalized.append(compact)
+    if not normalized:
+        return [], None
+    summary = {
+        "count": len(normalized),
+        "sample_count": min(len(normalized), _PROXY_SPEC_SAMPLE_LIMIT),
+        "data_statuses": sorted(data_statuses),
+        "confidence_data_statuses": sorted(confidence_statuses),
+        "truncated": len(normalized) > _PROXY_SPEC_SAMPLE_LIMIT,
+    }
+    return normalized[:_PROXY_SPEC_SAMPLE_LIMIT], summary
+
+
+def _compact_execution_plan_like(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not payload:
+        return {}
+    compact = dict(payload)
+    compact.pop("runtime_candidates", None)
+
+    proxy_specs, proxy_summary = _compact_product_proxy_specs(list(compact.get("product_proxy_specs") or []))
+    if proxy_specs:
+        compact["product_proxy_specs"] = proxy_specs
+    else:
+        compact.pop("product_proxy_specs", None)
+    if proxy_summary:
+        compact["product_proxy_specs_summary"] = proxy_summary
+
+    compact_items: list[dict[str, Any]] = []
+    for item in list(compact.get("items") or []):
+        rendered = dict(item or {})
+        alternate_products = list(rendered.get("alternate_products") or [])
+        if alternate_products:
+            rendered["alternate_product_count"] = len(alternate_products)
+        rendered.pop("alternate_products", None)
+        alternate_ids = list(rendered.get("alternate_product_ids") or [])
+        if len(alternate_ids) > _ALTERNATE_PRODUCT_ID_SAMPLE_LIMIT:
+            rendered["alternate_product_count"] = len(alternate_ids)
+            rendered["alternate_product_ids"] = alternate_ids[:_ALTERNATE_PRODUCT_ID_SAMPLE_LIMIT]
+        compact_items.append(rendered)
+    if compact_items:
+        compact["items"] = compact_items
+        compact["item_count"] = len(compact_items)
+    return compact
+
+
+def _compact_product_universe_result(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not payload:
+        return {}
+    compact = dict(payload)
+    runtime_candidates = list(compact.get("runtime_candidates") or [])
+    items = list(compact.get("items") or [])
+    products = dict(compact.get("products") or {})
+    if runtime_candidates and compact.get("runtime_candidate_count") is None:
+        compact["runtime_candidate_count"] = len(runtime_candidates)
+    if items and compact.get("item_count") is None:
+        compact["item_count"] = len(items)
+    if products and compact.get("product_count") is None:
+        compact["product_count"] = len(products)
+    compact.pop("runtime_candidates", None)
+    compact.pop("items", None)
+    compact.pop("products", None)
+    return compact
+
+
+def _compact_product_valuation_result(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not payload:
+        return {}
+    compact = dict(payload)
+    products = dict(compact.get("products") or {})
+    if products and compact.get("product_count") is None:
+        compact["product_count"] = len(products)
+    compact.pop("products", None)
+    return compact
+
+
+def _compact_historical_dataset(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not payload:
+        return {}
+    compact = dict(payload)
+    return_series = dict(compact.get("return_series") or {})
+    if return_series and compact.get("series_count") is None:
+        compact["series_count"] = len(return_series)
+    compact.pop("return_series", None)
+    return compact
+
+
+def _compact_snapshot_bundle(bundle: dict[str, Any] | None) -> dict[str, Any]:
+    if not bundle:
+        return {}
+    compact = dict(bundle)
+    market = dict(compact.get("market") or {})
+    if market:
+        if market.get("product_universe_result") is not None:
+            market["product_universe_result"] = _compact_product_universe_result(
+                dict(market.get("product_universe_result") or {})
+            )
+        if market.get("product_valuation_result") is not None:
+            market["product_valuation_result"] = _compact_product_valuation_result(
+                dict(market.get("product_valuation_result") or {})
+            )
+        if market.get("valuation_result") is not None:
+            market["valuation_result"] = _compact_product_valuation_result(
+                dict(market.get("valuation_result") or {})
+            )
+        if market.get("historical_dataset") is not None:
+            market["historical_dataset"] = _compact_historical_dataset(
+                dict(market.get("historical_dataset") or {})
+            )
+        compact["market"] = market
+    if compact.get("historical_dataset_metadata") is not None:
+        compact["historical_dataset_metadata"] = _compact_historical_dataset(
+            dict(compact.get("historical_dataset_metadata") or {})
+        )
+    return compact
+
+
+def _compact_result_payload_for_persistence(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not payload:
+        return {}
+    compact = dict(payload)
+    if compact.get("decision_card") is not None:
+        decision_card = dict(compact.get("decision_card") or {})
+        execution_summary = dict(decision_card.get("execution_plan_summary") or {})
+        if execution_summary:
+            decision_card["execution_plan_summary"] = _compact_execution_plan_like(execution_summary)
+        compact["decision_card"] = decision_card
+    if compact.get("card_build_input") is not None:
+        card_build_input = dict(compact.get("card_build_input") or {})
+        execution_summary = dict(card_build_input.get("execution_plan_summary") or {})
+        if execution_summary:
+            card_build_input["execution_plan_summary"] = _compact_execution_plan_like(execution_summary)
+        compact["card_build_input"] = card_build_input
+    if compact.get("execution_plan") is not None:
+        compact["execution_plan_summary"] = _compact_execution_plan_like(dict(compact.get("execution_plan") or {}))
+        compact.pop("execution_plan", None)
+    if compact.get("snapshot_bundle") is not None:
+        compact["snapshot_bundle_summary"] = _compact_snapshot_bundle(dict(compact.get("snapshot_bundle") or {}))
+        compact.pop("snapshot_bundle", None)
+    persistence_plan = dict(compact.get("persistence_plan") or {})
+    artifact_records = dict(persistence_plan.get("artifact_records") or {})
+    if artifact_records:
+        compact_records: dict[str, Any] = {}
+        execution_plan_record = dict(artifact_records.get("execution_plan") or {})
+        if execution_plan_record:
+            compact_records["execution_plan"] = {
+                "plan_id": execution_plan_record.get("plan_id"),
+                "plan_version": execution_plan_record.get("plan_version"),
+                "source_run_id": execution_plan_record.get("source_run_id"),
+                "source_allocation_id": execution_plan_record.get("source_allocation_id"),
+                "status": execution_plan_record.get("status"),
+                "payload": _compact_execution_plan_like(dict(execution_plan_record.get("payload") or {})),
+            }
+        snapshot_bundle_record = dict(artifact_records.get("snapshot_bundle") or {})
+        if snapshot_bundle_record:
+            compact_records["snapshot_bundle"] = {
+                "bundle_id": snapshot_bundle_record.get("bundle_id"),
+                "payload": _compact_snapshot_bundle(dict(snapshot_bundle_record.get("payload") or {})),
+            }
+        decision_card_record = dict(artifact_records.get("decision_card") or {})
+        if decision_card_record:
+            compact_records["decision_card"] = {
+                "run_id": decision_card_record.get("run_id"),
+                "payload": dict(decision_card_record.get("payload") or {}),
+            }
+        compact["persistence_summary"] = {
+            "artifact_record_keys": sorted(compact_records),
+            "artifact_records": compact_records,
+        }
+        compact.pop("persistence_plan", None)
+    return compact
+
+
+def _compact_decision_card_for_persistence(decision_card: dict[str, Any] | None) -> dict[str, Any]:
+    if not decision_card:
+        return {}
+    compact = dict(decision_card)
+    execution_summary = dict(compact.get("execution_plan_summary") or {})
+    if execution_summary:
+        compact["execution_plan_summary"] = _compact_execution_plan_like(execution_summary)
+    return compact
+
+
 def _normalize_input_provenance(input_provenance: dict[str, Any] | None) -> dict[str, Any]:
     if not input_provenance:
         return _empty_input_provenance()
@@ -254,6 +462,8 @@ def _execution_feedback_payload(
 def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     if not payload:
         return None
+    proxy_specs = list(payload.get("product_proxy_specs") or [])
+    proxy_summary = dict(payload.get("product_proxy_specs_summary") or {})
     items = list(payload.get("items") or [])
     breakdown = dict(payload.get("candidate_filter_breakdown") or {})
     item_summaries: list[dict[str, Any]] = []
@@ -295,7 +505,8 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "superseded_by_plan_id": payload.get("superseded_by_plan_id"),
         "registry_candidate_count": payload.get("registry_candidate_count"),
         "runtime_candidate_count": payload.get("runtime_candidate_count"),
-        "product_proxy_specs": list(payload.get("product_proxy_specs") or []),
+        "product_proxy_specs": proxy_specs,
+        "product_proxy_specs_summary": proxy_summary,
         "proxy_universe_summary": dict(payload.get("proxy_universe_summary") or {}),
         "execution_realism_summary": dict(payload.get("execution_realism_summary") or {}),
         "maintenance_policy_summary": dict(payload.get("maintenance_policy_summary") or {}),
@@ -343,7 +554,7 @@ def _execution_plan_record_from_row(row: sqlite3.Row | None) -> FrontdeskExecuti
         source_allocation_id=row["source_allocation_id"],
         status=row["status"],
         confirmation_required=bool(row["confirmation_required"]),
-        payload=_json_loads(row["payload_json"]) or {},
+        payload=_compact_execution_plan_like(_json_loads(row["payload_json"]) or {}),
         approved_at=row["approved_at"],
         superseded_by_plan_id=row["superseded_by_plan_id"],
         created_at=row["created_at"],
@@ -1036,7 +1247,7 @@ class FrontdeskStore:
         approved_at: str | None = None,
         superseded_by_plan_id: str | None = None,
     ) -> FrontdeskExecutionPlanRecord:
-        payload_data = dict(payload or {})
+        payload_data = _compact_execution_plan_like(dict(payload or {}))
         resolved_approved_at = approved_at if approved_at is not None else payload_data.get("approved_at")
         resolved_superseded_by_plan_id = (
             superseded_by_plan_id
@@ -1385,6 +1596,7 @@ class FrontdeskStore:
         normalized = _normalize_input_provenance(input_provenance)
         decision_card_payload = dict(decision_card)
         decision_card_payload["input_provenance"] = normalized
+        decision_card_payload = _compact_decision_card_for_persistence(decision_card_payload)
         result_payload_with_provenance = dict(result_payload)
         result_payload_with_provenance["decision_card"] = decision_card_payload
         card_build_input = dict(result_payload_with_provenance.get("card_build_input") or {})
@@ -1409,17 +1621,18 @@ class FrontdeskStore:
             execution_plan_summary["comparison_change_level"] = comparison.get("change_level")
             card_build_input["execution_plan_summary"] = execution_plan_summary
             result_payload_with_provenance["card_build_input"] = card_build_input
+        persisted_result_payload = _compact_result_payload_for_persistence(result_payload_with_provenance)
         decision_card.clear()
         decision_card.update(decision_card_payload)
         result_payload.clear()
-        result_payload.update(result_payload_with_provenance)
+        result_payload.update(persisted_result_payload)
         self.save_workflow_run(
             account_profile_id=account_profile_id,
             run_id=run_id,
             workflow_type=workflow_type,
             status=status,
             decision_card=decision_card_payload,
-            result_payload=result_payload_with_provenance,
+            result_payload=persisted_result_payload,
             created_at=created_at,
         )
         self.save_decision_card(
@@ -1466,10 +1679,12 @@ class FrontdeskStore:
         )
         decision_card = dict(result_payload.get("decision_card") or {})
         decision_card["input_provenance"] = normalized_provenance
+        decision_card = _compact_decision_card_for_persistence(decision_card)
         result_payload["decision_card"] = decision_card
         card_build_input = dict(result_payload.get("card_build_input") or {})
         card_build_input["input_provenance"] = normalized_provenance
         result_payload["card_build_input"] = card_build_input
+        persisted_result_payload = _compact_result_payload_for_persistence(result_payload)
 
         self.upsert_user_profile(
             account_profile_id=account_profile_id,
@@ -1502,7 +1717,7 @@ class FrontdeskStore:
                     account_profile_id,
                     result_payload["run_id"],
                     _json_dumps(normalized_provenance),
-                    _json_dumps(result_payload),
+                    _json_dumps(persisted_result_payload),
                     created_at,
                 ),
             )
@@ -1519,7 +1734,7 @@ class FrontdeskStore:
                 goal_solver_output=result_payload.get("goal_solver_output") or {},
                 decision_card=decision_card,
                 input_provenance=normalized_provenance,
-                result_payload=result_payload,
+                result_payload=persisted_result_payload,
                 created_at=created_at,
             )
 
@@ -1739,9 +1954,9 @@ class FrontdeskStore:
             workflow_type=row["workflow_type"],
             goal_solver_input=_json_loads(row["goal_solver_input_json"]) or {},
             goal_solver_output=_json_loads(row["goal_solver_output_json"]) or {},
-            decision_card=_json_loads(row["decision_card_json"]) or {},
+            decision_card=_compact_decision_card_for_persistence(_json_loads(row["decision_card_json"]) or {}),
             input_provenance=_json_loads(row["input_provenance_json"]) or {},
-            result_payload=_json_loads(row["result_payload_json"]) or {},
+            result_payload=_compact_result_payload_for_persistence(_json_loads(row["result_payload_json"]) or {}),
             created_at=row["created_at"],
         )
 
@@ -1764,8 +1979,8 @@ class FrontdeskStore:
             "run_id": row["run_id"],
             "workflow_type": row["workflow_type"],
             "status": row["status"],
-            "decision_card": _json_loads(row["decision_card_json"]) or {},
-            "result_payload": _json_loads(row["result_payload_json"]) or {},
+            "decision_card": _compact_decision_card_for_persistence(_json_loads(row["decision_card_json"]) or {}),
+            "result_payload": _compact_result_payload_for_persistence(_json_loads(row["result_payload_json"]) or {}),
             "created_at": row["created_at"],
         }
 

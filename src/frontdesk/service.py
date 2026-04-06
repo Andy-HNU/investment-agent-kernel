@@ -1954,7 +1954,6 @@ def sync_observed_portfolio(
         "reconciliation_state": (snapshot_after_sync or {}).get("reconciliation_state") or dict(reconciliation_record.payload or {}),
         "refresh_summary": (snapshot_after_sync or {}).get("refresh_summary"),
         "user_state": user_state,
-        "snapshot": snapshot_after_sync,
     }
 
 
