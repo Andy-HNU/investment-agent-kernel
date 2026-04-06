@@ -426,6 +426,7 @@ def test_goal_baseline_card_surfaces_product_independent_probability_disclosure(
     )
 
     assert card["key_metrics"]["product_independent_success_probability"] == "68.00%"
+    assert card["key_metrics"]["product_proxy_adjusted_success_probability"] == "64.00%"
     assert card["probability_explanation"]["product_probability_method"] == "product_independent_path"
     assert "逐产品独立路径" in card["probability_explanation"]["product_probability_disclosure"]
     assert card["probability_explanation"]["difficulty_source"] == "constraint_binding"

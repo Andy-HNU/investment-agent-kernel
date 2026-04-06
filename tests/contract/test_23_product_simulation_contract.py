@@ -117,6 +117,7 @@ def test_run_goal_solver_emits_product_independent_probability_when_series_prese
                         "observed_end_date": "2026-04-03",
                         "observed_points": 250,
                         "inferred_points": 0,
+                        "observation_dates": ["2025-01-03", "2025-01-06", "2025-01-07", "2025-01-08"],
                         "return_series": [0.01, -0.005, 0.007, 0.003],
                     },
                     {
@@ -130,6 +131,7 @@ def test_run_goal_solver_emits_product_independent_probability_when_series_prese
                         "observed_end_date": "2026-04-03",
                         "observed_points": 250,
                         "inferred_points": 0,
+                        "observation_dates": ["2025-01-03", "2025-01-06", "2025-01-07", "2025-01-08"],
                         "return_series": [0.002, 0.001, 0.0015, 0.0005],
                     },
                 ],
@@ -188,4 +190,86 @@ def test_run_goal_solver_emits_product_independent_probability_when_series_prese
     assert result.recommended_result.success_probability == pytest.approx(0.68)
     assert result.recommended_result.expected_terminal_value == pytest.approx(2_480_000.0)
     assert result.recommended_result.risk_summary.max_drawdown_90pct == pytest.approx(0.18)
+    assert result.frontier_analysis is not None
+    assert result.frontier_analysis.recommended.product_independent_success_probability == pytest.approx(0.68)
+    assert result.frontier_analysis.highest_probability.product_independent_success_probability == pytest.approx(0.68)
 
+
+@pytest.mark.contract
+def test_run_goal_solver_prefers_product_independent_probability_for_frontier_ranking(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "balanced",
+            "weights": {"equity_cn": 0.55, "bond_cn": 0.30, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.12,
+            "description": "balanced candidate",
+        },
+        {
+            "name": "growth",
+            "weights": {"equity_cn": 0.70, "bond_cn": 0.15, "gold": 0.05, "satellite": 0.10},
+            "complexity_score": 0.18,
+            "description": "growth candidate",
+        },
+    ]
+    solver_input["candidate_product_contexts"] = {
+        "balanced": {
+            "allocation_name": "balanced",
+            "product_probability_method": "product_independent_path",
+            "product_simulation_input": {
+                "frequency": "daily",
+                "simulation_method": "product_independent_path",
+                "products": [
+                    {
+                        "product_id": "eq_bal",
+                        "asset_bucket": "equity_cn",
+                        "target_weight": 0.55,
+                        "return_series": [0.01, 0.01],
+                        "observation_dates": ["2025-01-03", "2025-01-06"],
+                    }
+                ],
+            },
+        },
+        "growth": {
+            "allocation_name": "growth",
+            "product_probability_method": "product_proxy_adjustment_estimate",
+        },
+    }
+
+    def _fake_run_monte_carlo(weights, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        equity_weight = float(weights.get("equity_cn", 0.0))
+        probability = 0.55 if equity_weight > 0.60 else 0.50
+        return (
+            probability,
+            {"expected_terminal_value": 2_000_000.0 + probability * 100_000.0},
+            RiskSummary(
+                max_drawdown_90pct=0.20,
+                terminal_value_tail_mean_95=1_500_000.0,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.08,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+    monkeypatch.setattr(
+        goal_solver_engine,
+        "_run_product_independent_monte_carlo",
+        lambda **_kwargs: (
+            0.90,
+            {"expected_terminal_value": 2_900_000.0},
+            RiskSummary(
+                max_drawdown_90pct=0.18,
+                terminal_value_tail_mean_95=2_000_000.0,
+                shortfall_probability=0.10,
+                terminal_shortfall_p5_vs_initial=0.05,
+            ),
+        ),
+    )
+
+    result = run_goal_solver(solver_input)
+
+    assert result.recommended_allocation.name == "balanced"
+    assert result.recommended_result.product_independent_success_probability == pytest.approx(0.90)
+    assert result.frontier_analysis is not None
+    assert result.frontier_analysis.highest_probability.allocation_name == "balanced"
+    assert result.frontier_diagnostics["frontier_max_effective_success_probability"] == pytest.approx(0.90)

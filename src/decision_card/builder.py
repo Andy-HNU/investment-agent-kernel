@@ -157,6 +157,14 @@ def _product_layer_success_value(data: dict[str, Any]) -> Any:
     return None
 
 
+def _product_proxy_success_value(data: dict[str, Any]) -> Any:
+    for key in ("product_proxy_adjusted_success_probability", "product_adjusted_success_probability"):
+        value = data.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def _product_probability_disclosure(probability_method: str) -> str:
     if probability_method == "product_independent_path":
         return "当前产品层概率使用逐产品独立路径估计，但仍建立在有限历史覆盖与代理补齐约束上。"
@@ -433,13 +441,7 @@ def _build_goal_candidate_options(inp: DecisionCardBuildInput, goal_output: dict
             max(
                 metrics_pool,
                 key=lambda item: _coalesce_metric(
-                    item.get(
-                        "product_proxy_adjusted_success_probability",
-                        item.get(
-                            "product_adjusted_success_probability",
-                            item.get("bucket_success_probability", item.get("success_probability")),
-                        ),
-                    ),
+                    _product_layer_success_value(_obj(item)),
                     float("-inf"),
                 ),
             ).get("allocation_name")
@@ -497,7 +499,7 @@ def _build_goal_candidate_options(inp: DecisionCardBuildInput, goal_output: dict
             result.get("product_independent_success_probability")
         )
         product_proxy_adjusted_success_probability = _percent_metric(
-            _product_layer_success_value(_obj(result))
+            _product_proxy_success_value(_obj(result))
         )
         product_probability_method = _metric(result.get("product_probability_method")) or "bucket_only_no_product_proxy_adjustment"
         implied_required_annual_return = _percent_metric(result.get("implied_required_annual_return"))
@@ -604,7 +606,7 @@ def _frontier_scenario(
             data.get("product_independent_success_probability")
         ),
         "product_proxy_adjusted_success_probability": _percent_metric(
-            _product_layer_success_value(data)
+            _product_proxy_success_value(data)
         ),
         "product_probability_method": _metric(data.get("product_probability_method"))
         or "bucket_only_no_product_proxy_adjustment",
@@ -1421,7 +1423,7 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
                 result.get("product_independent_success_probability")
             ),
             "product_proxy_adjusted_success_probability": _percent_metric(
-                _product_layer_success_value(result)
+                _product_proxy_success_value(result)
             ),
             "product_probability_method": _metric(result.get("product_probability_method"))
             or "bucket_only_no_product_proxy_adjustment",
@@ -1563,7 +1565,7 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
                 result.get("product_independent_success_probability")
             ),
             "product_proxy_adjusted_success_probability": _percent_metric(
-                _product_layer_success_value(result)
+                _product_proxy_success_value(result)
             ),
             "product_probability_method": _metric(result.get("product_probability_method"))
             or "bucket_only_no_product_proxy_adjustment",

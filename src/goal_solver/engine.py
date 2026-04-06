@@ -129,6 +129,11 @@ def _goal_solver_input_from_any(value: GoalSolverInput | dict[str, Any]) -> Goal
                             asset_bucket=str(item.get("asset_bucket") or ""),
                             target_weight=float(item.get("target_weight", 0.0)),
                             return_series=[float(value) for value in list(item.get("return_series") or [])],
+                            observation_dates=[
+                                str(value)
+                                for value in list(item.get("observation_dates") or [])
+                                if str(value).strip()
+                            ],
                             source_ref=(
                                 str(item.get("source_ref"))
                                 if item.get("source_ref") is not None
@@ -253,6 +258,9 @@ def _project_terminal_value(
 
 
 def _effective_success_probability(result: SuccessProbabilityResult) -> float:
+    independent = result.product_independent_success_probability
+    if independent is not None:
+        return float(independent)
     adjusted = result.product_proxy_adjusted_success_probability
     if adjusted is not None:
         return float(adjusted)
@@ -566,11 +574,34 @@ def _portfolio_return_series_from_products(
     series_entries = [item for item in simulation_input.products if item.return_series and item.target_weight > 0.0]
     if not series_entries:
         return [], simulation_input.frequency or "daily"
-    min_len = min(len(item.return_series) for item in series_entries)
-    if min_len <= 1:
-        return [], simulation_input.frequency or "daily"
     total_weight = sum(float(item.target_weight) for item in series_entries)
     if total_weight <= 0.0:
+        return [], simulation_input.frequency or "daily"
+    dated_entries = [
+        item
+        for item in series_entries
+        if item.observation_dates and len(item.observation_dates) == len(item.return_series)
+    ]
+    if len(dated_entries) == len(series_entries):
+        common_dates = set(dated_entries[0].observation_dates)
+        for item in dated_entries[1:]:
+            common_dates &= set(item.observation_dates)
+        ordered_dates = [date for date in dated_entries[0].observation_dates if date in common_dates]
+        if ordered_dates:
+            aligned_by_product = [
+                {date: float(ret) for date, ret in zip(item.observation_dates, item.return_series)}
+                for item in dated_entries
+            ]
+            portfolio_returns: list[float] = []
+            for date in ordered_dates:
+                period_return = 0.0
+                for item, aligned in zip(dated_entries, aligned_by_product):
+                    period_return += float(item.target_weight) * aligned[date]
+                portfolio_returns.append(period_return / total_weight)
+            if len(portfolio_returns) > 1:
+                return portfolio_returns, simulation_input.frequency or "daily"
+    min_len = min(len(item.return_series) for item in series_entries)
+    if min_len <= 1:
         return [], simulation_input.frequency or "daily"
     portfolio_returns: list[float] = []
     for idx in range(-min_len, 0):
@@ -798,6 +829,7 @@ def _build_frontier_scenario(
         weights=dict(result.weights),
         success_probability=result.success_probability,
         product_proxy_adjusted_success_probability=result.product_proxy_adjusted_success_probability,
+        product_independent_success_probability=result.product_independent_success_probability,
         product_probability_method=result.product_probability_method,
         expected_terminal_value=result.expected_terminal_value,
         max_drawdown_90pct=result.risk_summary.max_drawdown_90pct,

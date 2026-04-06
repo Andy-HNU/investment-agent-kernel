@@ -136,6 +136,7 @@ class ProductSimulationSeries:
     asset_bucket: str
     target_weight: float
     return_series: list[float] = field(default_factory=list)
+    observation_dates: list[str] = field(default_factory=list)
     source_ref: str | None = None
     data_status: str = "manual_annotation"
     frequency: str = "daily"

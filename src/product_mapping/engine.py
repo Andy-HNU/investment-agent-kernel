@@ -963,6 +963,13 @@ def _product_return_series_from_rows(rows: list[dict[str, Any]]) -> list[float]:
     return [(closes[idx] / closes[idx - 1]) - 1.0 for idx in range(1, len(closes))]
 
 
+def _product_observation_dates_from_rows(rows: list[dict[str, Any]]) -> list[str]:
+    dates = [str(item.get("date")).strip() for item in rows if item.get("close") is not None and item.get("date")]
+    if len(dates) < 2:
+        return []
+    return dates[1:]
+
+
 def _build_product_simulation_input(
     items: list[ExecutionPlanItem],
     *,
@@ -1004,6 +1011,7 @@ def _build_product_simulation_input(
         return_series = _product_return_series_from_rows(rows)
         if not return_series:
             continue
+        observation_dates = _product_observation_dates_from_rows(rows)
         observed_count += 1
         products.append(
             {
@@ -1011,6 +1019,7 @@ def _build_product_simulation_input(
                 "asset_bucket": item.asset_bucket,
                 "target_weight": float(item.target_weight or 0.0),
                 "return_series": return_series,
+                "observation_dates": observation_dates,
                 "source_ref": str(used_pin.source_ref or pin.source_ref),
                 "data_status": (
                     DataStatus.OBSERVED.value
