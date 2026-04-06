@@ -68,6 +68,13 @@
     - 估值链 / 政策新闻链入 kernel
     - 成功率解释重构
 
+- `handoff/CODEX_v1.2_three_layer_acceptance_summary_2026-04-06.md`
+  - `v1.2` 三层总验收汇总
+  - 汇总：
+    - Layer 1 / Layer 2 / Layer 3 的通过结论
+    - 当前残余边界
+    - 合主干前判定
+
 - `handoff/CODEX_v1.1_task_map_2026-04-02.md`
   - `v1.1` 阶段正式执行地图
   - 当前保留作上一版本历史执行参考
