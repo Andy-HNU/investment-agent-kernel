@@ -189,6 +189,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_v2_layers():
     assert explanation["constraint_contributions"][0]["name"] == "required_annual_return"
     assert explanation["constraint_contributions"][0]["is_binding"] is True
     assert explanation["evidence_summary"]["product_probability_method"] == "product_independent_path"
+    assert explanation["formal_path_evidence"]["formal_path_status"] == "ok"
     assert explanation["evidence_summary"]["product_universe_source_status"] == "observed"
     assert explanation["evidence_summary"]["valuation_source_status"] == "observed"
     assert explanation["evidence_summary"]["policy_news_source_status"] == "observed"

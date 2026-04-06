@@ -261,6 +261,115 @@ def test_build_candidate_product_context_emits_product_simulation_input_from_sel
 
 
 @pytest.mark.contract
+def test_build_candidate_product_context_prefers_listed_etf_and_keeps_cash_bucket_on_independent_path(monkeypatch):
+    runtime_pool = [
+        ProductCandidate(
+            product_id="ts_bond_listed_etf",
+            product_name="国债ETF",
+            asset_bucket="bond_cn",
+            product_family="defense",
+            wrapper_type="etf",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="511010.SH",
+            tags=["bond", "defense"],
+        ),
+        ProductCandidate(
+            product_id="ts_bond_linked_fund",
+            product_name="博时中债0-3年国开行ETF联接A",
+            asset_bucket="bond_cn",
+            product_family="defense",
+            wrapper_type="fund",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="012692.OF",
+            tags=["bond", "defense", "etf_linked"],
+        ),
+        ProductCandidate(
+            product_id="ts_gold_listed_etf",
+            product_name="黄金ETF",
+            asset_bucket="gold",
+            product_family="defense",
+            wrapper_type="etf",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="518880.SH",
+            tags=["gold"],
+        ),
+        ProductCandidate(
+            product_id="ts_gold_linked_fund",
+            product_name="天弘上海金ETF联接A",
+            asset_bucket="gold",
+            product_family="defense",
+            wrapper_type="fund",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="014661.OF",
+            tags=["gold", "etf_linked"],
+        ),
+        ProductCandidate(
+            product_id="ts_cash_fund",
+            product_name="银华惠增利C",
+            asset_bucket="cash_liquidity",
+            product_family="liquidity",
+            wrapper_type="fund",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="001025.OF",
+            tags=["cash", "liquidity"],
+        ),
+    ]
+
+    def _fake_fetch_timeseries(spec, *, pin, cache, allow_fallback, return_used_pin):  # type: ignore[no-untyped-def]
+        rows_by_symbol = {
+            "511010.SH": [
+                {"date": "2026-04-01", "close": 1.0},
+                {"date": "2026-04-02", "close": 1.01},
+                {"date": "2026-04-03", "close": 1.015},
+            ],
+            "518880.SH": [
+                {"date": "2026-04-01", "close": 1.0},
+                {"date": "2026-04-02", "close": 0.99},
+                {"date": "2026-04-03", "close": 1.02},
+            ],
+        }
+        if spec.symbol not in rows_by_symbol:
+            raise RuntimeError("tinyshare_empty_dataset")
+        return rows_by_symbol[spec.symbol], pin
+
+    monkeypatch.setattr("product_mapping.engine.fetch_timeseries", _fake_fetch_timeseries)
+
+    context = build_candidate_product_context(
+        source_allocation_id="allocation_product_simulation_cash",
+        bucket_targets={"bond_cn": 0.40, "gold": 0.20, "cash_liquidity": 0.40},
+        restrictions=[],
+        runtime_candidates=runtime_pool,
+        historical_dataset={
+            "source_name": "tinyshare",
+            "audit_window": {
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-03",
+                "trading_days": 3,
+                "observed_days": 3,
+                "inferred_days": 0,
+            },
+        },
+    )
+
+    assert context["selected_product_ids"] == [
+        "ts_bond_listed_etf",
+        "ts_gold_listed_etf",
+        "ts_cash_fund",
+    ]
+    assert context["product_probability_method"] == "product_independent_path"
+    simulation_input = context["product_simulation_input"]
+    assert simulation_input is not None
+    assert simulation_input["simulation_method"] == "product_independent_path"
+    assert simulation_input["coverage_summary"]["selected_product_count"] == 3
+    assert simulation_input["coverage_summary"]["missing_product_count"] == 0
+    assert simulation_input["coverage_summary"]["observed_product_count"] == 2
+    assert simulation_input["coverage_summary"]["inferred_product_count"] == 1
+    cash_product = next(item for item in simulation_input["products"] if item["asset_bucket"] == "cash_liquidity")
+    assert cash_product["data_status"] == "inferred"
+    assert cash_product["return_series"] == [0.0, 0.0]
+
+
+@pytest.mark.contract
 def test_build_execution_plan_surfaces_proxy_valuation_modes_and_signal_triggers():
     runtime_pool = [
         ProductCandidate(

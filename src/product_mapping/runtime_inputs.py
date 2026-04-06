@@ -45,6 +45,11 @@ def _as_of_date(as_of: str) -> str:
     return str(as_of).split("T", 1)[0]
 
 
+def _tinyshare_runtime_cache_dir(cache_dir: Path | None) -> Path:
+    base = cache_dir or Path.home() / ".cache" / "investment_system" / "timeseries"
+    return base / "tinyshare_runtime"
+
+
 def _probe_start_date(end_date: str) -> str:
     return (date.fromisoformat(end_date) - timedelta(days=_PROBE_LOOKBACK_DAYS)).isoformat()
 
@@ -276,7 +281,7 @@ def build_runtime_product_universe_context(
     if _tinyshare_has_token():
         candidates, result = load_tinyshare_runtime_catalog(
             as_of=_as_of_date(as_of),
-            cache_dir=effective_cache_dir,
+            cache_dir=_tinyshare_runtime_cache_dir(effective_cache_dir),
         )
         return {
             "requested": True,
@@ -391,6 +396,7 @@ def build_runtime_product_valuation_context(
     *,
     market_raw: dict[str, Any] | None,
     as_of: str,
+    cache_dir: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     market = dict(market_raw or {})
     existing_result = dict(market.get("product_valuation_result") or market.get("valuation_result") or {})
@@ -399,6 +405,8 @@ def build_runtime_product_valuation_context(
         return inputs, existing_result
 
     if _tinyshare_has_token():
+        effective_cache_dir = cache_dir or Path.home() / ".cache" / "investment_system" / "timeseries"
+        tinyshare_cache_dir = _tinyshare_runtime_cache_dir(effective_cache_dir)
         runtime_candidates: list[ProductCandidate] = []
         universe_result = dict(
             market.get("product_universe_result")
@@ -410,8 +418,15 @@ def build_runtime_product_valuation_context(
             if isinstance(payload, dict):
                 runtime_candidates.append(ProductCandidate(**dict(payload)))
         if not runtime_candidates:
-            runtime_candidates, _ = load_tinyshare_runtime_catalog(as_of=_as_of_date(as_of))
-        result = build_tinyshare_runtime_valuation_result(runtime_candidates, as_of=_as_of_date(as_of))
+            runtime_candidates, _ = load_tinyshare_runtime_catalog(
+                as_of=_as_of_date(as_of),
+                cache_dir=tinyshare_cache_dir,
+            )
+        result = build_tinyshare_runtime_valuation_result(
+            runtime_candidates,
+            as_of=_as_of_date(as_of),
+            cache_dir=tinyshare_cache_dir,
+        )
         return {
             "requested": True,
             "require_observed_source": True,
@@ -492,6 +507,7 @@ def enrich_market_raw_with_runtime_product_inputs(
     valuation_inputs, valuation_result = build_runtime_product_valuation_context(
         market_raw=enriched,
         as_of=as_of,
+        cache_dir=cache_dir,
     )
     if valuation_inputs.get("requested") or valuation_result:
         enriched.setdefault("product_valuation_inputs", valuation_inputs)

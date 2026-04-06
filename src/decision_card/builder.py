@@ -1232,6 +1232,9 @@ def _build_probability_explanation(
     recommended_probability = _percent_metric(
         _product_layer_success_value(recommended_result)
     )
+    recommended_independent_probability = _percent_metric(
+        recommended_result.get("product_independent_success_probability")
+    )
     recommended_expected_annual_return = _metric(frontier_analysis.get("recommended", {}).get("expected_annual_return")) or ""
     highest_frontier = frontier_analysis.get("highest_probability", {})
     highest_name = _metric(highest_frontier.get("allocation_name"))
@@ -1360,6 +1363,7 @@ def _build_probability_explanation(
             "available": not bool(why_not_drawdown),
         },
         "implied_required_annual_return": _percent_metric(recommended_result.get("implied_required_annual_return")),
+        "product_independent_success_probability": recommended_independent_probability,
     }
     constraint_layer = {
         "difficulty_source": difficulty_source,
@@ -1387,12 +1391,14 @@ def _build_probability_explanation(
         "drawdown_priority_explanation": drawdown_explanation,
         "why_not_drawdown_priority": why_not_drawdown,
         "implied_required_annual_return": _percent_metric(recommended_result.get("implied_required_annual_return")),
+        "product_independent_success_probability": recommended_independent_probability,
         "product_probability_method": probability_method,
         "product_probability_disclosure": product_probability_disclosure,
         "difficulty_source": difficulty_source,
         "constraint_contributions": constraint_contributions,
         "evidence_summary": evidence_layer,
         "evidence_layer": evidence_layer,
+        "formal_path_evidence": evidence_layer,
         "counterfactuals": counterfactuals,
         "product_contributions": product_contributions,
         "result_layer": result_layer,

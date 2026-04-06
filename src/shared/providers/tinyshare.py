@@ -301,6 +301,8 @@ def _infer_fund_tags(name: str, fund_type: str, invest_type: str, bucket: str) -
     tags: list[str] = [bucket]
     if "ETF" in rendered:
         tags.append("etf")
+    if "联接" in rendered:
+        tags.append("etf_linked")
     if "QDII" in rendered or any(token in rendered for token in ("海外", "港股", "美股", "标普", "纳指", "恒生")):
         tags.extend(["qdii", "overseas"])
     if bucket == "equity_cn":
@@ -344,7 +346,11 @@ def _fund_runtime_candidate(row: dict[str, Any]) -> ProductCandidate | None:
     invest_type = str(row.get("invest_type") or "").strip()
     bucket = _infer_fund_bucket(name, fund_type, invest_type)
     tags = _infer_fund_tags(name, fund_type, invest_type, bucket)
-    wrapper = "etf" if "ETF" in name.upper() or str(row.get("market") or "").upper() == "E" else "fund"
+    rendered = f"{name} {fund_type} {invest_type}".upper()
+    is_etf_linked = "联接" in f"{name} {fund_type} {invest_type}"
+    wrapper = "fund"
+    if not is_etf_linked and ("ETF" in rendered or str(row.get("market") or "").upper() == "E"):
+        wrapper = "etf"
     region = "CN"
     currency = "CNY"
     if "海外" in tags or "qdii" in tags:

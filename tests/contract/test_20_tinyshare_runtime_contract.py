@@ -494,6 +494,52 @@ def test_load_runtime_catalog_emits_snapshot_items_when_tinyshare_is_live(monkey
 
 
 @pytest.mark.contract
+def test_load_runtime_catalog_classifies_etf_linked_open_end_funds_as_fund(monkeypatch, tmp_path):
+    class _FakePro:
+        def stock_basic(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return pd.DataFrame([])
+
+        def fund_basic(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "511010.SH",
+                        "name": "国债ETF",
+                        "fund_type": "ETF",
+                        "invest_type": "债券型",
+                        "market": "E",
+                        "status": "L",
+                    },
+                    {
+                        "ts_code": "012692.OF",
+                        "name": "博时中债0-3年国开行ETF联接A",
+                        "fund_type": "ETF联接",
+                        "invest_type": "债券型",
+                        "market": "O",
+                        "status": "L",
+                    },
+                ]
+            )
+
+    monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
+    monkeypatch.setattr("shared.providers.tinyshare._pro_api", lambda token=None: _FakePro())
+
+    candidates, snapshot = tinyshare_provider.load_runtime_catalog(
+        as_of="2026-04-05",
+        cache_dir=tmp_path / "tinyshare_cache",
+    )
+
+    wrappers = {candidate.provider_symbol: candidate.wrapper_type for candidate in candidates}
+    tags = {candidate.provider_symbol: set(candidate.tags) for candidate in candidates}
+
+    assert wrappers["511010.SH"] == "etf"
+    assert wrappers["012692.OF"] == "fund"
+    assert "etf_linked" in tags["012692.OF"]
+    linked_item = next(item for item in snapshot["items"] if item["ts_code"] == "012692.OF")
+    assert linked_item["wrapper"] == "fund"
+
+
+@pytest.mark.contract
 def test_frontdesk_onboarding_auto_uses_tinyshare_runtime_inputs_when_token_present(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
     monkeypatch.setattr(
@@ -505,6 +551,17 @@ def test_frontdesk_onboarding_auto_uses_tinyshare_runtime_inputs_when_token_pres
         lambda candidates, *, as_of, cache_dir=None: _tinyshare_valuation_result(),
     )
 
+    def fake_fetch_timeseries(spec, *, pin, cache, allow_fallback, return_used_pin):  # type: ignore[no-untyped-def]
+        rows = [
+            {"date": "2026-04-01", "open": 1.0, "high": 1.1, "low": 0.9, "close": 1.0, "volume": 100.0},
+            {"date": "2026-04-02", "open": 1.0, "high": 1.2, "low": 0.95, "close": 1.03, "volume": 110.0},
+            {"date": "2026-04-03", "open": 1.03, "high": 1.25, "low": 1.0, "close": 1.05, "volume": 120.0},
+        ]
+        return rows, pin
+
+    monkeypatch.setattr("snapshot_ingestion.providers.fetch_timeseries", fake_fetch_timeseries)
+    monkeypatch.setattr("product_mapping.engine.fetch_timeseries", fake_fetch_timeseries)
+
     summary = run_frontdesk_onboarding(
         _profile(account_profile_id="layer2_tinyshare_runtime_user"),
         db_path=tmp_path / "frontdesk.sqlite",
@@ -512,11 +569,41 @@ def test_frontdesk_onboarding_auto_uses_tinyshare_runtime_inputs_when_token_pres
 
     pending = summary["pending_execution_plan"]
     assert pending is not None
+    assert summary["external_snapshot_status"] == "fetched"
+    assert summary["refresh_summary"]["provider_name"] == "runtime_market_history"
+    market_detail = next(item for item in summary["refresh_summary"]["domain_details"] if item["domain"] == "market_raw")
+    assert market_detail["historical_dataset"]["source_name"] == "tinyshare"
+    assert summary["formal_path_visibility"]["reasons"] == [
+        "behavior_raw is backed by non-formal data_status=prior_default"
+    ]
     assert pending["product_universe_audit_summary"]["requested"] is True
     assert pending["product_universe_audit_summary"]["source_status"] == "observed"
     assert pending["valuation_audit_summary"]["requested"] is True
     assert pending["valuation_audit_summary"]["source_status"] == "observed"
     assert pending["runtime_candidate_count"] == 3
+    assert summary["decision_card"]["probability_explanation"]["product_probability_method"] == "product_independent_path"
+    assert summary["decision_card"]["probability_explanation"]["product_independent_success_probability"] != ""
+
+
+@pytest.mark.contract
+def test_build_runtime_product_universe_context_uses_isolated_tinyshare_cache_subdir(monkeypatch, tmp_path):
+    observed: dict[str, Path | None] = {}
+
+    monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
+
+    def _fake_load(*, as_of, cache_dir=None):  # type: ignore[no-untyped-def]
+        observed["cache_dir"] = cache_dir
+        return _runtime_catalog(), _tinyshare_universe_result()
+
+    monkeypatch.setattr("product_mapping.runtime_inputs.load_tinyshare_runtime_catalog", _fake_load)
+
+    build_runtime_product_universe_context(
+        market_raw={},
+        as_of="2026-04-05T10:00:00Z",
+        cache_dir=tmp_path / "runtime_base",
+    )
+
+    assert observed["cache_dir"] == tmp_path / "runtime_base" / "tinyshare_runtime"
 
 
 @pytest.mark.contract

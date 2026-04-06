@@ -737,6 +737,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_v2_layers(monkeypat
     assert explanation["evidence_layer"]["product_probability_method"] == "product_independent_path"
     assert explanation["evidence_layer"]["observed_product_count"] == 2
     assert explanation["evidence_layer"]["formal_path_status"] in {"formal", "ok", "degraded", "not_requested"}
+    assert explanation["formal_path_evidence"]["formal_path_status"] in {"formal", "ok", "degraded", "not_requested"}
     assert explanation["counterfactuals"]["keep_target_return"]["estimated_required_drawdown_90pct"] == "20.00%"
     assert {item["product_id"] for item in explanation["product_contributions"]} == {
         "cn_equity_csi300_etf",

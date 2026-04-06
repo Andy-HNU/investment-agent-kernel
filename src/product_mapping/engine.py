@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, replace
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1034,6 +1035,28 @@ def _product_observation_dates_from_rows(rows: list[dict[str, Any]]) -> list[str
     return dates[1:]
 
 
+def _synthetic_cash_observation_dates(
+    history_window: AuditWindow,
+    *,
+    reference_dates: list[str] | None,
+) -> list[str]:
+    if reference_dates:
+        return [str(item).strip() for item in reference_dates if str(item).strip()]
+    trading_days = int(history_window.trading_days or 0)
+    if trading_days <= 1:
+        end_date = str(history_window.end_date or "").strip()
+        return [end_date] if end_date else []
+    try:
+        current = date.fromisoformat(str(history_window.start_date))
+    except Exception:
+        return []
+    dates: list[str] = []
+    while len(dates) < trading_days - 1:
+        current += timedelta(days=1)
+        dates.append(current.isoformat())
+    return dates
+
+
 def _build_product_simulation_input(
     items: list[ExecutionPlanItem],
     *,
@@ -1046,11 +1069,19 @@ def _build_product_simulation_input(
     cache = DatasetCache(base_dir=_PRODUCT_SIMULATION_CACHE_DIR)
     products: list[dict[str, Any]] = []
     observed_count = 0
+    inferred_count = 0
+    missing_count = 0
+    reference_dates: list[str] | None = None
+    cash_items: list[ExecutionPlanItem] = []
     for item in items:
+        if item.asset_bucket == "cash_liquidity":
+            cash_items.append(item)
+            continue
         candidate = item.primary_product
         provider = _product_simulation_provider(candidate, preferred_provider)
         symbol = _product_simulation_symbol(candidate, provider)
         if not symbol:
+            missing_count += 1
             continue
         spec = DatasetSpec(
             kind="timeseries",
@@ -1071,11 +1102,15 @@ def _build_product_simulation_input(
                 return_used_pin=True,
             )
         except Exception:
+            missing_count += 1
             continue
         return_series = _product_return_series_from_rows(rows)
         if not return_series:
+            missing_count += 1
             continue
         observation_dates = _product_observation_dates_from_rows(rows)
+        if observation_dates and reference_dates is None:
+            reference_dates = list(observation_dates)
         observed_count += 1
         products.append(
             {
@@ -1097,17 +1132,45 @@ def _build_product_simulation_input(
                 "inferred_points": 0,
             }
         )
+    for item in cash_items:
+        synthetic_dates = _synthetic_cash_observation_dates(
+            history_window,
+            reference_dates=reference_dates,
+        )
+        if not synthetic_dates:
+            missing_count += 1
+            continue
+        inferred_count += 1
+        products.append(
+            {
+                "product_id": item.primary_product.product_id,
+                "asset_bucket": item.asset_bucket,
+                "target_weight": float(item.target_weight or 0.0),
+                "return_series": [0.0 for _ in synthetic_dates],
+                "observation_dates": synthetic_dates,
+                "source_ref": (
+                    f"synthetic://cash_liquidity?start={history_window.start_date}&end={history_window.end_date}"
+                ),
+                "data_status": DataStatus.INFERRED.value,
+                "frequency": "daily",
+                "observed_start_date": history_window.start_date,
+                "observed_end_date": history_window.end_date,
+                "observed_points": 0,
+                "inferred_points": len(synthetic_dates),
+            }
+        )
     if not products:
         return None
     return {
         "products": products,
         "frequency": "daily",
-        "simulation_method": "product_independent_path" if observed_count == len(items) else "product_proxy_path",
+        "simulation_method": "product_independent_path" if missing_count == 0 else "product_proxy_path",
         "audit_window": history_window.to_dict(),
         "coverage_summary": {
             "selected_product_count": len(items),
             "observed_product_count": observed_count,
-            "missing_product_count": max(len(items) - observed_count, 0),
+            "inferred_product_count": inferred_count,
+            "missing_product_count": max(missing_count, 0),
         },
     }
 
@@ -1182,9 +1245,12 @@ def build_candidate_product_context(
     product_probability_method = "product_proxy_adjustment_estimate"
     if product_simulation_input is not None:
         coverage_summary = dict(product_simulation_input.get("coverage_summary") or {})
-        if int(coverage_summary.get("observed_product_count") or 0) == int(
-            coverage_summary.get("selected_product_count") or 0
-        ):
+        covered_count = int(coverage_summary.get("observed_product_count") or 0) + int(
+            coverage_summary.get("inferred_product_count") or 0
+        )
+        if covered_count == int(coverage_summary.get("selected_product_count") or 0) and int(
+            coverage_summary.get("missing_product_count") or 0
+        ) == 0:
             product_probability_method = "product_independent_path"
         else:
             product_probability_method = "product_proxy_path"

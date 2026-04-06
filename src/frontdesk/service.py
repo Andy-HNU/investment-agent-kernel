@@ -29,6 +29,7 @@ from shared.product_defaults import (
 )
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 from shared.profile_parser import parse_profile_semantics
+from shared.providers.tinyshare import has_token as tinyshare_has_token
 
 from frontdesk.adapter import FrontdeskExternalSnapshotAdapter
 from frontdesk.external_data import (
@@ -84,6 +85,16 @@ _MONTHLY_EVENT_PROFILE_FIELDS = {
     "requires_confirmation",
     "goal_semantics",
     "profile_dimensions",
+}
+
+_AUTO_RUNTIME_MARKET_HISTORY_CONFIG = {
+    "adapter": "market_history",
+    "provider_name": "runtime_market_history",
+    "provider": "tinyshare",
+    "fallback_provider": "yfinance",
+    "coverage_asset_class": "etf",
+    "lookback_months": 36,
+    "fail_open": True,
 }
 _FORMAL_PATH_REQUIRED_FIELDS = {"market_raw", "account_raw", "behavior_raw", "live_portfolio"}
 _FORMAL_PATH_SOURCE_STATUS = {
@@ -833,6 +844,31 @@ def _apply_external_provider_config(
     )
 
 
+def _maybe_apply_runtime_market_history(
+    *,
+    raw_inputs: dict[str, Any],
+    input_provenance: dict[str, Any],
+    workflow_type: str,
+    account_profile_id: str,
+    as_of: str,
+    external_snapshot_source: str | None,
+    external_data_config: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, str | None, str | None, str | None]:
+    if external_snapshot_source is not None or external_data_config is not None:
+        return raw_inputs, input_provenance, None, None, None, None
+    historical_dataset = _as_dict(_as_dict(raw_inputs.get("market_raw")).get("historical_dataset"))
+    if historical_dataset or not tinyshare_has_token():
+        return raw_inputs, input_provenance, None, None, None, None
+    return _apply_external_provider_config(
+        raw_inputs=raw_inputs,
+        input_provenance=input_provenance,
+        external_data_config=dict(_AUTO_RUNTIME_MARKET_HISTORY_CONFIG),
+        workflow_type=workflow_type,
+        account_profile_id=account_profile_id,
+        as_of=as_of,
+    )
+
+
 def _normalize_observed_portfolio_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(payload or {})
     merged_portfolio = normalized.pop("merged_portfolio", None)
@@ -1521,6 +1557,23 @@ def run_frontdesk_onboarding(
             account_profile_id=profile.account_profile_id,
             as_of=str(raw_inputs.get("as_of") or _now_iso()),
         )
+    else:
+        (
+            raw_inputs,
+            input_provenance,
+            external_payload,
+            external_source_ref,
+            external_status,
+            external_error,
+        ) = _maybe_apply_runtime_market_history(
+            raw_inputs=raw_inputs,
+            input_provenance=input_provenance,
+            workflow_type="onboarding",
+            account_profile_id=profile.account_profile_id,
+            as_of=str(raw_inputs.get("as_of") or _now_iso()),
+            external_snapshot_source=external_source_ref,
+            external_data_config=None,
+        )
     account_profile = _normalize_profile_payload(
         _merge_profile_override(
             _profile_to_dict(onboarding.profile),
@@ -1706,6 +1759,23 @@ def run_frontdesk_followup(
             )
         except ExternalSnapshotAdapterError:
             raise
+    else:
+        (
+            raw_inputs,
+            input_provenance,
+            external_payload,
+            external_source_ref,
+            external_status,
+            external_error,
+        ) = _maybe_apply_runtime_market_history(
+            raw_inputs=raw_inputs,
+            input_provenance=input_provenance,
+            workflow_type=workflow_type,
+            account_profile_id=account_profile_id,
+            as_of=str(raw_inputs.get("as_of") or as_of),
+            external_snapshot_source=external_source_ref,
+            external_data_config=None,
+        )
     active_profile = _merge_profile_override(
         active_profile,
         profile_patch_from_external_snapshot(raw_inputs, external_payload=external_payload),
