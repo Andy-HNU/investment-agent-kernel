@@ -1,5 +1,9 @@
 # CODEX v1.2 Patch Map: Product Simulation, Full Universe, Valuation/Signals, Probability Explanation
 
+> 状态说明：本文件仍保留为 `v1.2` 历史补丁地图，但后续开发主线已由
+> [`CODEX_v1.3_credibility_upgrade_task_map_2026-04-07.md`](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_v1.3_credibility_upgrade_task_map_2026-04-07.md)
+> 接替。若无特殊说明，`v1.3` 及之后的开发一律以新文档为准。
+
 日期：2026-04-06
 
 读者：开发、审阅、测试、产品 owner、Claw 验收操作者
@@ -539,4 +543,3 @@ Claw 每轮追问必须强制要求系统回答：
 - 全市场可筛选
 - 估值与政策新闻真正入核
 - 成功率解释可审计、可追问、可反事实推演
-
