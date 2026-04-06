@@ -269,6 +269,11 @@ class SuccessProbabilityResult:
     product_proxy_adjusted_success_probability: float | None = None
     product_independent_success_probability: float | None = None
     product_probability_method: str = "bucket_only_no_product_proxy_adjustment"
+    selected_product_ids: list[str] = field(default_factory=list)
+    selected_proxy_refs: list[str] = field(default_factory=list)
+    bucket_expected_return_adjustments: dict[str, float] = field(default_factory=dict)
+    bucket_volatility_multipliers: dict[str, float] = field(default_factory=dict)
+    simulation_coverage_summary: dict[str, Any] = field(default_factory=dict)
     implied_required_annual_return: float | None = None
     expected_annual_return: float | None = None
     display_name: str = ""
@@ -293,6 +298,10 @@ class FrontierScenario:
     product_proxy_adjusted_success_probability: float | None = None
     product_independent_success_probability: float | None = None
     product_probability_method: str = "bucket_only_no_product_proxy_adjustment"
+    selected_product_ids: list[str] = field(default_factory=list)
+    bucket_expected_return_adjustments: dict[str, float] = field(default_factory=dict)
+    bucket_volatility_multipliers: dict[str, float] = field(default_factory=dict)
+    simulation_coverage_summary: dict[str, Any] = field(default_factory=dict)
     expected_annual_return: float | None = None
     meets_success_threshold: bool = False
     drawdown_gap: float = 0.0

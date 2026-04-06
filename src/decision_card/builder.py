@@ -176,9 +176,11 @@ def _product_probability_disclosure(probability_method: str) -> str:
 def _difficulty_source(frontier_diagnostics: dict[str, Any]) -> str:
     bindings = list(frontier_diagnostics.get("binding_constraints") or [])
     limitations = set(str(item) for item in list(frontier_diagnostics.get("structural_limitations") or []))
+    if any(str(_obj(binding).get("constraint_name") or "") == "required_annual_return" for binding in bindings):
+        return "constraint_binding"
+    if any(str(_obj(binding).get("constraint_name") or "") == "max_drawdown_tolerance" for binding in bindings):
+        return "constraint_binding"
     if bindings and limitations:
-        if limitations <= {"required_return_above_frontier_ceiling"}:
-            return "constraint_binding"
         return "mixed"
     if bindings:
         return "constraint_binding"
@@ -191,6 +193,184 @@ def _difficulty_source(frontier_diagnostics: dict[str, Any]) -> str:
     if {"required_return_above_frontier_ceiling", "expected_return_shrinkage_applied"} & limitations:
         return "model_ceiling"
     return "market"
+
+
+def _constraint_contributions(frontier_diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_candidates = int(frontier_diagnostics.get("raw_candidate_count") or 0)
+    feasible_candidates = int(frontier_diagnostics.get("feasible_candidate_count") or 0)
+    frontier_ceiling = _float_metric(frontier_diagnostics.get("frontier_max_expected_annual_return"))
+    contributions: list[dict[str, Any]] = []
+    for binding in list(frontier_diagnostics.get("binding_constraints") or []):
+        data = _obj(binding)
+        name = _metric(data.get("constraint_name")) or "unknown_constraint"
+        reason = _metric(data.get("reason")) or ""
+        required_value = _float_metric(data.get("required_value"))
+        contributions.append(
+            {
+                "name": name,
+                "is_binding": True,
+                "before_candidates": raw_candidates,
+                "after_candidates": feasible_candidates,
+                "before_frontier_ceiling": frontier_ceiling,
+                "after_frontier_ceiling": frontier_ceiling,
+                "required_value": required_value,
+                "explanation": reason,
+            }
+        )
+    limitation_messages = {
+        "required_return_above_frontier_ceiling": "当前目标收益高于候选前沿上限，说明主要矛盾不只是市场波动，而是收益门槛本身。",
+        "satellite_cap_limits_high_beta_allocations": "卫星仓上限压住了更高 beta 暴露，可选更进攻方案被截断。",
+        "qdii_cap_limits_overseas_exposure": "QDII/海外暴露上限压住了跨市场风险预算。",
+        "expected_return_shrinkage_applied": "当前收益假设做了保守收缩，会主动压低前沿上限。",
+        "return_seeking_families_not_generated_under_current_solver_inputs": "当前 solver 输入没有生成更激进的候选族。",
+    }
+    for limitation in list(frontier_diagnostics.get("structural_limitations") or []):
+        name = str(limitation)
+        contributions.append(
+            {
+                "name": name,
+                "is_binding": False,
+                "before_candidates": raw_candidates,
+                "after_candidates": raw_candidates,
+                "before_frontier_ceiling": frontier_ceiling,
+                "after_frontier_ceiling": frontier_ceiling,
+                "required_value": None,
+                "explanation": limitation_messages.get(name, name),
+            }
+        )
+    return contributions
+
+
+def _evidence_layer(
+    *,
+    execution_plan_summary: dict[str, Any],
+    probability_method: str,
+) -> dict[str, Any]:
+    universe = _obj(execution_plan_summary.get("product_universe_audit_summary", {}))
+    valuation = _obj(execution_plan_summary.get("valuation_audit_summary", {}))
+    policy = _obj(execution_plan_summary.get("policy_news_audit_summary", {}))
+    formal_path = _obj(execution_plan_summary.get("formal_path_visibility", {}))
+    observed_inputs = 0
+    computed_inputs = 0
+    prior_default_inputs = 0
+    for payload in (universe, valuation, policy):
+        source_status = _metric(payload.get("source_status")) or ""
+        data_status = _metric(payload.get("data_status")) or ""
+        if source_status == "observed":
+            observed_inputs += 1
+        if data_status == "computed_from_observed":
+            computed_inputs += 1
+        if data_status == "prior_default":
+            prior_default_inputs += 1
+    historical_window = (
+        universe.get("audit_window")
+        or valuation.get("audit_window")
+        or policy.get("audit_window")
+        or None
+    )
+    return {
+        "product_probability_method": probability_method,
+        "formal_path_status": _metric(formal_path.get("status")) or "",
+        "formal_path_execution_eligible": bool(formal_path.get("execution_eligible")),
+        "observed_inputs": observed_inputs,
+        "computed_from_observed_inputs": computed_inputs,
+        "prior_default_inputs": prior_default_inputs,
+        "historical_window": historical_window,
+        "product_universe_source_status": _metric(universe.get("source_status")) or "",
+        "valuation_source_status": _metric(valuation.get("source_status")) or "",
+        "policy_news_source_status": _metric(policy.get("source_status")) or "",
+        "calibration_summary": _obj(execution_plan_summary.get("calibration_summary", {})),
+    }
+
+
+def _counterfactual_scenario_id(label: str) -> str:
+    if "回撤" in label:
+        return "keep_target_relax_drawdown"
+    if "每月投入" in label:
+        return "increase_monthly_contribution"
+    if "期限" in label:
+        return "extend_horizon"
+    if "目标期末总资产" in label:
+        return "reduce_goal_amount"
+    return "fallback_counterfactual"
+
+
+def _counterfactuals(goal_output: dict[str, Any]) -> list[dict[str, Any]]:
+    counterfactuals: list[dict[str, Any]] = []
+    for item in list(goal_output.get("fallback_suggestions") or []):
+        data = _obj(item)
+        label = _metric(data.get("label")) or "fallback"
+        risk_summary = _obj(data.get("risk_summary", {}))
+        counterfactuals.append(
+            {
+                "scenario": _counterfactual_scenario_id(label),
+                "label": label,
+                "success_probability": _percent_metric(data.get("success_probability")),
+                "max_drawdown_90pct": _percent_metric(risk_summary.get("max_drawdown_90pct")),
+                "shortfall_probability": _percent_metric(risk_summary.get("shortfall_probability")),
+                "evidence_source": _metric(data.get("evidence_source")) or "model_estimate",
+            }
+        )
+    return counterfactuals
+
+
+def _product_contributions(execution_plan_summary: dict[str, Any]) -> list[dict[str, Any]]:
+    contributions: list[dict[str, Any]] = []
+    for item in list(execution_plan_summary.get("items") or []):
+        data = _obj(item)
+        product_id = _metric(data.get("primary_product_id")) or ""
+        if not product_id:
+            continue
+        asset_bucket = _metric(data.get("asset_bucket")) or ""
+        target_weight = _float_metric(data.get("target_weight")) or 0.0
+        risk_labels = {str(label) for label in list(data.get("risk_labels") or []) if str(label).strip()}
+        valuation = _obj(data.get("valuation_audit", {}))
+        policy = _obj(data.get("policy_news_audit", {}))
+        success_support = 0.0
+        drawdown_pressure = 0.0
+        friction_drag = 0.0
+        explanations: list[str] = []
+        if asset_bucket in {"equity_cn", "satellite"}:
+            success_support += target_weight * 0.6
+            explanations.append("权益类产品提高了目标收益空间。")
+        if valuation.get("passed_filters") is True:
+            success_support += 0.08
+            explanations.append("估值筛选通过，说明当前价格不在明显偏贵区。")
+        if bool(policy.get("realtime_eligible")) and _float_metric(policy.get("score")):
+            score = _float_metric(policy.get("score")) or 0.0
+            success_support += max(score, 0.0) * 0.1
+            drawdown_pressure += abs(min(score, 0.0)) * 0.1
+            explanations.append("政策/新闻信号正在影响当前产品排序。")
+        if asset_bucket == "satellite" or "主题波动" in risk_labels:
+            drawdown_pressure += max(target_weight, 0.05) * 0.7
+            explanations.append("卫星/主题仓会放大波动和回撤尾部。")
+        if {"个股波动", "集中度"} & risk_labels:
+            drawdown_pressure += 0.12
+            explanations.append("个股或高集中度敞口会抬高回撤。")
+        estimated_fee = _float_metric(data.get("estimated_fee"))
+        estimated_slippage = _float_metric(data.get("estimated_slippage"))
+        target_amount = max(_float_metric(data.get("target_amount")) or 0.0, 1.0)
+        if estimated_fee is not None:
+            friction_drag += estimated_fee / target_amount
+        if estimated_slippage is not None:
+            friction_drag += estimated_slippage / target_amount
+        contributions.append(
+            {
+                "product_id": product_id,
+                "asset_bucket": asset_bucket,
+                "success_support": round(success_support, 4),
+                "drawdown_pressure": round(drawdown_pressure, 4),
+                "friction_drag": round(friction_drag, 4),
+                "explanation": " ".join(explanations) or "当前主要通过权重配置影响成功率与回撤。",
+            }
+        )
+    return sorted(
+        contributions,
+        key=lambda item: (
+            -(float(item.get("success_support") or 0.0) + float(item.get("drawdown_pressure") or 0.0)),
+            str(item.get("product_id") or ""),
+        ),
+    )
 
 
 def _candidate_style_key(name: str) -> str:
@@ -610,6 +790,10 @@ def _frontier_scenario(
         ),
         "product_probability_method": _metric(data.get("product_probability_method"))
         or "bucket_only_no_product_proxy_adjustment",
+        "selected_product_ids": list(data.get("selected_product_ids") or []),
+        "bucket_expected_return_adjustments": dict(data.get("bucket_expected_return_adjustments") or {}),
+        "bucket_volatility_multipliers": dict(data.get("bucket_volatility_multipliers") or {}),
+        "simulation_coverage_summary": dict(data.get("simulation_coverage_summary") or {}),
         "expected_terminal_value": _currency_metric(data.get("expected_terminal_value")),
         "expected_annual_return": _percent_metric(
             data.get("expected_annual_return", data.get("scenario_expected_annual_return"))
@@ -647,7 +831,391 @@ def _build_frontier_analysis(
     return scenarios
 
 
+def _future_value_with_monthly_contribution(
+    *,
+    initial_value: float,
+    monthly_contribution: float,
+    annual_return: float,
+    horizon_months: int,
+) -> float:
+    balance = float(initial_value)
+    monthly_rate = (1.0 + max(annual_return, -0.999999)) ** (1.0 / 12.0) - 1.0
+    for _ in range(max(int(horizon_months), 0)):
+        balance *= 1.0 + monthly_rate
+        balance += float(monthly_contribution)
+    return balance
+
+
+def _goal_numeric_context(goal_solver_input: Any) -> dict[str, float | int | None]:
+    payload = _obj(goal_solver_input) or {}
+    goal = _obj(payload.get("goal", {}))
+    cashflow = _obj(payload.get("cashflow_plan", {}))
+    return {
+        "goal_amount": _float_metric(goal.get("goal_amount")),
+        "horizon_months": int(_float_metric(goal.get("horizon_months")) or 0),
+        "monthly_contribution": _float_metric(cashflow.get("monthly_contribution")) or 0.0,
+        "current_portfolio_value": _float_metric(payload.get("current_portfolio_value")) or 0.0,
+    }
+
+
+def _build_constraint_contributions(frontier_diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_candidate_count = int(_float_metric(frontier_diagnostics.get("raw_candidate_count")) or 0)
+    feasible_candidate_count = int(_float_metric(frontier_diagnostics.get("feasible_candidate_count")) or 0)
+    frontier_ceiling = _float_metric(frontier_diagnostics.get("frontier_max_expected_annual_return"))
+    contributions: list[dict[str, Any]] = []
+    for binding in list(frontier_diagnostics.get("binding_constraints") or []):
+        entry = _obj(binding)
+        name = _metric(entry.get("constraint_name")) or "unknown_constraint"
+        reason = _metric(entry.get("reason")) or ""
+        required_value = _float_metric(entry.get("required_value"))
+        explanation = "当前候选里已有约束成为绑定条件。"
+        if name == "required_annual_return":
+            explanation = "目标所需年化高于当前 frontier 上限，收益目标约束正在直接卡住方案空间。"
+        elif name == "max_drawdown_tolerance":
+            explanation = "当前最大回撤约束会压缩高波动候选，直接限制更进攻的方案。"
+        contributions.append(
+            {
+                "name": name,
+                "is_binding": True,
+                "reason": reason,
+                "required_value": None if required_value is None else f"{required_value * 100:.2f}%",
+                "before_candidates": raw_candidate_count,
+                "after_candidates": feasible_candidate_count,
+                "before_frontier_ceiling": None if frontier_ceiling is None else f"{frontier_ceiling * 100:.2f}%",
+                "after_frontier_ceiling": None if frontier_ceiling is None else f"{frontier_ceiling * 100:.2f}%",
+                "explanation": explanation,
+            }
+        )
+    for limitation in list(frontier_diagnostics.get("structural_limitations") or []):
+        rendered = str(limitation)
+        if rendered in {"required_return_above_frontier_ceiling", "expected_return_shrinkage_applied"}:
+            continue
+        contributions.append(
+            {
+                "name": rendered,
+                "is_binding": False,
+                "reason": rendered,
+                "required_value": "",
+                "before_candidates": raw_candidate_count,
+                "after_candidates": feasible_candidate_count,
+                "before_frontier_ceiling": None if frontier_ceiling is None else f"{frontier_ceiling * 100:.2f}%",
+                "after_frontier_ceiling": None if frontier_ceiling is None else f"{frontier_ceiling * 100:.2f}%",
+                "explanation": "这是当前 universe/solver 的结构性边界，会压缩更进攻候选的生成空间。",
+            }
+        )
+    return contributions
+
+
+def _build_probability_evidence_summary(
+    inp: DecisionCardBuildInput,
+    goal_output: dict[str, Any],
+    recommended_result: dict[str, Any],
+) -> dict[str, Any]:
+    execution_summary = _execution_plan_summary(inp)
+    audit_record = _obj(inp.audit_record or {})
+    formal_path_visibility = _obj(
+        execution_summary.get("formal_path_visibility")
+        or audit_record.get("formal_path_visibility")
+        or {}
+    )
+    source_refs = [
+        _metric(item.get("source_ref"))
+        for item in list(_obj(inp.input_provenance or {}).get("externally_fetched") or [])
+        if _metric(_obj(item).get("source_ref"))
+    ]
+    coverage_summary = dict(recommended_result.get("simulation_coverage_summary") or {})
+    observed_inputs = 0
+    computed_inputs = 0
+    for payload in (
+        _obj(execution_summary.get("product_universe_audit_summary") or {}),
+        _obj(execution_summary.get("valuation_audit_summary") or {}),
+        _obj(execution_summary.get("policy_news_audit_summary") or {}),
+    ):
+        if (_metric(payload.get("source_status")) or "") == "observed":
+            observed_inputs += 1
+        if (_metric(payload.get("data_status")) or "") == "computed_from_observed":
+            computed_inputs += 1
+    prior_default_inputs = len(list(_obj(inp.input_provenance or {}).get("default_assumed") or []))
+    return {
+        "product_probability_method": _metric(recommended_result.get("product_probability_method"))
+        or "bucket_only_no_product_proxy_adjustment",
+        "product_universe_source_status": _metric(
+            _obj(execution_summary.get("product_universe_audit_summary") or {}).get("source_status")
+        )
+        or "not_requested",
+        "valuation_source_status": _metric(
+            _obj(execution_summary.get("valuation_audit_summary") or {}).get("source_status")
+        )
+        or "not_requested",
+        "policy_news_source_status": _metric(
+            _obj(execution_summary.get("policy_news_audit_summary") or {}).get("source_status")
+        )
+        or "unavailable",
+        "formal_path_status": _metric(formal_path_visibility.get("status")) or "",
+        "market_history_source_refs": _unique([item for item in source_refs if item]),
+        "simulation_coverage_summary": coverage_summary,
+        "selected_product_count": int(coverage_summary.get("selected_product_count") or 0),
+        "observed_product_count": int(coverage_summary.get("observed_product_count") or 0),
+        "missing_product_count": int(coverage_summary.get("missing_product_count") or 0),
+        "observed_inputs": observed_inputs,
+        "computed_from_observed_inputs": computed_inputs,
+        "prior_default_inputs": prior_default_inputs,
+        "calibration_summary": _obj(goal_output.get("calibration_summary") or {}),
+    }
+
+
+def _recommended_candidate_product_context(
+    inp: DecisionCardBuildInput,
+    allocation_name: str,
+) -> dict[str, Any]:
+    goal_solver_input = _obj(inp.goal_solver_input) or {}
+    contexts = _obj(goal_solver_input.get("candidate_product_contexts") or {})
+    if allocation_name and isinstance(contexts, dict):
+        return _obj(contexts.get(allocation_name) or {})
+    return {}
+
+
+def _build_probability_evidence_layer(
+    inp: DecisionCardBuildInput,
+    goal_output: dict[str, Any],
+    recommended_result: dict[str, Any],
+) -> dict[str, Any]:
+    evidence = _build_probability_evidence_summary(inp, goal_output, recommended_result)
+    recommended_name = _metric(recommended_result.get("allocation_name")) or ""
+    product_context = _recommended_candidate_product_context(inp, recommended_name)
+    coverage_summary = _obj(recommended_result.get("simulation_coverage_summary") or {})
+    if not coverage_summary:
+        coverage_summary = _obj(product_context.get("simulation_coverage_summary") or {})
+    if not coverage_summary:
+        simulation_input = _obj(product_context.get("product_simulation_input") or {})
+        coverage_summary = _obj(simulation_input.get("coverage_summary") or {})
+    if coverage_summary:
+        evidence["simulation_coverage_summary"] = coverage_summary
+    explicit_status = _metric(evidence.get("formal_path_status")) or ""
+    if not explicit_status:
+        if int(evidence.get("prior_default_inputs") or 0) > 0:
+            explicit_status = "degraded"
+        elif int(evidence.get("observed_inputs") or 0) > 0:
+            explicit_status = "ok"
+        else:
+            explicit_status = "not_requested"
+    evidence["formal_path_status"] = explicit_status
+    evidence["observed_product_count"] = int(
+        _obj(evidence.get("simulation_coverage_summary") or {}).get("observed_product_count") or 0
+    )
+    evidence["selected_product_count"] = int(
+        _obj(evidence.get("simulation_coverage_summary") or {}).get("selected_product_count") or 0
+    )
+    evidence["missing_product_count"] = int(
+        _obj(evidence.get("simulation_coverage_summary") or {}).get("missing_product_count") or 0
+    )
+    return evidence
+
+
+def _synthesized_constraint_contributions(
+    *,
+    target_status: dict[str, Any],
+    drawdown_status: dict[str, Any],
+) -> list[dict[str, Any]]:
+    contributions: list[dict[str, Any]] = []
+    if target_status.get("available") is False:
+        contributions.append(
+            {
+                "name": "required_annual_return",
+                "is_binding": True,
+                "reason": _metric(target_status.get("reason")) or "no_candidate_meets_required_annual_return",
+                "required_value": "",
+                "before_candidates": 0,
+                "after_candidates": 0,
+                "before_frontier_ceiling": "",
+                "after_frontier_ceiling": "",
+                "explanation": "目标收益优先方案不可用，说明当前收益门槛已经直接卡住候选空间。",
+            }
+        )
+    if drawdown_status.get("available") is False:
+        contributions.append(
+            {
+                "name": "max_drawdown_tolerance",
+                "is_binding": True,
+                "reason": _metric(drawdown_status.get("reason")) or "no_candidate_meets_max_drawdown_tolerance",
+                "required_value": "",
+                "before_candidates": 0,
+                "after_candidates": 0,
+                "before_frontier_ceiling": "",
+                "after_frontier_ceiling": "",
+                "explanation": "回撤优先方案不可用，说明当前回撤约束已经把候选压空。",
+            }
+        )
+    return contributions
+
+
+def _build_counterfactuals(
+    *,
+    goal_solver_input: Any,
+    recommended_result: dict[str, Any],
+    frontier_diagnostics: dict[str, Any],
+    target_return_priority: dict[str, Any],
+    drawdown_priority: dict[str, Any],
+) -> dict[str, Any]:
+    numeric = _goal_numeric_context(goal_solver_input)
+    goal_amount = _float_metric(numeric.get("goal_amount"))
+    horizon_months = int(numeric.get("horizon_months") or 0)
+    monthly_contribution = _float_metric(numeric.get("monthly_contribution")) or 0.0
+    current_portfolio_value = _float_metric(numeric.get("current_portfolio_value")) or 0.0
+    required_return = _float_metric(recommended_result.get("implied_required_annual_return"))
+    frontier_ceiling = _float_metric(frontier_diagnostics.get("frontier_max_expected_annual_return"))
+    required_return_gap = ""
+    extra_months = ""
+    contribution_delta = ""
+    if required_return is not None and frontier_ceiling is not None:
+        required_return_gap = f"{max(required_return - frontier_ceiling, 0.0) * 100:.2f}%"
+    if goal_amount is not None and frontier_ceiling is not None and horizon_months > 0:
+        current_frontier_fv = _future_value_with_monthly_contribution(
+            initial_value=current_portfolio_value,
+            monthly_contribution=monthly_contribution,
+            annual_return=frontier_ceiling,
+            horizon_months=horizon_months,
+        )
+        monthly_rate = (1.0 + max(frontier_ceiling, -0.999999)) ** (1.0 / 12.0) - 1.0
+        annuity_factor = sum((1.0 + monthly_rate) ** idx for idx in range(horizon_months))
+        if annuity_factor > 0:
+            contribution_delta_value = max((goal_amount - current_frontier_fv) / annuity_factor, 0.0)
+            contribution_delta = f"{contribution_delta_value:,.0f}"
+        projected = current_frontier_fv
+        months = horizon_months
+        while goal_amount > projected and months < 720:
+            months += 1
+            projected = _future_value_with_monthly_contribution(
+                initial_value=current_portfolio_value,
+                monthly_contribution=monthly_contribution,
+                annual_return=frontier_ceiling,
+                horizon_months=months,
+            )
+        if months > horizon_months:
+            extra_months = str(months - horizon_months)
+    return {
+        "required_return_gap": required_return_gap,
+        "monthly_contribution_delta_to_hit_goal_at_frontier_return": contribution_delta,
+        "extra_horizon_months_to_hit_goal_at_frontier_return": extra_months,
+        "target_return_priority_status": (
+            _metric(target_return_priority.get("label")) or "unavailable"
+        ),
+        "drawdown_priority_status": (
+            _metric(drawdown_priority.get("label")) or "unavailable"
+        ),
+    }
+
+
+def _build_probability_counterfactuals(
+    inp: DecisionCardBuildInput,
+    goal_output: dict[str, Any],
+    recommended_result: dict[str, Any],
+    frontier_diagnostics: dict[str, Any],
+    target_return_priority: dict[str, Any],
+    drawdown_priority: dict[str, Any],
+) -> dict[str, Any]:
+    payload = _build_counterfactuals(
+        goal_solver_input=inp.goal_solver_input,
+        recommended_result=recommended_result,
+        frontier_diagnostics=frontier_diagnostics,
+        target_return_priority=target_return_priority,
+        drawdown_priority=drawdown_priority,
+    )
+    fallback_scenarios = _counterfactuals(goal_output)
+    if not fallback_scenarios and target_return_priority.get("label") in {"", None}:
+        fallback_scenarios.append(
+            {
+                "scenario": "keep_target_relax_drawdown",
+                "label": "保持目标收益时，需要放宽回撤或扩展风险预算。",
+                "success_probability": "",
+                "max_drawdown_90pct": "",
+                "shortfall_probability": "",
+                "evidence_source": "frontier_diagnostics",
+            }
+        )
+    payload["fallback_scenarios"] = fallback_scenarios
+    return payload
+
+
+def _build_product_contributions(
+    recommended_result: dict[str, Any],
+    product_evidence_panel: dict[str, Any],
+    execution_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    item_index: dict[str, dict[str, Any]] = {}
+    for source_items in (
+        list(_obj(execution_summary).get("items") or []),
+        list(_obj(product_evidence_panel).get("items") or []),
+    ):
+        for item in source_items:
+            payload = _obj(item)
+            product_id = _metric(payload.get("primary_product_id"))
+            if not product_id:
+                continue
+            merged = dict(item_index.get(product_id) or {})
+            merged.update(payload)
+            item_index[product_id] = merged
+    contributions: list[dict[str, Any]] = []
+    adjustments = dict(recommended_result.get("bucket_expected_return_adjustments") or {})
+    vol_multipliers = dict(recommended_result.get("bucket_volatility_multipliers") or {})
+    selected_product_ids = list(recommended_result.get("selected_product_ids") or [])
+    if not selected_product_ids:
+        selected_product_ids = list(item_index.keys())
+    for product_id in selected_product_ids:
+        item = item_index.get(str(product_id), {})
+        bucket = _metric(item.get("asset_bucket")) or ""
+        adjustment = _float_metric(adjustments.get(bucket)) or 0.0
+        vol_multiplier = _float_metric(vol_multipliers.get(bucket)) or 1.0
+        if bucket in {"bond_cn", "gold", "cash_liquidity"}:
+            success_role = "execution_stability"
+        elif adjustment > 0:
+            success_role = "supports_probability"
+        elif vol_multiplier > 1.05:
+            success_role = "raises_drawdown"
+        else:
+            success_role = "neutral"
+        valuation_audit = _obj(item.get("valuation_audit") or {})
+        policy_news_audit = _obj(item.get("policy_news_audit") or {})
+        contributions.append(
+            {
+                "product_id": str(product_id),
+                "product_name": _metric(item.get("primary_product_name")) or "",
+                "asset_bucket": bucket,
+                "success_role": success_role,
+                "expected_return_adjustment": f"{adjustment * 100:.2f}%",
+                "volatility_multiplier": f"{vol_multiplier:.2f}x",
+                "valuation_status": _metric(valuation_audit.get("status")) or "",
+                "valuation_reason": _metric(valuation_audit.get("reason")) or "",
+                "policy_news_status": _metric(policy_news_audit.get("status")) or "",
+                "policy_news_score": _metric(policy_news_audit.get("score")) or "",
+                "_sort_score": (
+                    (2.0 if (_metric(policy_news_audit.get("status")) or "") == "observed" else 0.0)
+                    + (1.0 if success_role == "supports_probability" else 0.0)
+                    + (0.5 if success_role == "raises_drawdown" else 0.0)
+                ),
+            }
+        )
+    contributions.sort(
+        key=lambda item: (
+            -float(item.get("_sort_score") or 0.0),
+            str(item.get("product_id") or ""),
+        )
+    )
+    for item in contributions:
+        item.pop("_sort_score", None)
+    return contributions
+
+
+def _build_probability_product_contributions(
+    recommended_result: dict[str, Any],
+    product_evidence_panel: dict[str, Any],
+    execution_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return _build_product_contributions(recommended_result, product_evidence_panel, execution_summary)
+
+
 def _build_probability_explanation(
+    inp: DecisionCardBuildInput,
     goal_output: dict[str, Any],
     candidate_options: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -745,6 +1313,61 @@ def _build_probability_explanation(
         drawdown_explanation = ""
         why_not_drawdown = ""
 
+    constraint_contributions = _build_constraint_contributions(frontier_diagnostics)
+    if not constraint_contributions:
+        constraint_contributions = _synthesized_constraint_contributions(
+            target_status=target_status,
+            drawdown_status=drawdown_status,
+        )
+    evidence_layer = _build_probability_evidence_layer(inp, goal_output, recommended_result)
+    counterfactuals = _build_probability_counterfactuals(
+        inp,
+        goal_output,
+        recommended_result,
+        frontier_diagnostics=frontier_diagnostics,
+        target_return_priority=target_return_priority,
+        drawdown_priority=drawdown_priority,
+    )
+    product_contributions = _build_probability_product_contributions(
+        recommended_result,
+        _product_evidence_panel(inp),
+        _execution_plan_summary(inp),
+    )
+    difficulty_source = _difficulty_source(frontier_diagnostics)
+    if difficulty_source == "market" and any(item.get("is_binding") for item in constraint_contributions):
+        difficulty_source = "constraint_binding"
+    result_layer = {
+        "recommended": {
+            "label": recommended_label,
+            "success_probability": recommended_probability,
+            "expected_annual_return": recommended_expected_annual_return,
+        },
+        "highest_probability": {
+            "label": highest_label,
+            "success_probability": highest_probability,
+            "expected_annual_return": highest_expected_annual_return,
+        },
+        "target_return_priority": {
+            "label": target_label,
+            "success_probability": _metric(target_return_priority.get("success_probability")) or "",
+            "expected_annual_return": target_expected_annual_return,
+            "available": not bool(why_not_target),
+        },
+        "drawdown_priority": {
+            "label": drawdown_label,
+            "success_probability": _metric(drawdown_priority.get("success_probability")) or "",
+            "expected_annual_return": drawdown_expected_annual_return,
+            "available": not bool(why_not_drawdown),
+        },
+        "implied_required_annual_return": _percent_metric(recommended_result.get("implied_required_annual_return")),
+    }
+    constraint_layer = {
+        "difficulty_source": difficulty_source,
+        "contributions": constraint_contributions,
+    }
+    counterfactual_layer = counterfactuals
+    product_contribution_layer = product_contributions
+
     return {
         "recommended_allocation_label": recommended_label,
         "recommended_success_probability": recommended_probability,
@@ -766,7 +1389,16 @@ def _build_probability_explanation(
         "implied_required_annual_return": _percent_metric(recommended_result.get("implied_required_annual_return")),
         "product_probability_method": probability_method,
         "product_probability_disclosure": product_probability_disclosure,
-        "difficulty_source": _difficulty_source(frontier_diagnostics),
+        "difficulty_source": difficulty_source,
+        "constraint_contributions": constraint_contributions,
+        "evidence_summary": evidence_layer,
+        "evidence_layer": evidence_layer,
+        "counterfactuals": counterfactuals,
+        "product_contributions": product_contributions,
+        "result_layer": result_layer,
+        "constraint_layer": constraint_layer,
+        "counterfactual_layer": counterfactual_layer,
+        "product_contribution_layer": product_contribution_layer,
     }
 
 
@@ -1340,7 +1972,7 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     candidate_options = _build_goal_candidate_options(inp, goal_output)
     fallback_options = _build_goal_fallback_options(goal_output)
     frontier_analysis = _build_frontier_analysis(goal_output, candidate_options)
-    probability_explanation = _build_probability_explanation(goal_output, candidate_options)
+    probability_explanation = _build_probability_explanation(inp, goal_output, candidate_options)
     product_evidence_panel = _product_evidence_panel(inp)
     model_disclaimer = _model_disclaimer(goal_output)
     goal_semantics = _goal_semantics(inp.goal_solver_input)
@@ -1537,7 +2169,7 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     risk_summary = _obj(result.get("risk_summary", {}))
     candidate_options = _build_goal_candidate_options(inp, goal_output)
     frontier_analysis = _build_frontier_analysis(goal_output, candidate_options)
-    probability_explanation = _build_probability_explanation(goal_output, candidate_options)
+    probability_explanation = _build_probability_explanation(inp, goal_output, candidate_options)
     product_evidence_panel = _product_evidence_panel(inp)
     model_disclaimer = _model_disclaimer(goal_output)
     recommended_baseline_label = _candidate_label(

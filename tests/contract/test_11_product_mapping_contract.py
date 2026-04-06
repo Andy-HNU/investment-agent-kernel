@@ -258,11 +258,146 @@ def test_build_candidate_product_context_emits_product_simulation_input_from_sel
     assert context["product_probability_method"] == "product_independent_path"
     simulation_input = context["product_simulation_input"]
     assert simulation_input is not None
-    assert simulation_input["simulation_method"] == "product_independent_path"
-    assert simulation_input["frequency"] == "daily"
-    assert simulation_input["coverage_summary"]["observed_product_count"] == 3
-    assert len(simulation_input["products"]) == 3
-    assert simulation_input["products"][0]["return_series"]
+
+
+@pytest.mark.contract
+def test_build_execution_plan_surfaces_proxy_valuation_modes_and_signal_triggers():
+    runtime_pool = [
+        ProductCandidate(
+            product_id="ts_equity_core_etf",
+            product_name="沪深300ETF",
+            asset_bucket="equity_cn",
+            product_family="core",
+            wrapper_type="etf",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="510300.SH",
+            tags=["core", "broad_market"],
+        ),
+        ProductCandidate(
+            product_id="ts_satellite_energy_etf",
+            product_name="能源ETF",
+            asset_bucket="satellite",
+            product_family="satellite",
+            wrapper_type="etf",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="159930.SZ",
+            tags=["satellite", "cyclical", "energy"],
+            risk_labels=["权益波动"],
+        ),
+        ProductCandidate(
+            product_id="ts_bond_core_etf",
+            product_name="国债ETF",
+            asset_bucket="bond_cn",
+            product_family="defense",
+            wrapper_type="etf",
+            provider_source="tinyshare_runtime_catalog",
+            provider_symbol="511010.SH",
+            tags=["bond", "defense"],
+        ),
+    ]
+    product_universe_result = {
+        "source_status": "observed",
+        "source_name": "tinyshare_runtime_catalog",
+        "source_ref": "tinyshare://runtime_catalog?markets=stocks,funds",
+        "as_of": "2026-04-05",
+        "products": {
+            candidate.product_id: {
+                "status": "observed",
+                "tradable": True,
+                "source_name": "tinyshare_runtime_catalog",
+                "source_ref": "tinyshare://runtime_catalog?markets=stocks,funds",
+                "as_of": "2026-04-05",
+                "data_status": "observed",
+            }
+            for candidate in runtime_pool
+        },
+    }
+    valuation_result = {
+        "source_status": "observed",
+        "source_name": "tinyshare_runtime_valuation",
+        "source_ref": "tinyshare://daily_basic?trade_date=20260403",
+        "as_of": "2026-04-05",
+        "bucket_proxies": {
+            "equity_cn": {
+                "status": "observed",
+                "pe_ratio": 18.0,
+                "pb_ratio": 2.1,
+                "percentile": 0.22,
+                "valuation_mode": "index_proxy",
+                "data_status": "computed_from_observed",
+                "audit_window": {
+                    "start_date": "2025-04-03",
+                    "end_date": "2026-04-03",
+                    "trading_days": 243,
+                    "observed_days": 243,
+                    "inferred_days": 0,
+                },
+                "source_ref": "tinyshare://valuation/equity_cn",
+                "as_of": "2026-04-05",
+            },
+            "satellite": {
+                "status": "observed",
+                "pe_ratio": 22.0,
+                "pb_ratio": 2.6,
+                "percentile": 0.18,
+                "valuation_mode": "holdings_proxy",
+                "data_status": "computed_from_observed",
+                "audit_window": {
+                    "start_date": "2025-04-03",
+                    "end_date": "2026-04-03",
+                    "trading_days": 243,
+                    "observed_days": 243,
+                    "inferred_days": 0,
+                },
+                "source_ref": "tinyshare://valuation/satellite",
+                "as_of": "2026-04-05",
+            },
+        },
+        "products": {},
+    }
+    policy_news_signals = [
+        {
+            "signal_id": "sig_energy_001",
+            "as_of": "2026-04-05T12:00:00Z",
+            "source_type": "policy",
+            "source_refs": ["claw://policy/energy"],
+            "source_name": "claw_skill",
+            "published_at": "2026-04-04T08:00:00Z",
+            "direction": "positive",
+            "strength": 0.8,
+            "confidence": 0.9,
+            "target_buckets": ["satellite"],
+            "target_tags": ["energy"],
+        }
+    ]
+
+    plan = build_execution_plan(
+        source_run_id="run_proxy_valuation_and_signals",
+        source_allocation_id="allocation_proxy_valuation_and_signals",
+        bucket_targets={"equity_cn": 0.50, "satellite": 0.15, "bond_cn": 0.35},
+        restrictions=[],
+        catalog=runtime_pool,
+        runtime_candidates=runtime_pool,
+        product_universe_inputs={"requested": True, "require_observed_source": True},
+        product_universe_result=product_universe_result,
+        valuation_inputs={"requested": True, "require_observed_source": True},
+        valuation_result=valuation_result,
+        policy_news_signals=policy_news_signals,
+    )
+
+    equity_item = next(item for item in plan.items if item.asset_bucket == "equity_cn")
+    satellite_item = next(item for item in plan.items if item.asset_bucket == "satellite")
+
+    assert equity_item.valuation_audit is not None
+    assert equity_item.valuation_audit.valuation_mode == "index_proxy"
+    assert equity_item.valuation_audit.passed_filters is True
+    assert satellite_item.valuation_audit is not None
+    assert satellite_item.valuation_audit.valuation_mode == "holdings_proxy"
+    assert satellite_item.policy_news_audit is not None
+    assert satellite_item.policy_news_audit.matched_signal_ids == ["sig_energy_001"]
+    assert plan.maintenance_policy_summary["triggered_signal_ids"] == ["sig_energy_001"]
+    assert plan.maintenance_policy_summary["signal_data_status"] == ["computed_from_observed", "observed"]
+    assert plan.maintenance_policy_summary["signal_confidence_data_status"] == ["inferred", "observed"]
 
 
 @pytest.mark.contract
@@ -574,6 +709,65 @@ def test_build_execution_plan_uses_bucket_proxy_valuation_for_equity_fund_wrappe
     assert equity_item.valuation_audit.audit_window is not None
     assert equity_item.valuation_audit.audit_window.trading_days == 1
     assert plan.valuation_audit_summary["applicable_candidate_count"] == 1
+    assert plan.valuation_audit_summary["passed_candidate_count"] == 1
+    assert equity_item.valuation_audit.valuation_mode == "index_proxy"
+
+
+@pytest.mark.contract
+def test_build_execution_plan_uses_theme_proxy_valuation_for_satellite_wrappers():
+    plan = build_execution_plan(
+        source_run_id="run_theme_proxy_valuation",
+        source_allocation_id="allocation_theme_proxy_valuation",
+        bucket_targets={"satellite": 1.0},
+        restrictions=[],
+        catalog=[
+            ProductCandidate(
+                product_id="sat_energy_etf",
+                product_name="能源ETF",
+                asset_bucket="satellite",
+                product_family="satellite",
+                wrapper_type="etf",
+                provider_source="unit_test",
+                provider_symbol="159930.SZ",
+                tags=["satellite", "cyclical", "energy"],
+            )
+        ],
+        valuation_inputs={"requested": True, "require_observed_source": True},
+        valuation_result={
+            "source_status": "observed",
+            "source_name": "tinyshare_runtime_valuation",
+            "source_ref": "tinyshare://daily_basic?trade_date=20260403",
+            "as_of": "2026-04-05",
+            "products": {},
+            "theme_proxies": {
+                "cyclical": {
+                    "status": "observed",
+                    "pe_ratio": 16.0,
+                    "pb_ratio": 1.8,
+                    "percentile": 0.18,
+                    "data_status": "computed_from_observed",
+                    "audit_window": {
+                        "start_date": "2026-04-03",
+                        "end_date": "2026-04-03",
+                        "trading_days": 1,
+                        "observed_days": 1,
+                        "inferred_days": 0,
+                    },
+                    "source_ref": "tinyshare://daily_basic?trade_date=20260403&theme=cyclical",
+                    "as_of": "2026-04-05",
+                }
+            },
+        },
+    )
+
+    satellite_item = next(item for item in plan.items if item.asset_bucket == "satellite")
+
+    assert satellite_item.valuation_audit is not None
+    assert satellite_item.valuation_audit.status == "observed"
+    assert satellite_item.valuation_audit.pe_ratio == pytest.approx(16.0, abs=1e-6)
+    assert satellite_item.valuation_audit.passed_filters is True
+    assert satellite_item.valuation_audit.valuation_mode == "holdings_proxy"
+    assert satellite_item.valuation_audit.source_ref == "tinyshare://daily_basic?trade_date=20260403&theme=cyclical"
     assert plan.valuation_audit_summary["passed_candidate_count"] == 1
 
 

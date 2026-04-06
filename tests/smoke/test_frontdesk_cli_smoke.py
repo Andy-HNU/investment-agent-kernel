@@ -555,6 +555,28 @@ def test_render_frontdesk_summary_surfaces_layer1_probability_and_frontier_field
                     "product_probability_method": "product_proxy_adjustment_estimate",
                     "product_probability_disclosure": "当前产品层概率使用代理修正口径，仍不是逐产品独立模拟。",
                     "why_not_target_return_priority": "no_candidate_meets_required_annual_return",
+                    "difficulty_source": "constraint_binding",
+                    "evidence_layer": {
+                        "formal_path_status": "formal",
+                        "observed_ratio": 0.82,
+                        "observed_product_count": 6,
+                        "product_universe_source_status": "observed",
+                        "valuation_source_status": "observed",
+                        "policy_news_source_status": "observed",
+                    },
+                    "constraint_contributions": [
+                        {"constraint_name": "required_annual_return", "is_binding": True, "impact_direction": "down"}
+                    ],
+                    "counterfactuals": {
+                        "required_return_gap": 0.019,
+                        "fallback_scenarios": [
+                            {"scenario": "reduce_target", "expected_delta_success_probability": 0.08}
+                        ],
+                    },
+                    "product_contributions": [
+                        {"product_id": "cn_equity_dividend_etf", "contribution_direction": "positive"},
+                        {"product_id": "cn_satellite_energy_etf", "contribution_direction": "negative"},
+                    ],
                 },
                 "frontier_analysis": {
                     "frontier_diagnostics": {
@@ -590,7 +612,13 @@ def test_render_frontdesk_summary_surfaces_layer1_probability_and_frontier_field
     assert "probability_highest=冲目标方案 | success=70.00% | expected_return=7.90%" in output
     assert "probability_target_return=unavailable | reason=no_candidate_meets_required_annual_return | required_return=8.00%" in output
     assert "probability_drawdown=平衡推进方案 | success=65.00% | expected_return=6.10%" in output
+    assert "probability_difficulty_source=constraint_binding" in output
     assert "probability_method_disclosure=当前产品层概率使用代理修正口径，仍不是逐产品独立模拟。" in output
+    assert "probability_evidence_formal_path_status=formal" in output
+    assert "probability_evidence_observed_ratio=0.82" in output
+    assert "probability_constraint_contributions=[{'constraint_name': 'required_annual_return', 'is_binding': True, 'impact_direction': 'down'}]" in output
+    assert "probability_counterfactuals=[{'scenario': 'reduce_target', 'expected_delta_success_probability': 0.08}]" in output
+    assert "probability_product_contributions=['cn_equity_dividend_etf:positive', 'cn_satellite_energy_etf:negative']" in output
     assert "frontier_raw_candidate_count=4" in output
     assert "frontier_candidate_families=['balanced_core', 'growth_tilt', 'max_return_unconstrained']" in output
     assert "frontier_binding_constraints=[{'constraint_name': 'required_annual_return', 'reason': 'no_candidate_meets_required_annual_return'}]" in output

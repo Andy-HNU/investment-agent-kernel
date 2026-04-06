@@ -118,6 +118,9 @@ def _product_universe_source_summary(
         "source_name": result.get("source_name"),
         "source_ref": result.get("source_ref"),
         "as_of": result.get("as_of"),
+        "snapshot_id": result.get("snapshot_id"),
+        "item_count": result.get("item_count"),
+        "data_status": result.get("data_status"),
     }
 
 
@@ -327,11 +330,20 @@ def _resolve_valuation_payload(
             payload.setdefault("product_key", key)
             return payload
     if candidate.wrapper_type != "stock":
+        theme_map = dict(valuation_result.get("theme_proxies") or {})
+        normalized_tags = {str(tag).strip().lower() for tag in candidate.tags}
+        for theme in ("technology", "cyclical", "consumer", "healthcare", "defensive"):
+            if theme in normalized_tags and theme in theme_map:
+                payload = dict(theme_map.get(theme) or {})
+                payload.setdefault("product_key", f"theme:{theme}")
+                payload.setdefault("valuation_mode", "holdings_proxy")
+                return payload
         bucket_map = dict(valuation_result.get("bucket_proxies") or {})
         bucket_key = _normalize_bucket(candidate.asset_bucket)
         if bucket_key and bucket_key in bucket_map:
             payload = dict(bucket_map.get(bucket_key) or {})
             payload.setdefault("product_key", f"bucket:{bucket_key}")
+            payload.setdefault("valuation_mode", "holdings_proxy" if bucket_key == "satellite" else "index_proxy")
             return payload
     return None
 
@@ -366,6 +378,7 @@ def _build_valuation_audit(
     if not _is_valuation_applicable(candidate):
         return ProductValuationAudit(
             status="not_applicable",
+            valuation_mode="not_applicable",
             source_name=summary["source_name"],
             source_ref=summary["source_ref"],
             as_of=summary["as_of"],
@@ -375,8 +388,15 @@ def _build_valuation_audit(
 
     payload = _resolve_valuation_payload(candidate, valuation_result)
     payload_data_status = None
+    payload_source_name = summary["source_name"]
+    payload_source_ref = summary["source_ref"]
+    payload_as_of = summary["as_of"]
     if payload is not None and payload.get("data_status") is not None:
         payload_data_status = coerce_data_status(payload.get("data_status")).value
+    if payload is not None:
+        payload_source_name = str(payload.get("source_name") or payload_source_name)
+        payload_source_ref = str(payload.get("source_ref") or payload_source_ref)
+        payload_as_of = str(payload.get("as_of") or payload_as_of)
     elif summary["source_status"] == "observed":
         payload_data_status = DataStatus.OBSERVED.value
     if (
@@ -387,9 +407,10 @@ def _build_valuation_audit(
         if summary["source_status"] == "observed" and payload is None and candidate.wrapper_type != "stock":
             return ProductValuationAudit(
                 status="not_applicable",
-                source_name=summary["source_name"],
-                source_ref=summary["source_ref"],
-                as_of=summary["as_of"],
+                valuation_mode="not_applicable",
+                source_name=payload_source_name,
+                source_ref=payload_source_ref,
+                as_of=payload_as_of,
                 data_status=payload_data_status or DataStatus.MANUAL_ANNOTATION.value,
                 passed_filters=None,
                 reason="valuation:not_applicable",
@@ -397,9 +418,10 @@ def _build_valuation_audit(
         reason = "valuation:missing_observed_source"
         audit = ProductValuationAudit(
             status="missing_source",
-            source_name=summary["source_name"],
-            source_ref=summary["source_ref"],
-            as_of=summary["as_of"],
+            valuation_mode=None,
+            source_name=payload_source_name,
+            source_ref=payload_source_ref,
+            as_of=payload_as_of,
             data_status=payload_data_status or DataStatus.PRIOR_DEFAULT.value,
             passed_filters=False,
             reason=reason,
@@ -411,14 +433,16 @@ def _build_valuation_audit(
     pe_ratio = payload.get("pe_ratio")
     pb_ratio = payload.get("pb_ratio")
     percentile = payload.get("percentile")
+    valuation_mode = str(payload.get("valuation_mode") or ("direct_observed" if candidate.wrapper_type == "stock" else "index_proxy"))
     audit_window = AuditWindow.from_any(payload.get("audit_window"))
     if pe_ratio is None or percentile is None:
         reason = "valuation:missing_metrics"
         return ProductValuationAudit(
             status="missing_metrics",
-            source_name=summary["source_name"],
-            source_ref=summary["source_ref"],
-            as_of=summary["as_of"],
+            valuation_mode=valuation_mode,
+            source_name=payload_source_name,
+            source_ref=payload_source_ref,
+            as_of=payload_as_of,
             pe_ratio=pe_ratio,
             pb_ratio=pb_ratio,
             percentile=percentile,
@@ -435,9 +459,10 @@ def _build_valuation_audit(
         reason = "valuation:pe_above_40"
         return ProductValuationAudit(
             status="observed",
-            source_name=summary["source_name"],
-            source_ref=summary["source_ref"],
-            as_of=summary["as_of"],
+            valuation_mode=valuation_mode,
+            source_name=payload_source_name,
+            source_ref=payload_source_ref,
+            as_of=payload_as_of,
             pe_ratio=pe_ratio,
             pb_ratio=pb_ratio,
             percentile=percentile,
@@ -450,9 +475,10 @@ def _build_valuation_audit(
         reason = "valuation:percentile_above_0.30"
         return ProductValuationAudit(
             status="observed",
-            source_name=summary["source_name"],
-            source_ref=summary["source_ref"],
-            as_of=summary["as_of"],
+            valuation_mode=valuation_mode,
+            source_name=payload_source_name,
+            source_ref=payload_source_ref,
+            as_of=payload_as_of,
             pe_ratio=pe_ratio,
             pb_ratio=pb_ratio,
             percentile=percentile,
@@ -463,9 +489,10 @@ def _build_valuation_audit(
         ), reason
     return ProductValuationAudit(
         status="observed",
-        source_name=summary["source_name"],
-        source_ref=summary["source_ref"],
-        as_of=summary["as_of"],
+        valuation_mode=valuation_mode,
+        source_name=payload_source_name,
+        source_ref=payload_source_ref,
+        as_of=payload_as_of,
         pe_ratio=pe_ratio,
         pb_ratio=pb_ratio,
         percentile=percentile,
@@ -694,6 +721,37 @@ def _build_maintenance_policy_summary(
     cash_reserve_target_amount: float | None,
     initial_deploy_fraction: float,
 ) -> dict[str, Any]:
+    triggered_signal_ids = sorted(
+        {
+            signal_id
+            for item in items
+            for signal_id in list((item.policy_news_audit.matched_signal_ids if item.policy_news_audit is not None else []) or [])
+            if str(signal_id).strip()
+        }
+    )
+    triggered_product_ids = sorted(
+        {
+            item.primary_product_id
+            for item in items
+            if item.policy_news_audit is not None
+            and item.policy_news_audit.realtime_eligible
+            and bool(item.policy_news_audit.matched_signal_ids)
+        }
+    )
+    signal_data_statuses = sorted(
+        {
+            str(item.policy_news_audit.data_status or "").strip()
+            for item in items
+            if item.policy_news_audit is not None and str(item.policy_news_audit.data_status or "").strip()
+        }
+    )
+    signal_confidence_statuses = sorted(
+        {
+            str(item.policy_news_audit.confidence_data_status or "").strip()
+            for item in items
+            if item.policy_news_audit is not None and str(item.policy_news_audit.confidence_data_status or "").strip()
+        }
+    )
     return {
         "initial_deploy_fraction": round(float(initial_deploy_fraction), 4),
         "drawdown_add_buy_threshold": _DRAWDOWN_ADD_BUY_THRESHOLD,
@@ -702,6 +760,12 @@ def _build_maintenance_policy_summary(
         "rebalance_band": _REBALANCE_BAND,
         "cash_reserve_target_amount": cash_reserve_target_amount,
         "covered_buckets": [item.asset_bucket for item in items],
+        "triggered_signal_ids": triggered_signal_ids,
+        "triggered_product_ids": triggered_product_ids,
+        "signal_data_status": signal_data_statuses[0] if len(signal_data_statuses) == 1 else signal_data_statuses,
+        "signal_confidence_data_status": (
+            signal_confidence_statuses[0] if len(signal_confidence_statuses) == 1 else signal_confidence_statuses
+        ),
         "disclosure": (
             "当前维护规则为账户层执行政策：首笔40%，剩余仓位在回撤10%时分批执行；"
             "核心仓止盈阈值12%，卫星仓止盈阈值15%，权重偏离10%触发再平衡。"

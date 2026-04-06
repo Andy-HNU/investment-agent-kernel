@@ -202,6 +202,58 @@ def test_build_runtime_product_universe_context_reuses_snapshot_payload():
 
 
 @pytest.mark.contract
+def test_build_runtime_product_universe_context_derives_full_snapshot_contract_from_historical_dataset(monkeypatch):
+    candidate = ProductCandidate(
+        product_id="cn_equity_dividend_etf",
+        product_name="红利ETF",
+        asset_bucket="equity_cn",
+        product_family="core",
+        wrapper_type="etf",
+        provider_source="market_history_yfinance",
+        provider_symbol="510880",
+        tags=["core", "dividend"],
+    )
+
+    monkeypatch.setattr("product_mapping.runtime_inputs.load_builtin_catalog", lambda: [candidate])
+    monkeypatch.setattr(
+        "product_mapping.runtime_inputs._probe_product_observability",
+        lambda *args, **kwargs: {
+            "status": "observed",
+            "tradable": True,
+            "source_name": "yfinance",
+            "source_ref": "yfinance://510880.SS",
+            "as_of": "2026-04-03",
+            "data_status": "observed",
+            "audit_window": _audit_window(),
+            "coverage_status": "verified",
+            "notes": [],
+        },
+    )
+
+    inputs, result = build_runtime_product_universe_context(
+        market_raw={"historical_dataset": _historical_dataset()},
+        as_of="2026-04-05T10:00:00Z",
+        cache_dir=Path("/tmp/layer2_runtime_contract"),
+    )
+
+    assert inputs["requested"] is True
+    assert result is not None
+    assert result["snapshot_id"] == "runtime_product_universe_2026-04-03"
+    assert result["source_status"] == "observed"
+    assert result["data_status"] == "computed_from_observed"
+    assert result["item_count"] == 1
+    assert result["items"][0]["product_id"] == "cn_equity_dividend_etf"
+    assert result["items"][0]["wrapper"] == "etf"
+    assert result["items"][0]["asset_bucket"] == "equity_cn"
+    assert result["audit_window"]["trading_days"] == 491
+    assert result["source_names"] == ["runtime_product_universe", "yfinance"]
+    assert result["wrapper_counts"] == {"etf": 1}
+    assert result["asset_bucket_counts"] == {"equity_cn": 1}
+    assert len(result["runtime_candidates"]) == 1
+    assert result["products"]["cn_equity_dividend_etf"]["coverage_status"] == "verified"
+
+
+@pytest.mark.contract
 def test_build_runtime_product_valuation_context_maps_bucket_observations_to_products():
     inputs, result = build_runtime_product_valuation_context(
         market_raw={

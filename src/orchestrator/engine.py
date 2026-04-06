@@ -135,6 +135,7 @@ def _payload(value: Any) -> Any:
 def _has_any_raw_snapshot_inputs(envelope: dict[str, Any]) -> bool:
     return any(
         key in envelope
+        and not (key == "market_raw" and bool(envelope.get("_auto_market_raw_injected")))
         for key in (
             "market_raw",
             "account_raw",
@@ -1864,7 +1865,13 @@ def run_orchestrator(
     prior_calibration: Any | None = None,
 ) -> OrchestratorResult:
     envelope = dict(raw_inputs)
-    if isinstance(envelope.get("market_raw"), dict):
+    if envelope.get("market_raw") is None:
+        envelope["_auto_market_raw_injected"] = True
+        envelope["market_raw"] = enrich_market_raw_with_runtime_product_inputs(
+            {},
+            as_of=str(envelope.get("as_of") or ""),
+        )
+    elif isinstance(envelope.get("market_raw"), dict):
         envelope["market_raw"] = enrich_market_raw_with_runtime_product_inputs(
             envelope.get("market_raw"),
             as_of=str(envelope.get("as_of") or ""),

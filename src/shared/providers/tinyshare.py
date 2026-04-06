@@ -3,20 +3,21 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections import Counter, defaultdict
 from dataclasses import asdict
 from datetime import date, timedelta
 from pathlib import Path
 from statistics import median
 from typing import Any
 
-from product_mapping.types import ProductCandidate
+from product_mapping.types import ProductCandidate, ProductUniverseItem, ProductUniverseSnapshot
 from shared.audit import AuditWindow, DataStatus
 
 _TOKEN_ENV = "TINYSHARE_TOKEN"
 _TOKEN_FILE_ENV = "TINYSHARE_TOKEN_FILE"
 _ALLOW_REPO_TOKEN_FILE_UNDER_PYTEST_ENV = "TINYSHARE_ALLOW_REPO_TOKEN_FILE_UNDER_PYTEST"
 _CACHE_NAMESPACE = "tinyshare"
-_VALUATION_CACHE_FORMAT_VERSION = 2
+_VALUATION_CACHE_FORMAT_VERSION = 3
 
 _SATELLITE_KEYWORDS = {
     "芯片": "technology",
@@ -34,6 +35,59 @@ _SATELLITE_KEYWORDS = {
     "恒生科技": "technology",
     "纳斯达克": "technology",
 }
+
+_INDUSTRY_THEME_MAP = {
+    "银行": "defensive",
+    "非银金融": "defensive",
+    "证券": "defensive",
+    "保险": "defensive",
+    "石油": "cyclical",
+    "煤炭": "cyclical",
+    "电力设备": "cyclical",
+    "有色金属": "cyclical",
+    "基础化工": "cyclical",
+    "机械设备": "cyclical",
+    "汽车": "cyclical",
+    "家用电器": "consumer",
+    "食品饮料": "consumer",
+    "商贸零售": "consumer",
+    "医药生物": "healthcare",
+    "电子": "technology",
+    "计算机": "technology",
+    "通信": "technology",
+    "传媒": "technology",
+}
+
+
+def _market_label(candidate: ProductCandidate) -> str:
+    region = str(candidate.region or "CN").upper()
+    if region in {"CN", "HK", "US"}:
+        return region
+    return region or "CN"
+
+
+def _universe_item(candidate: ProductCandidate, *, as_of: str, source_ref: str) -> ProductUniverseItem:
+    return ProductUniverseItem(
+        product_id=candidate.product_id,
+        ts_code=str(candidate.provider_symbol or "").strip() or None,
+        wrapper=candidate.wrapper_type,
+        asset_bucket=candidate.asset_bucket,
+        market=_market_label(candidate),
+        region=str(candidate.region or "").strip().upper() or None,
+        theme_tags=sorted({str(tag).strip().lower() for tag in candidate.tags if str(tag).strip()}),
+        risk_labels=sorted({str(label).strip() for label in candidate.risk_labels if str(label).strip()}),
+        source_ref=source_ref,
+        data_status=DataStatus.OBSERVED.value,
+        as_of=as_of,
+    )
+
+
+def _percentile_from_values(value: float, population: list[float]) -> float:
+    if not population:
+        return 0.0
+    ordered = sorted(float(item) for item in population)
+    less_or_equal = sum(1 for item in ordered if item <= value)
+    return round(max(min(less_or_equal / len(ordered), 1.0), 0.0), 6)
 
 
 def has_token() -> bool:
@@ -210,6 +264,9 @@ def _stock_runtime_candidate(row: dict[str, Any]) -> ProductCandidate:
     tags = ["equity", "stock_wrapper", "cn"]
     if industry:
         tags.append(industry.lower())
+        for keyword, theme in _INDUSTRY_THEME_MAP.items():
+            if keyword in industry and theme not in tags:
+                tags.append(theme)
     return ProductCandidate(
         product_id=f"ts_stock_{ts_code.lower().replace('.', '_')}",
         product_name=name,
@@ -309,6 +366,35 @@ def _fund_runtime_candidate(row: dict[str, Any]) -> ProductCandidate | None:
     )
 
 
+def _market_label(candidate: ProductCandidate) -> str:
+    if str(candidate.region or "").upper() == "HK":
+        return "HK"
+    if str(candidate.region or "").upper() == "US":
+        return "US"
+    return "CN"
+
+
+def _runtime_universe_item(
+    candidate: ProductCandidate,
+    *,
+    as_of_date: str,
+    source_ref: str,
+) -> dict[str, Any]:
+    return ProductUniverseItem(
+        product_id=candidate.product_id,
+        ts_code=str(candidate.provider_symbol or "").strip() or None,
+        wrapper=candidate.wrapper_type,
+        asset_bucket=candidate.asset_bucket,
+        market=_market_label(candidate),
+        region=str(candidate.region or "").strip() or None,
+        theme_tags=list(candidate.tags),
+        risk_labels=list(candidate.risk_labels),
+        source_ref=source_ref,
+        data_status=DataStatus.OBSERVED.value,
+        as_of=as_of_date,
+    ).to_dict()
+
+
 def load_runtime_catalog(*, as_of: str, cache_dir: Path | None = None, token: str | None = None) -> tuple[list[ProductCandidate], dict[str, Any]]:
     as_of_date = _normalize_iso_date(str(as_of).split("T", 1)[0])
     cache_path = _cache_path(cache_dir, "runtime_catalog", as_of=as_of_date)
@@ -332,22 +418,43 @@ def load_runtime_catalog(*, as_of: str, cache_dir: Path | None = None, token: st
         candidates.append(candidate)
 
     candidates = [candidate for candidate in candidates if candidate.enabled]
+    source_ref = "tinyshare://runtime_catalog?markets=stocks,funds"
+    wrapper_counts: dict[str, int] = {}
+    asset_bucket_counts: dict[str, int] = {}
+    items: list[dict[str, Any]] = []
     for candidate in candidates:
+        wrapper_counts[candidate.wrapper_type] = wrapper_counts.get(candidate.wrapper_type, 0) + 1
+        asset_bucket_counts[candidate.asset_bucket] = asset_bucket_counts.get(candidate.asset_bucket, 0) + 1
+        items.append(_runtime_universe_item(candidate, as_of_date=as_of_date, source_ref=source_ref))
         products[candidate.product_id] = {
             "status": "observed",
             "tradable": True,
             "source_name": "tinyshare_runtime_catalog",
-            "source_ref": "tinyshare://runtime_catalog?markets=stocks,funds",
+            "source_ref": source_ref,
             "as_of": as_of_date,
             "data_status": DataStatus.OBSERVED.value,
             "audit_window": None,
         }
 
     result = {
+        "snapshot_id": f"tinyshare_runtime_catalog_{as_of_date}",
         "source_status": "observed",
         "source_name": "tinyshare_runtime_catalog",
-        "source_ref": "tinyshare://runtime_catalog?markets=stocks,funds",
+        "source_ref": source_ref,
         "as_of": as_of_date,
+        "data_status": DataStatus.OBSERVED.value,
+        "item_count": len(items),
+        "items": items,
+        "audit_window": {
+            "start_date": as_of_date,
+            "end_date": as_of_date,
+            "trading_days": 1,
+            "observed_days": 1,
+            "inferred_days": 0,
+        },
+        "source_names": ["tinyshare_fund_basic", "tinyshare_stock_basic"],
+        "wrapper_counts": wrapper_counts,
+        "asset_bucket_counts": asset_bucket_counts,
         "products": products,
         "runtime_candidates": [candidate.to_dict() for candidate in candidates],
     }
@@ -395,57 +502,140 @@ def build_runtime_valuation_result(
     pro = _pro_api(token)
     products: dict[str, Any] = {}
     bucket_proxies: dict[str, Any] = {}
-    audit_window = AuditWindow(
-        start_date=_normalize_iso_date(trade_date),
-        end_date=_normalize_iso_date(trade_date),
-        trading_days=1,
-        observed_days=1,
-        inferred_days=0,
+    theme_proxies: dict[str, Any] = {}
+    window_start = (date.fromisoformat(_normalize_iso_date(trade_date)) - timedelta(days=365)).strftime("%Y%m%d")
+    history_df = pro.daily_basic(
+        start_date=window_start,
+        end_date=trade_date,
+        fields="ts_code,trade_date,pe,pe_ttm,pb",
     )
-    df = pro.daily_basic(trade_date=trade_date, fields="ts_code,trade_date,pe,pe_ttm,pb")
-    by_code: dict[str, dict[str, Any]] = {}
-    if df is not None and not getattr(df, "empty", True):
-        for _, row in df.iterrows():
+    by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    if history_df is not None and not getattr(history_df, "empty", True):
+        for _, row in history_df.iterrows():
             payload = row.to_dict()
             ts_code = str(payload.get("ts_code") or "").strip().upper()
-            if ts_code:
-                by_code[ts_code] = payload
+            trade_day = _normalize_iso_date(str(payload.get("trade_date") or ""))
+            if not ts_code or not trade_day:
+                continue
+            by_code[ts_code].append(payload)
+            by_date[trade_day].append(payload)
 
     for candidate in stock_candidates:
-        row = by_code.get(str(candidate.provider_symbol or "").strip().upper())
-        if not row:
+        rows = sorted(
+            by_code.get(str(candidate.provider_symbol or "").strip().upper(), []),
+            key=lambda item: str(item.get("trade_date") or ""),
+        )
+        if not rows:
             continue
-        pe_ratio = row.get("pe") or row.get("pe_ttm")
-        pb_ratio = row.get("pb")
+        latest_row = rows[-1]
+        pe_ratio = latest_row.get("pe") or latest_row.get("pe_ttm")
+        pb_ratio = latest_row.get("pb")
         if pe_ratio is None:
             continue
-        percentile = min(max(float(pe_ratio) / 80.0, 0.0), 1.0)
+        history_values = [
+            float(row.get("pe") or row.get("pe_ttm"))
+            for row in rows
+            if row.get("pe") is not None or row.get("pe_ttm") is not None
+        ]
+        percentile = _percentile_from_values(float(pe_ratio), history_values)
+        candidate_audit_window = AuditWindow(
+            start_date=_normalize_iso_date(str(rows[0].get("trade_date") or "")),
+            end_date=_normalize_iso_date(str(rows[-1].get("trade_date") or "")),
+            trading_days=len(rows),
+            observed_days=len(rows),
+            inferred_days=0,
+        )
         products[candidate.product_id] = {
             "status": "observed",
             "pe_ratio": float(pe_ratio),
             "pb_ratio": None if pb_ratio is None else float(pb_ratio),
             "percentile": percentile,
+            "valuation_mode": "direct_observed",
             "data_status": DataStatus.COMPUTED_FROM_OBSERVED.value,
-            "audit_window": asdict(audit_window),
+            "audit_window": asdict(candidate_audit_window),
             "source_ref": f"tinyshare://daily_basic?trade_date={trade_date}&ts_code={candidate.provider_symbol}",
             "as_of": as_of_date,
         }
 
-    equity_pe_values = [
-        float(payload["pe_ratio"])
-        for payload in products.values()
-        if payload.get("pe_ratio") is not None
-    ]
+    equity_pe_values = [float(payload["pe_ratio"]) for payload in products.values() if payload.get("pe_ratio") is not None]
     if equity_pe_values:
         equity_proxy_pe = float(median(equity_pe_values))
+        equity_history_values: list[float] = []
+        for trade_day in sorted(by_date):
+            values = [
+                float(row.get("pe") or row.get("pe_ttm"))
+                for row in by_date[trade_day]
+                if row.get("pe") is not None or row.get("pe_ttm") is not None
+            ]
+            if values:
+                equity_history_values.append(float(median(values)))
+        equity_audit_window = AuditWindow(
+            start_date=_normalize_iso_date(str(min(by_date) if by_date else trade_date)),
+            end_date=_normalize_iso_date(str(max(by_date) if by_date else trade_date)),
+            trading_days=len(equity_history_values) or 1,
+            observed_days=len(equity_history_values) or 1,
+            inferred_days=0,
+        )
         bucket_proxies["equity_cn"] = {
             "status": "observed",
             "pe_ratio": equity_proxy_pe,
             "pb_ratio": None,
-            "percentile": min(max(equity_proxy_pe / 80.0, 0.0), 1.0),
+            "percentile": _percentile_from_values(equity_proxy_pe, equity_history_values or [equity_proxy_pe]),
+            "valuation_mode": "index_proxy",
             "data_status": DataStatus.COMPUTED_FROM_OBSERVED.value,
-            "audit_window": asdict(audit_window),
+            "audit_window": asdict(equity_audit_window),
             "source_ref": f"tinyshare://daily_basic?trade_date={trade_date}&subject=equity_cn_proxy",
+            "as_of": as_of_date,
+        }
+
+    themed_values: dict[str, list[float]] = {}
+    for candidate in stock_candidates:
+        product_payload = products.get(candidate.product_id)
+        if not product_payload:
+            continue
+        pe_value = product_payload.get("pe_ratio")
+        if pe_value is None:
+            continue
+        normalized_tags = {str(tag).strip().lower() for tag in candidate.tags}
+        for theme in {"technology", "cyclical", "consumer", "healthcare", "defensive"}:
+            if theme in normalized_tags:
+                themed_values.setdefault(theme, []).append(float(pe_value))
+    for theme, values in themed_values.items():
+        if not values:
+            continue
+        proxy_pe = float(median(values))
+        themed_codes = {
+            str(candidate.provider_symbol or "").strip().upper()
+            for candidate in stock_candidates
+            if theme in {str(tag).strip().lower() for tag in candidate.tags}
+        }
+        theme_history_values: list[float] = []
+        for trade_day in sorted(by_date):
+            values_for_day = [
+                float(row.get("pe") or row.get("pe_ttm"))
+                for row in by_date[trade_day]
+                if str(row.get("ts_code") or "").strip().upper() in themed_codes
+                and (row.get("pe") is not None or row.get("pe_ttm") is not None)
+            ]
+            if values_for_day:
+                theme_history_values.append(float(median(values_for_day)))
+        theme_audit_window = AuditWindow(
+            start_date=_normalize_iso_date(str(min(by_date) if by_date else trade_date)),
+            end_date=_normalize_iso_date(str(max(by_date) if by_date else trade_date)),
+            trading_days=len(theme_history_values) or 1,
+            observed_days=len(theme_history_values) or 1,
+            inferred_days=0,
+        )
+        theme_proxies[theme] = {
+            "status": "observed",
+            "pe_ratio": proxy_pe,
+            "pb_ratio": None,
+            "percentile": _percentile_from_values(proxy_pe, theme_history_values or [proxy_pe]),
+            "valuation_mode": "holdings_proxy",
+            "data_status": DataStatus.COMPUTED_FROM_OBSERVED.value,
+            "audit_window": asdict(theme_audit_window),
+            "source_ref": f"tinyshare://daily_basic?trade_date={trade_date}&theme={theme}",
             "as_of": as_of_date,
         }
 
@@ -456,6 +646,7 @@ def build_runtime_valuation_result(
         "as_of": as_of_date,
         "products": products,
         "bucket_proxies": bucket_proxies,
+        "theme_proxies": theme_proxies,
         "cache_format_version": _VALUATION_CACHE_FORMAT_VERSION,
         "stock_candidate_count": stock_candidate_count,
         "stock_candidate_signature": stock_candidate_signature,

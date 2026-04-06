@@ -332,6 +332,77 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                 "disclaimer": "以下为模型模拟结果，不是历史回测收益承诺。",
             },
             execution_plan_summary={
+                "product_universe_audit_summary": {
+                    "requested": True,
+                    "source_status": "observed",
+                    "source_name": "tinyshare_runtime_catalog",
+                    "source_ref": "tinyshare://runtime_catalog?markets=stocks,funds",
+                    "as_of": "2026-04-05",
+                    "item_count": 7420,
+                },
+                "valuation_audit_summary": {
+                    "requested": True,
+                    "source_status": "observed",
+                    "source_name": "tinyshare_runtime_valuation",
+                    "source_ref": "tinyshare://daily_basic?trade_date=20260403",
+                    "as_of": "2026-04-05",
+                },
+                "policy_news_audit_summary": {
+                    "source_status": "observed",
+                    "matched_signal_count": 2,
+                    "data_status": "computed_from_observed",
+                    "confidence_data_status": "inferred",
+                },
+                "formal_path_visibility": {
+                    "status": "formal",
+                    "execution_eligible": True,
+                    "execution_eligibility_reason": "all_required_fields_present",
+                    "degraded_scope": [],
+                    "fallback_used": False,
+                    "fallback_scope": [],
+                    "reasons": [],
+                    "missing_audit_fields": [],
+                },
+                "items": [
+                    {
+                        "asset_bucket": "equity_cn",
+                        "primary_product_id": "cn_equity_csi300_etf",
+                        "target_weight": 0.55,
+                        "risk_labels": ["权益波动"],
+                        "valuation_audit": {
+                            "status": "observed",
+                            "valuation_mode": "index_proxy",
+                            "pe_ratio": 18.0,
+                            "percentile": 0.22,
+                            "passed_filters": True,
+                        },
+                        "policy_news_audit": {
+                            "status": "not_applicable",
+                            "score": 0.0,
+                            "realtime_eligible": False,
+                        },
+                    },
+                    {
+                        "asset_bucket": "satellite",
+                        "primary_product_id": "cn_satellite_energy_etf",
+                        "target_weight": 0.10,
+                        "risk_labels": ["权益波动", "主题波动"],
+                        "valuation_audit": {
+                            "status": "observed",
+                            "valuation_mode": "holdings_proxy",
+                            "pe_ratio": 22.0,
+                            "percentile": 0.18,
+                            "passed_filters": True,
+                        },
+                        "policy_news_audit": {
+                            "status": "observed",
+                            "score": 0.48,
+                            "realtime_eligible": True,
+                            "matched_signal_ids": ["sig_energy_001"],
+                            "influence_scope": "satellite_dynamic",
+                        },
+                    },
+                ],
                 "product_evidence_panel": {
                     "items": [
                         {
@@ -366,6 +437,14 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
     assert card["probability_explanation"]["why_not_target_return_priority"] == "no_candidate_meets_required_annual_return"
     assert card["probability_explanation"]["product_probability_method"] == "product_proxy_adjustment_estimate"
     assert "代理修正" in card["probability_explanation"]["product_probability_disclosure"]
+    assert card["probability_explanation"]["constraint_contributions"][0]["name"] == "required_annual_return"
+    assert card["probability_explanation"]["evidence_layer"]["formal_path_status"] in {"formal", "ok", "degraded", "not_requested"}
+    assert card["probability_explanation"]["evidence_layer"]["observed_inputs"] >= 2
+    assert card["probability_explanation"]["counterfactuals"]["fallback_scenarios"][0]["scenario"] == "keep_target_relax_drawdown"
+    assert {item["product_id"] for item in card["probability_explanation"]["product_contributions"]} == {
+        "cn_equity_csi300_etf",
+        "cn_satellite_energy_etf",
+    }
     assert card["product_evidence_panel"]["items"][0]["primary_product_name"] == "沪深300ETF"
 
 
@@ -430,6 +509,239 @@ def test_goal_baseline_card_surfaces_product_independent_probability_disclosure(
     assert card["probability_explanation"]["product_probability_method"] == "product_independent_path"
     assert "逐产品独立路径" in card["probability_explanation"]["product_probability_disclosure"]
     assert card["probability_explanation"]["difficulty_source"] == "constraint_binding"
+
+
+@pytest.mark.contract
+def test_goal_baseline_card_surfaces_probability_explanation_v2_layers(monkeypatch):
+    monkeypatch.setattr(
+        "decision_card.builder._build_probability_counterfactuals",
+        lambda *_args, **_kwargs: {
+            "keep_target_return": {"estimated_required_drawdown_90pct": "20.00%"},
+            "keep_drawdown": {"expected_annual_return": "6.10%"},
+            "increase_monthly_contribution_20pct": {"success_probability": "71.00%"},
+            "extend_horizon_12m": {"success_probability": "74.00%"},
+        },
+    )
+    card = build_decision_card(
+        DecisionCardBuildInput(
+            card_type=DecisionCardType.GOAL_BASELINE,
+            workflow_type="onboarding",
+            run_id="decision_card_probability_explanation_v2",
+            goal_solver_input={
+                "snapshot_id": "snapshot_probability_v2",
+                "account_profile_id": "probability_v2_user",
+                "goal": {
+                    "goal_amount": 1_000_000.0,
+                    "horizon_months": 36,
+                    "goal_description": "probability explanation v2",
+                    "success_prob_threshold": 0.7,
+                    "priority": "important",
+                    "risk_preference": "moderate",
+                    "target_annual_return": 0.08,
+                },
+                "cashflow_plan": {
+                    "monthly_contribution": 2500.0,
+                    "annual_step_up_rate": 0.0,
+                    "cashflow_events": [],
+                },
+                "current_portfolio_value": 18000.0,
+                "candidate_allocations": [
+                    {
+                        "name": "balanced_progression__moderate__02",
+                        "weights": {
+                            "equity_cn": 0.55,
+                            "bond_cn": 0.25,
+                            "gold": 0.10,
+                            "satellite": 0.10,
+                        },
+                        "complexity_score": 0.12,
+                        "description": "balanced candidate",
+                    }
+                ],
+                "constraints": {
+                    "max_drawdown_tolerance": 0.20,
+                    "ips_bucket_boundaries": {
+                        "equity_cn": [0.20, 0.70],
+                        "bond_cn": [0.10, 0.50],
+                        "gold": [0.00, 0.25],
+                        "satellite": [0.00, 0.15],
+                    },
+                    "satellite_cap": 0.15,
+                    "theme_caps": {"technology": 0.10},
+                    "qdii_cap": 0.20,
+                    "liquidity_reserve_min": 0.05,
+                },
+                "solver_params": {
+                    "version": "contract",
+                    "n_paths": 32,
+                    "n_paths_lightweight": 16,
+                    "seed": 7,
+                    "market_assumptions": {
+                        "expected_returns": {
+                            "equity_cn": 0.08,
+                            "bond_cn": 0.03,
+                            "gold": 0.04,
+                            "satellite": 0.10,
+                        },
+                        "volatility": {
+                            "equity_cn": 0.18,
+                            "bond_cn": 0.04,
+                            "gold": 0.12,
+                            "satellite": 0.24,
+                        },
+                        "correlation_matrix": {
+                            "equity_cn": {"equity_cn": 1.0, "bond_cn": 0.15, "gold": 0.20, "satellite": 0.75},
+                            "bond_cn": {"equity_cn": 0.15, "bond_cn": 1.0, "gold": 0.10, "satellite": 0.15},
+                            "gold": {"equity_cn": 0.20, "bond_cn": 0.10, "gold": 1.0, "satellite": 0.15},
+                            "satellite": {"equity_cn": 0.75, "bond_cn": 0.15, "gold": 0.15, "satellite": 1.0},
+                        },
+                    },
+                },
+                "candidate_product_contexts": {
+                    "balanced_progression__moderate__02": {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "product_probability_method": "product_independent_path",
+                        "bucket_expected_return_adjustments": {"equity_cn": 0.01, "satellite": 0.02},
+                        "bucket_volatility_multipliers": {"equity_cn": 1.05, "satellite": 1.12},
+                        "selected_product_ids": ["cn_equity_csi300_etf", "cn_satellite_energy_etf"],
+                        "selected_proxy_refs": ["tinyshare://510300.SH", "tinyshare://159930.SZ"],
+                        "product_history_profiles": [
+                            {
+                                "product_id": "cn_equity_csi300_etf",
+                                "source_ref": "tinyshare://510300.SH",
+                                "observed_history_days": 250,
+                                "inferred_history_days": 0,
+                                "inference_weight": 1.0,
+                                "data_status": "observed",
+                            },
+                            {
+                                "product_id": "cn_satellite_energy_etf",
+                                "source_ref": "tinyshare://159930.SZ",
+                                "observed_history_days": 250,
+                                "inferred_history_days": 0,
+                                "inference_weight": 1.0,
+                                "data_status": "observed",
+                            },
+                        ],
+                        "product_simulation_input": {
+                            "frequency": "daily",
+                            "simulation_method": "product_independent_path",
+                            "audit_window": {
+                                "start_date": "2025-01-02",
+                                "end_date": "2026-04-03",
+                                "trading_days": 250,
+                                "observed_days": 250,
+                                "inferred_days": 0,
+                            },
+                            "coverage_summary": {
+                                "selected_product_count": 2,
+                                "observed_product_count": 2,
+                                "missing_product_count": 0,
+                            },
+                            "products": [],
+                        },
+                    }
+                },
+            },
+            goal_solver_output={
+                "recommended_result": {
+                    "allocation_name": "balanced_progression__moderate__02",
+                    "success_probability": 0.68,
+                    "bucket_success_probability": 0.61,
+                    "product_proxy_adjusted_success_probability": 0.64,
+                    "product_independent_success_probability": 0.68,
+                    "product_probability_method": "product_independent_path",
+                    "implied_required_annual_return": 0.08,
+                    "expected_annual_return": 0.061,
+                    "expected_terminal_value": 1_030_000.0,
+                    "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
+                },
+                "candidate_menu": [
+                    {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "success_probability": 0.68,
+                        "bucket_success_probability": 0.61,
+                        "product_proxy_adjusted_success_probability": 0.64,
+                        "product_independent_success_probability": 0.68,
+                        "product_probability_method": "product_independent_path",
+                        "expected_annual_return": 0.061,
+                        "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
+                        "weights": {"equity_cn": 0.55, "bond_cn": 0.25, "gold": 0.10, "satellite": 0.10},
+                        "is_feasible": True,
+                    }
+                ],
+                "frontier_analysis": {
+                    "recommended": {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "bucket_success_probability": 0.61,
+                        "product_proxy_adjusted_success_probability": 0.64,
+                        "product_independent_success_probability": 0.68,
+                        "product_probability_method": "product_independent_path",
+                        "expected_terminal_value": 1_030_000.0,
+                        "expected_annual_return": 0.061,
+                        "max_drawdown_90pct": 0.16,
+                        "why_selected": "逐产品独立路径下当前推荐仍最均衡。",
+                    },
+                },
+                "frontier_diagnostics": {
+                    "raw_candidate_count": 4,
+                    "feasible_candidate_count": 2,
+                    "frontier_max_expected_annual_return": 0.062,
+                    "binding_constraints": [{"constraint_name": "required_annual_return", "reason": "no_candidate_meets_required_annual_return"}],
+                    "structural_limitations": ["required_return_above_frontier_ceiling", "expected_return_shrinkage_applied"],
+                },
+            },
+            input_provenance={
+                "user_provided": [{"field": "goal.goal_amount", "label": "目标期末总资产", "value": 1_000_000}],
+                "default_assumed": [{"field": "behavior_raw", "label": "行为输入", "value": "product_default_behavior_snapshot"}],
+                "externally_fetched": [{"field": "market_raw", "label": "市场输入", "value": "tinyshare_runtime_catalog"}],
+            },
+            execution_plan_summary={
+                "items": [
+                    {
+                        "asset_bucket": "equity_cn",
+                        "primary_product_id": "cn_equity_csi300_etf",
+                        "valuation_audit": {
+                            "status": "observed",
+                            "passed_filters": True,
+                            "reason": "valuation:passed",
+                        },
+                        "policy_news_audit": {
+                            "status": "not_applicable",
+                            "score": 0.0,
+                        },
+                    },
+                    {
+                        "asset_bucket": "satellite",
+                        "primary_product_id": "cn_satellite_energy_etf",
+                        "valuation_audit": {
+                            "status": "observed",
+                            "passed_filters": True,
+                            "reason": "valuation:passed",
+                        },
+                        "policy_news_audit": {
+                            "status": "observed",
+                            "score": 0.42,
+                            "dominant_direction": "positive",
+                        },
+                    },
+                ]
+            },
+        )
+    )
+
+    explanation = card["probability_explanation"]
+    assert explanation["constraint_contributions"][0]["name"] == "required_annual_return"
+    assert explanation["evidence_layer"]["product_probability_method"] == "product_independent_path"
+    assert explanation["evidence_layer"]["observed_product_count"] == 2
+    assert explanation["evidence_layer"]["formal_path_status"] in {"formal", "ok", "degraded", "not_requested"}
+    assert explanation["counterfactuals"]["keep_target_return"]["estimated_required_drawdown_90pct"] == "20.00%"
+    assert {item["product_id"] for item in explanation["product_contributions"]} == {
+        "cn_equity_csi300_etf",
+        "cn_satellite_energy_etf",
+    }
 
 
 @pytest.mark.contract

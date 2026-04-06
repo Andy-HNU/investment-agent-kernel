@@ -48,6 +48,7 @@ class ProductCandidate:
 @dataclass(frozen=True)
 class ProductValuationAudit:
     status: Literal["observed", "missing_source", "missing_metrics", "not_applicable"]
+    valuation_mode: str | None = None
     source_name: str | None = None
     source_ref: str | None = None
     as_of: str | None = None
@@ -58,6 +59,42 @@ class ProductValuationAudit:
     audit_window: AuditWindow | None = None
     passed_filters: bool | None = None
     reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
+class ProductUniverseItem:
+    product_id: str
+    ts_code: str | None
+    wrapper: str
+    asset_bucket: str
+    market: str
+    region: str | None
+    theme_tags: list[str] = field(default_factory=list)
+    risk_labels: list[str] = field(default_factory=list)
+    source_ref: str = ""
+    data_status: str = "manual_annotation"
+    as_of: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
+class ProductUniverseSnapshot:
+    snapshot_id: str
+    as_of: str
+    source_name: str
+    source_ref: str
+    data_status: str
+    item_count: int
+    items: list[ProductUniverseItem] = field(default_factory=list)
+    audit_window: AuditWindow | None = None
+    source_names: list[str] = field(default_factory=list)
+    wrapper_counts: dict[str, int] = field(default_factory=dict)
+    asset_bucket_counts: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))

@@ -78,7 +78,29 @@ def _tinyshare_universe_result() -> dict[str, object]:
         "as_of": "2026-04-05",
         "data_status": "observed",
         "item_count": 3,
-        "audit_window": None,
+        "audit_window": {
+            "start_date": "2026-04-03",
+            "end_date": "2026-04-03",
+            "trading_days": 1,
+            "observed_days": 1,
+            "inferred_days": 0,
+        },
+        "items": [
+            {
+                "product_id": candidate.product_id,
+                "ts_code": candidate.provider_symbol,
+                "wrapper": candidate.wrapper_type,
+                "asset_bucket": candidate.asset_bucket,
+                "market": "CN",
+                "region": candidate.region,
+                "theme_tags": list(candidate.tags),
+                "risk_labels": list(candidate.risk_labels),
+                "source_ref": "tinyshare://runtime_catalog?markets=stocks,funds",
+                "data_status": "observed",
+                "as_of": "2026-04-05",
+            }
+            for candidate in _runtime_catalog()
+        ],
         "products": {
             candidate.product_id: {
                 "status": "observed",
@@ -107,6 +129,7 @@ def _tinyshare_valuation_result() -> dict[str, object]:
                 "pe_ratio": 18.0,
                 "pb_ratio": 2.1,
                 "percentile": 0.22,
+                "valuation_mode": "index_proxy",
                 "data_status": "computed_from_observed",
                 "audit_window": {
                     "start_date": "2025-04-03",
@@ -118,6 +141,42 @@ def _tinyshare_valuation_result() -> dict[str, object]:
                 "source_ref": "tinyshare://valuation/equity_cn",
                 "as_of": "2026-04-05",
             }
+        },
+        "bucket_proxies": {
+            "equity_cn": {
+                "status": "observed",
+                "pe_ratio": 18.0,
+                "pb_ratio": 2.1,
+                "percentile": 0.22,
+                "valuation_mode": "index_proxy",
+                "data_status": "computed_from_observed",
+                "audit_window": {
+                    "start_date": "2025-04-03",
+                    "end_date": "2026-04-03",
+                    "trading_days": 243,
+                    "observed_days": 243,
+                    "inferred_days": 0,
+                },
+                "source_ref": "tinyshare://valuation/equity_cn",
+                "as_of": "2026-04-05",
+            },
+            "satellite": {
+                "status": "observed",
+                "pe_ratio": 22.0,
+                "pb_ratio": 2.8,
+                "percentile": 0.28,
+                "valuation_mode": "holdings_proxy",
+                "data_status": "computed_from_observed",
+                "audit_window": {
+                    "start_date": "2025-04-03",
+                    "end_date": "2026-04-03",
+                    "trading_days": 243,
+                    "observed_days": 243,
+                    "inferred_days": 0,
+                },
+                "source_ref": "tinyshare://valuation/satellite",
+                "as_of": "2026-04-05",
+            },
         },
     }
 
@@ -186,8 +245,164 @@ def test_build_runtime_product_universe_context_uses_tinyshare_runtime_catalog_w
     assert result["snapshot_id"] == "tinyshare_runtime_catalog_2026-04-05"
     assert result["item_count"] == 3
     assert result["data_status"] == "observed"
+    assert len(result["items"]) == 3
+    assert result["items"][0]["data_status"] == "observed"
+    assert result["audit_window"]["trading_days"] == 1
     assert len(result["runtime_candidates"]) == 3
     assert result["products"]["ts_equity_core_etf"]["status"] == "observed"
+
+
+@pytest.mark.contract
+def test_build_runtime_valuation_result_uses_historical_percentile_window(monkeypatch, tmp_path):
+    class _FakePro:
+        def trade_cal(self, exchange="", start_date="", end_date=""):  # type: ignore[no-untyped-def]
+            return pd.DataFrame(
+                [
+                    {"cal_date": "20260401", "is_open": 1},
+                    {"cal_date": "20260402", "is_open": 1},
+                    {"cal_date": "20260403", "is_open": 1},
+                ]
+            )
+
+        def daily_basic(self, **kwargs):  # type: ignore[no-untyped-def]
+            fields = kwargs.get("fields", "")
+            if kwargs.get("trade_date"):
+                return pd.DataFrame(
+                    [
+                        {"ts_code": "600519.SH", "trade_date": "20260403", "pe": 24.0, "pe_ttm": 24.0, "pb": 6.2},
+                    ]
+                )
+            return pd.DataFrame(
+                [
+                    {"ts_code": "600519.SH", "trade_date": "20250403", "pe": 18.0, "pe_ttm": 18.0, "pb": 5.0},
+                    {"ts_code": "600519.SH", "trade_date": "20250903", "pe": 20.0, "pe_ttm": 20.0, "pb": 5.4},
+                    {"ts_code": "600519.SH", "trade_date": "20260103", "pe": 22.0, "pe_ttm": 22.0, "pb": 5.8},
+                    {"ts_code": "600519.SH", "trade_date": "20260403", "pe": 24.0, "pe_ttm": 24.0, "pb": 6.2},
+                ]
+            )
+
+    monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
+    monkeypatch.setattr("shared.providers.tinyshare._pro_api", lambda token=None: _FakePro())
+
+    result = tinyshare_provider.build_runtime_valuation_result(
+        [
+            ProductCandidate(
+                product_id="ts_stock_600519_sh",
+                product_name="贵州茅台",
+                asset_bucket="equity_cn",
+                product_family="a_share_stock",
+                wrapper_type="stock",
+                provider_source="tinyshare_stock_basic",
+                provider_symbol="600519.SH",
+                tags=["equity", "stock_wrapper", "consumer"],
+            )
+        ],
+        as_of="2026-04-05",
+        cache_dir=tmp_path / "tinyshare_valuation",
+    )
+
+    payload = result["products"]["ts_stock_600519_sh"]
+    assert payload["status"] == "observed"
+    assert payload["pe_ratio"] == pytest.approx(24.0, abs=1e-6)
+    assert payload["percentile"] == pytest.approx(1.0, abs=1e-6)
+    assert payload["audit_window"]["start_date"] == "2025-04-03"
+    assert payload["audit_window"]["end_date"] == "2026-04-03"
+    assert payload["audit_window"]["trading_days"] == 4
+    assert payload["source_ref"] == "tinyshare://daily_basic?trade_date=20260403&ts_code=600519.SH"
+    assert result["bucket_proxies"]["equity_cn"]["percentile"] == pytest.approx(1.0, abs=1e-6)
+
+
+@pytest.mark.contract
+def test_load_runtime_catalog_builds_formal_snapshot_items(monkeypatch, tmp_path):
+    class _FakePro:
+        def stock_basic(self, **kwargs):  # type: ignore[no-untyped-def]
+            return pd.DataFrame(
+                [
+                    {"ts_code": "000001.SZ", "name": "平安银行", "industry": "银行", "market": "主板", "list_date": "19910403"},
+                ]
+            )
+
+        def fund_basic(self, **kwargs):  # type: ignore[no-untyped-def]
+            return pd.DataFrame(
+                [
+                    {"ts_code": "510300.SH", "name": "沪深300ETF", "fund_type": "ETF", "invest_type": "被动指数型", "status": "L", "market": "E"},
+                    {"ts_code": "159930.SZ", "name": "能源ETF", "fund_type": "ETF", "invest_type": "行业指数型", "status": "L", "market": "E"},
+                ]
+            )
+
+    monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
+    monkeypatch.setattr("shared.providers.tinyshare._pro_api", lambda token=None: _FakePro())
+
+    candidates, result = tinyshare_provider.load_runtime_catalog(as_of="2026-04-05", cache_dir=tmp_path)
+
+    assert result["snapshot_id"] == "tinyshare_runtime_catalog_2026-04-05"
+    assert result["item_count"] == len(result["items"]) == len(candidates) == 3
+    assert result["data_status"] == "observed"
+    assert result["audit_window"]["start_date"] == "2026-04-05"
+    assert result["audit_window"]["trading_days"] == 1
+    assert {item["asset_bucket"] for item in result["items"]} == {"equity_cn", "satellite"}
+    assert any(item["wrapper"] == "stock" for item in result["items"])
+
+
+@pytest.mark.contract
+def test_load_runtime_catalog_emits_snapshot_metadata(monkeypatch, tmp_path):
+    class _FakePro:
+        def stock_basic(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "name": "平安银行",
+                        "industry": "银行",
+                        "market": "主板",
+                        "list_date": "19910403",
+                    }
+                ]
+            )
+
+        def fund_basic(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "510300.SH",
+                        "name": "沪深300ETF",
+                        "fund_type": "被动指数型",
+                        "invest_type": "股票型",
+                        "status": "L",
+                        "market": "E",
+                    },
+                    {
+                        "ts_code": "159930.SZ",
+                        "name": "能源ETF",
+                        "fund_type": "被动指数型",
+                        "invest_type": "股票型",
+                        "status": "L",
+                        "market": "E",
+                    },
+                ]
+            )
+
+    monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
+    monkeypatch.setattr("shared.providers.tinyshare._pro_api", lambda token=None: _FakePro())
+
+    candidates, snapshot = tinyshare_provider.load_runtime_catalog(
+        as_of="2026-04-05",
+        cache_dir=tmp_path / "tinyshare_runtime_catalog",
+    )
+
+    assert len(candidates) == 3
+    assert snapshot["snapshot_id"] == "tinyshare_runtime_catalog_2026-04-05"
+    assert snapshot["item_count"] == 3
+    assert snapshot["data_status"] == "observed"
+    assert snapshot["audit_window"]["start_date"] == "2026-04-05"
+    assert snapshot["audit_window"]["trading_days"] == 1
+    assert len(snapshot["items"]) == 3
+    assert snapshot["source_names"] == ["tinyshare_fund_basic", "tinyshare_stock_basic"]
+    assert snapshot["wrapper_counts"]["stock"] == 1
+    assert snapshot["wrapper_counts"]["etf"] == 2
+    assert snapshot["asset_bucket_counts"]["equity_cn"] == 2
+    assert snapshot["asset_bucket_counts"]["satellite"] == 1
+    assert snapshot["products"]["ts_fund_510300_sh"]["source_name"] == "tinyshare_runtime_catalog"
 
 
 @pytest.mark.contract
@@ -213,6 +428,69 @@ def test_build_runtime_product_valuation_context_uses_tinyshare_runtime_result_w
     assert result["source_status"] == "observed"
     assert result["products"]["ts_equity_core_etf"]["pe_ratio"] == pytest.approx(18.0, abs=1e-6)
     assert result["products"]["ts_equity_core_etf"]["percentile"] == pytest.approx(0.22, abs=1e-6)
+
+
+@pytest.mark.contract
+def test_load_runtime_catalog_emits_snapshot_items_when_tinyshare_is_live(monkeypatch, tmp_path):
+    class _FakePro:
+        def stock_basic(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "600519.SH",
+                        "name": "贵州茅台",
+                        "industry": "食品饮料",
+                        "market": "主板",
+                        "list_date": "20010827",
+                    }
+                ]
+            )
+
+        def fund_basic(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "510300.SH",
+                        "name": "沪深300ETF",
+                        "fund_type": "股票型",
+                        "invest_type": "被动指数型",
+                        "market": "E",
+                        "status": "L",
+                    }
+                ]
+            )
+
+    monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
+    monkeypatch.setattr("shared.providers.tinyshare._pro_api", lambda token=None: _FakePro())
+
+    candidates, snapshot = tinyshare_provider.load_runtime_catalog(
+        as_of="2026-04-05",
+        cache_dir=tmp_path / "tinyshare_cache",
+    )
+
+    assert len(candidates) == 2
+    assert snapshot["snapshot_id"] == "tinyshare_runtime_catalog_2026-04-05"
+    assert snapshot["item_count"] == 2
+    assert snapshot["data_status"] == "observed"
+    assert snapshot["audit_window"]["start_date"] == "2026-04-05"
+    assert snapshot["audit_window"]["trading_days"] == 1
+    assert len(snapshot["items"]) == 2
+    first_item = snapshot["items"][0]
+    assert set(
+        [
+            "product_id",
+            "ts_code",
+            "wrapper",
+            "asset_bucket",
+            "market",
+            "region",
+            "theme_tags",
+            "risk_labels",
+            "source_ref",
+            "data_status",
+            "as_of",
+        ]
+    ).issubset(first_item.keys())
 
 
 @pytest.mark.contract
@@ -328,10 +606,13 @@ def test_build_runtime_valuation_result_uses_bulk_daily_basic_snapshot(monkeypat
 
         def daily_basic(self, **kwargs):  # type: ignore[no-untyped-def]
             self.daily_basic_calls.append(dict(kwargs))
-            assert kwargs.get("trade_date") == "20260403"
-            assert kwargs.get("ts_code") in (None, "")
+            assert kwargs.get("trade_date") in (None, "")
+            assert kwargs.get("start_date") == "20250403"
+            assert kwargs.get("end_date") == "20260403"
             return pd.DataFrame(
                 [
+                    {"ts_code": "000001.SZ", "trade_date": "20250403", "pe": 4.4, "pe_ttm": 4.3, "pb": 0.40},
+                    {"ts_code": "600519.SH", "trade_date": "20250403", "pe": 18.4, "pe_ttm": 18.0, "pb": 7.20},
                     {"ts_code": "000001.SZ", "trade_date": "20260403", "pe": 4.7, "pe_ttm": 4.6, "pb": 0.44},
                     {"ts_code": "600519.SH", "trade_date": "20260403", "pe": 21.2, "pe_ttm": 20.3, "pb": 8.05},
                 ]
@@ -351,10 +632,10 @@ def test_build_runtime_valuation_result_uses_bulk_daily_basic_snapshot(monkeypat
     assert len(fake_pro.daily_basic_calls) == 1
     assert result["products"]["ts_stock_000001_sz"]["pe_ratio"] == pytest.approx(4.7, abs=1e-6)
     assert result["products"]["ts_stock_600519_sh"]["pb_ratio"] == pytest.approx(8.05, abs=1e-6)
-    assert result["products"]["ts_stock_600519_sh"]["audit_window"]["trading_days"] == 1
+    assert result["products"]["ts_stock_600519_sh"]["audit_window"]["trading_days"] == 2
     assert result["bucket_proxies"]["equity_cn"]["status"] == "observed"
     assert result["bucket_proxies"]["equity_cn"]["pe_ratio"] == pytest.approx(12.95, abs=1e-6)
-    assert result["bucket_proxies"]["equity_cn"]["percentile"] > 0.0
+    assert result["bucket_proxies"]["equity_cn"]["percentile"] == pytest.approx(1.0, abs=1e-6)
 
 
 @pytest.mark.contract

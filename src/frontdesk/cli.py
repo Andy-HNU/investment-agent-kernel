@@ -276,6 +276,28 @@ def _render_probability_explanation_block(decision_card: dict[str, Any]) -> list
         lines.append(f"probability_difficulty_source={explanation.get('difficulty_source')}")
     if explanation.get("product_probability_disclosure"):
         lines.append(f"probability_method_disclosure={explanation.get('product_probability_disclosure')}")
+    evidence_layer = explanation.get("evidence_layer") or {}
+    if evidence_layer.get("formal_path_status") is not None:
+        lines.append(f"probability_evidence_formal_path_status={evidence_layer.get('formal_path_status')}")
+    if evidence_layer.get("observed_ratio") is not None:
+        lines.append(f"probability_evidence_observed_ratio={evidence_layer.get('observed_ratio')}")
+    if evidence_layer.get("observed_product_count") is not None:
+        lines.append(f"probability_evidence_observed_product_count={evidence_layer.get('observed_product_count')}")
+    if explanation.get("constraint_contributions"):
+        lines.append(f"probability_constraint_contributions={explanation.get('constraint_contributions')}")
+    counterfactuals = explanation.get("counterfactuals") or {}
+    fallback_scenarios = counterfactuals.get("fallback_scenarios") or []
+    if fallback_scenarios:
+        lines.append(f"probability_counterfactuals={fallback_scenarios}")
+    product_contributions = explanation.get("product_contributions") or []
+    if product_contributions:
+        rendered = [
+            f"{item.get('product_id')}:{item.get('contribution_direction')}"
+            for item in product_contributions
+            if item.get("product_id") and item.get("contribution_direction")
+        ]
+        if rendered:
+            lines.append(f"probability_product_contributions={rendered}")
     return lines
 
 

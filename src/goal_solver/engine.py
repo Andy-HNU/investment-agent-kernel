@@ -786,6 +786,10 @@ def _build_unavailable_frontier_scenario(
         max_drawdown_90pct=0.0,
         product_proxy_adjusted_success_probability=None,
         product_probability_method="bucket_only_no_product_proxy_adjustment",
+        selected_product_ids=[],
+        bucket_expected_return_adjustments={},
+        bucket_volatility_multipliers={},
+        simulation_coverage_summary={},
         expected_annual_return=None,
         meets_success_threshold=False,
         drawdown_gap=0.0,
@@ -831,6 +835,10 @@ def _build_frontier_scenario(
         product_proxy_adjusted_success_probability=result.product_proxy_adjusted_success_probability,
         product_independent_success_probability=result.product_independent_success_probability,
         product_probability_method=result.product_probability_method,
+        selected_product_ids=list(result.selected_product_ids),
+        bucket_expected_return_adjustments=dict(result.bucket_expected_return_adjustments),
+        bucket_volatility_multipliers=dict(result.bucket_volatility_multipliers),
+        simulation_coverage_summary=dict(result.simulation_coverage_summary),
         expected_terminal_value=result.expected_terminal_value,
         max_drawdown_90pct=result.risk_summary.max_drawdown_90pct,
         expected_annual_return=expected_annual_return,
@@ -1361,8 +1369,17 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
         product_proxy_adjusted_success_probability = None
         product_independent_success_probability = None
         product_probability_method = "bucket_only_no_product_proxy_adjustment"
+        selected_product_ids: list[str] = []
+        selected_proxy_refs: list[str] = []
+        bucket_expected_return_adjustments: dict[str, float] = {}
+        bucket_volatility_multipliers: dict[str, float] = {}
+        simulation_coverage_summary: dict[str, Any] = {}
         product_context = inp.candidate_product_contexts.get(allocation.name)
         if product_context is not None:
+            selected_product_ids = list(product_context.selected_product_ids)
+            selected_proxy_refs = list(product_context.selected_proxy_refs)
+            bucket_expected_return_adjustments = dict(product_context.bucket_expected_return_adjustments)
+            bucket_volatility_multipliers = dict(product_context.bucket_volatility_multipliers)
             adjusted_market_assumptions, product_probability_method = _apply_candidate_product_context(
                 params.market_assumptions,
                 product_context,
@@ -1404,6 +1421,9 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
                 effective_risk = independent_risk
                 product_independent_success_probability = independent_probability
                 product_probability_method = "product_independent_path"
+                simulation_coverage_summary = dict(simulation_input.coverage_summary or {})
+            elif simulation_input is not None:
+                simulation_coverage_summary = dict(simulation_input.coverage_summary or {})
         expected_annual_return = _scenario_expected_annual_return(
             initial_value=inp.current_portfolio_value,
             cashflow_schedule=cashflow_schedule,
@@ -1417,6 +1437,11 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             product_proxy_adjusted_success_probability=product_proxy_adjusted_success_probability,
             product_independent_success_probability=product_independent_success_probability,
             product_probability_method=product_probability_method,
+            selected_product_ids=selected_product_ids,
+            selected_proxy_refs=selected_proxy_refs,
+            bucket_expected_return_adjustments=bucket_expected_return_adjustments,
+            bucket_volatility_multipliers=bucket_volatility_multipliers,
+            simulation_coverage_summary=simulation_coverage_summary,
             implied_required_annual_return=implied_required_annual_return,
             expected_annual_return=expected_annual_return,
             expected_terminal_value=effective_extra["expected_terminal_value"],
@@ -1438,6 +1463,11 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
                 product_proxy_adjusted_success_probability=product_proxy_adjusted_success_probability,
                 product_independent_success_probability=product_independent_success_probability,
                 product_probability_method=product_probability_method,
+                selected_product_ids=selected_product_ids,
+                selected_proxy_refs=selected_proxy_refs,
+                bucket_expected_return_adjustments=bucket_expected_return_adjustments,
+                bucket_volatility_multipliers=bucket_volatility_multipliers,
+                simulation_coverage_summary=simulation_coverage_summary,
                 implied_required_annual_return=implied_required_annual_return,
                 expected_annual_return=expected_annual_return,
                 expected_terminal_value=effective_extra["expected_terminal_value"],

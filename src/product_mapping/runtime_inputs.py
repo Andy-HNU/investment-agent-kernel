@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from product_mapping.catalog import load_builtin_catalog
-from product_mapping.types import ProductCandidate
+from product_mapping.types import ProductCandidate, ProductUniverseItem, ProductUniverseSnapshot
 from shared.audit import AuditWindow, DataStatus
 from shared.datasets.cache import DatasetCache
 from shared.datasets.types import DatasetSpec, VersionPin
@@ -294,7 +294,14 @@ def build_runtime_product_universe_context(
 
     products: dict[str, Any] = {}
     observed_count = 0
-    for candidate in load_builtin_catalog():
+    runtime_candidates = [candidate for candidate in load_builtin_catalog() if candidate.enabled]
+    wrapper_counts: dict[str, int] = {}
+    asset_bucket_counts: dict[str, int] = {}
+    source_names: set[str] = set()
+    items: list[dict[str, Any]] = []
+    audit_window = AuditWindow.from_any(historical_dataset.get("audit_window"))
+
+    for candidate in runtime_candidates:
         payload = _probe_product_observability(
             candidate,
             as_of=as_of,
@@ -306,6 +313,26 @@ def build_runtime_product_universe_context(
         products[candidate.product_id] = payload
         if str(payload.get("status") or "").strip().lower() == "observed":
             observed_count += 1
+        wrapper_counts[candidate.wrapper_type] = wrapper_counts.get(candidate.wrapper_type, 0) + 1
+        asset_bucket_counts[candidate.asset_bucket] = asset_bucket_counts.get(candidate.asset_bucket, 0) + 1
+        payload_source_name = str(payload.get("source_name") or "").strip()
+        if payload_source_name:
+            source_names.add(payload_source_name)
+        items.append(
+            ProductUniverseItem(
+                product_id=candidate.product_id,
+                ts_code=str(candidate.provider_symbol or "").strip() or None,
+                wrapper=candidate.wrapper_type,
+                asset_bucket=candidate.asset_bucket,
+                market=str(candidate.region or "CN").strip().upper() or "CN",
+                region=str(candidate.region or "").strip().upper() or None,
+                theme_tags=sorted({str(tag).strip().lower() for tag in candidate.tags if str(tag).strip()}),
+                risk_labels=sorted({str(label).strip() for label in candidate.risk_labels if str(label).strip()}),
+                source_ref=str(payload.get("source_ref") or source_ref),
+                data_status=str(payload.get("data_status") or DataStatus.COMPUTED_FROM_OBSERVED.value),
+                as_of=str(payload.get("as_of") or historical_dataset.get("as_of") or _as_of_date(as_of)),
+            ).to_dict()
+        )
 
     inputs = {
         "requested": True,
@@ -313,13 +340,42 @@ def build_runtime_product_universe_context(
         "source_kind": "runtime_product_universe_probe",
         "preferred_provider": preferred_provider,
     }
-    result = {
-        "source_status": "observed" if observed_count > 0 else "missing",
-        "source_name": "runtime_product_universe",
-        "source_ref": source_ref,
-        "as_of": str(historical_dataset.get("as_of") or _as_of_date(as_of)),
-        "products": products,
-    }
+    snapshot = ProductUniverseSnapshot(
+        snapshot_id=f"runtime_product_universe_{str(historical_dataset.get('as_of') or _as_of_date(as_of))}",
+        as_of=str(historical_dataset.get("as_of") or _as_of_date(as_of)),
+        source_name="runtime_product_universe",
+        source_ref=source_ref,
+        data_status=DataStatus.COMPUTED_FROM_OBSERVED.value,
+        item_count=len(items),
+        items=[
+            ProductUniverseItem(
+                product_id=str(item["product_id"]),
+                ts_code=item.get("ts_code"),
+                wrapper=str(item["wrapper"]),
+                asset_bucket=str(item["asset_bucket"]),
+                market=str(item["market"]),
+                region=item.get("region"),
+                theme_tags=list(item.get("theme_tags") or []),
+                risk_labels=list(item.get("risk_labels") or []),
+                source_ref=str(item.get("source_ref") or ""),
+                data_status=str(item.get("data_status") or DataStatus.COMPUTED_FROM_OBSERVED.value),
+                as_of=item.get("as_of"),
+            )
+            for item in items
+        ],
+        audit_window=audit_window,
+        source_names=sorted({"runtime_product_universe", *source_names}),
+        wrapper_counts=wrapper_counts,
+        asset_bucket_counts=asset_bucket_counts,
+    )
+    result = snapshot.to_dict()
+    result.update(
+        {
+            "source_status": "observed" if observed_count > 0 else "missing",
+            "products": products,
+            "runtime_candidates": [candidate.to_dict() for candidate in runtime_candidates],
+        }
+    )
     return inputs, result
 
 
