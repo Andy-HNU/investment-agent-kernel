@@ -234,18 +234,20 @@ exploratory_result
 
 对应关系：
 
-| run_outcome_status | resolved_result_category |
-| --- | --- |
-| `completed` | `formal_independent_result` / `formal_estimated_result` / `exploratory_result` |
-| `degraded` | `degraded_formal_result` |
-| `unavailable` | `null` |
-| `blocked` | `null` |
+| execution_policy | run_outcome_status | resolved_result_category |
+| --- | --- | --- |
+| `FORMAL_STRICT` / `FORMAL_ESTIMATION_ALLOWED` | `completed` | `formal_independent_result` / `formal_estimated_result` |
+| `FORMAL_STRICT` / `FORMAL_ESTIMATION_ALLOWED` | `degraded` | `degraded_formal_result` |
+| `FORMAL_STRICT` / `FORMAL_ESTIMATION_ALLOWED` | `unavailable` / `blocked` | `null` |
+| `EXPLORATORY` | `completed` | `exploratory_result` |
+| `EXPLORATORY` | `degraded` / `unavailable` / `blocked` | `null` |
 
 也就是说：
 
 - `unavailable` 和 `blocked` 是运行结果状态，不是主结果类别
 - 失败 formal run 可以没有 `resolved_result_category`
 - 失败时必须转向 `FailureArtifact`，而不是硬凑一个主结果类别
+- formal run 不允许把 `exploratory_result` 写成主结果类别
 
 主结果类别定义：
 
@@ -498,7 +500,7 @@ class CoverageSummary:
 
 联合判定，不允许仅按产品数量判定。
 
-### Evidence Bundle Schema
+### Evidence Bundle Schema 与 Versioning
 
 每次 run 必须生成最小审计对象 `EvidenceBundle`。
 
