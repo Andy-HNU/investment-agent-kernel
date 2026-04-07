@@ -193,6 +193,8 @@ class CandidateFilterBreakdown:
     product_universe_audit_summary: dict[str, Any] = field(default_factory=dict)
     valuation_audit_summary: dict[str, Any] = field(default_factory=dict)
     policy_news_audit_summary: dict[str, Any] = field(default_factory=dict)
+    formal_path_preflight: dict[str, Any] = field(default_factory=dict)
+    failure_artifact: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -271,6 +273,8 @@ class ExecutionPlan:
     candidate_filter_breakdown: CandidateFilterBreakdown | None = None
     valuation_audit_summary: dict[str, Any] = field(default_factory=dict)
     policy_news_audit_summary: dict[str, Any] = field(default_factory=dict)
+    formal_path_preflight: dict[str, Any] = field(default_factory=dict)
+    failure_artifact: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -313,4 +317,6 @@ class ExecutionPlan:
             "policy_news_audit_summary": dict(
                 self.policy_news_audit_summary or breakdown.policy_news_audit_summary or {}
             ),
+            "formal_path_preflight": dict(self.formal_path_preflight or breakdown.formal_path_preflight or {}),
+            "failure_artifact": dict(self.failure_artifact or breakdown.failure_artifact or {}),
         }

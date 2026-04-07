@@ -256,11 +256,31 @@ def _probe_product_observability(
     }
 
 
+def _formal_path_failure_artifact(
+    *,
+    source_kind: str,
+    failed_stage: str,
+    reason: str,
+    blocking_predicates: list[str],
+    next_recoverable_actions: list[str],
+) -> dict[str, Any]:
+    return {
+        "source_kind": source_kind,
+        "failed_stage": failed_stage,
+        "reason": reason,
+        "blocking_predicates": [str(item) for item in blocking_predicates if str(item).strip()],
+        "next_recoverable_actions": [str(item) for item in next_recoverable_actions if str(item).strip()],
+        "trustworthy_partial_diagnostics": False,
+        "formal_path_status": "blocked",
+    }
+
+
 def build_runtime_product_universe_context(
     *,
     market_raw: dict[str, Any] | None,
     as_of: str,
     cache_dir: Path | None = None,
+    formal_path_required: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     market = dict(market_raw or {})
     existing_result = (
@@ -274,6 +294,8 @@ def build_runtime_product_universe_context(
             or market.get("runtime_product_universe_inputs")
             or {}
         )
+        if formal_path_required:
+            inputs["formal_path_required"] = True
         result = dict(existing_result or {})
         return inputs, result
 
@@ -287,7 +309,24 @@ def build_runtime_product_universe_context(
             "requested": True,
             "require_observed_source": True,
             "source_kind": "tinyshare_runtime_catalog",
+            "formal_path_required": formal_path_required,
         }, result
+
+    if formal_path_required:
+        return {
+            "requested": True,
+            "require_observed_source": True,
+            "formal_path_required": True,
+            "formal_path_status": "blocked",
+            "source_kind": "runtime_product_universe_probe",
+            "failure_artifact": _formal_path_failure_artifact(
+                source_kind="runtime_product_universe_probe",
+                failed_stage="input_eligibility",
+                reason="observed runtime product universe unavailable; builtin catalog fallback disabled in strict mode",
+                blocking_predicates=["observed_runtime_source_unavailable"],
+                next_recoverable_actions=["provide_observed_runtime_product_universe"],
+            ),
+        }, None
 
     historical_dataset = dict(market.get("historical_dataset") or {})
     if not historical_dataset:
@@ -344,6 +383,7 @@ def build_runtime_product_universe_context(
         "require_observed_source": True,
         "source_kind": "runtime_product_universe_probe",
         "preferred_provider": preferred_provider,
+        "formal_path_required": formal_path_required,
     }
     snapshot = ProductUniverseSnapshot(
         snapshot_id=f"runtime_product_universe_{str(historical_dataset.get('as_of') or _as_of_date(as_of))}",
@@ -397,12 +437,17 @@ def build_runtime_product_valuation_context(
     market_raw: dict[str, Any] | None,
     as_of: str,
     cache_dir: Path | None = None,
+    formal_path_required: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     market = dict(market_raw or {})
     existing_result = dict(market.get("product_valuation_result") or market.get("valuation_result") or {})
     if existing_result:
         inputs = dict(market.get("product_valuation_inputs") or market.get("valuation_inputs") or {})
+        if formal_path_required:
+            inputs["formal_path_required"] = True
         return inputs, existing_result
+
+    observed_inputs = _observed_valuation_inputs(market)
 
     if _tinyshare_has_token():
         effective_cache_dir = cache_dir or Path.home() / ".cache" / "investment_system" / "timeseries"
@@ -431,9 +476,54 @@ def build_runtime_product_valuation_context(
             "requested": True,
             "require_observed_source": True,
             "source_kind": "tinyshare_runtime_valuation",
+            "formal_path_required": formal_path_required,
         }, result
 
-    observed_inputs = _observed_valuation_inputs(market)
+    universe_result = dict(
+        market.get("product_universe_result")
+        or market.get("runtime_product_universe_result")
+        or market.get("product_universe_snapshot")
+        or {}
+    )
+    runtime_candidates: list[ProductCandidate] = []
+    for payload in list(universe_result.get("runtime_candidates") or []):
+        if isinstance(payload, dict):
+            try:
+                runtime_candidates.append(ProductCandidate(**dict(payload)))
+            except Exception:
+                continue
+
+    if formal_path_required:
+        if not runtime_candidates:
+            return {
+                "requested": True,
+                "require_observed_source": True,
+                "formal_path_required": True,
+                "formal_path_status": "blocked",
+                "source_kind": "runtime_bucket_valuation_mapping",
+                "failure_artifact": _formal_path_failure_artifact(
+                    source_kind="runtime_bucket_valuation_mapping",
+                    failed_stage="input_eligibility",
+                    reason="observed runtime product universe unavailable for valuation mapping in strict mode",
+                    blocking_predicates=["observed_runtime_universe_unavailable"],
+                    next_recoverable_actions=["provide_observed_runtime_product_universe"],
+                ),
+            }, None
+        if not observed_inputs:
+            return {
+                "requested": True,
+                "require_observed_source": True,
+                "formal_path_required": True,
+                "formal_path_status": "blocked",
+                "source_kind": "runtime_bucket_valuation_mapping",
+                "failure_artifact": _formal_path_failure_artifact(
+                    source_kind="runtime_bucket_valuation_mapping",
+                    failed_stage="input_eligibility",
+                    reason="observed runtime valuation unavailable in strict mode",
+                    blocking_predicates=["observed_runtime_valuation_unavailable"],
+                    next_recoverable_actions=["provide_observed_runtime_product_valuation"],
+                ),
+            }, None
     if not observed_inputs:
         return {"requested": False, "require_observed_source": True}, None
 
@@ -446,7 +536,8 @@ def build_runtime_product_valuation_context(
     products: dict[str, Any] = {}
     source_name = "runtime_bucket_valuation_mapping"
     source_refs: set[str] = set()
-    for candidate in load_builtin_catalog():
+    valuation_candidates = runtime_candidates if runtime_candidates else list(load_builtin_catalog())
+    for candidate in valuation_candidates:
         if candidate.asset_bucket not in {"equity_cn", "satellite"} and candidate.wrapper_type != "stock":
             continue
         bucket_result = bucket_results.get(candidate.asset_bucket)
@@ -476,6 +567,7 @@ def build_runtime_product_valuation_context(
         "requested": True,
         "require_observed_source": True,
         "source_kind": "runtime_bucket_valuation_mapping",
+        "formal_path_required": formal_path_required,
     }
     result = {
         "source_status": "observed",
@@ -492,28 +584,35 @@ def enrich_market_raw_with_runtime_product_inputs(
     *,
     as_of: str,
     cache_dir: Path | None = None,
+    formal_path_required: bool = False,
 ) -> dict[str, Any]:
     enriched = deepcopy(market_raw or {})
     universe_inputs, universe_result = build_runtime_product_universe_context(
         market_raw=enriched,
         as_of=as_of,
         cache_dir=cache_dir,
+        formal_path_required=formal_path_required,
     )
     if universe_inputs.get("requested") or universe_result:
         enriched.setdefault("product_universe_inputs", universe_inputs)
         if universe_result is not None:
             enriched.setdefault("product_universe_result", universe_result)
+    if universe_inputs.get("failure_artifact") is not None:
+        enriched.setdefault("product_universe_failure_artifact", universe_inputs["failure_artifact"])
 
     valuation_inputs, valuation_result = build_runtime_product_valuation_context(
         market_raw=enriched,
         as_of=as_of,
         cache_dir=cache_dir,
+        formal_path_required=formal_path_required,
     )
     if valuation_inputs.get("requested") or valuation_result:
         enriched.setdefault("product_valuation_inputs", valuation_inputs)
         if valuation_result is not None:
             enriched.setdefault("product_valuation_result", valuation_result)
             enriched.setdefault("valuation_result", valuation_result)
+    if valuation_inputs.get("failure_artifact") is not None:
+        enriched.setdefault("product_valuation_failure_artifact", valuation_inputs["failure_artifact"])
     return enriched
 
 

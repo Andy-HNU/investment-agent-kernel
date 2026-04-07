@@ -195,9 +195,10 @@ def test_build_runtime_product_universe_context_reuses_snapshot_payload():
     inputs, result = build_runtime_product_universe_context(
         market_raw={"product_universe_snapshot": snapshot},
         as_of="2026-04-05T10:00:00Z",
+        formal_path_required=True,
     )
 
-    assert inputs == {}
+    assert inputs == {"formal_path_required": True}
     assert result == snapshot
 
 
@@ -254,6 +255,22 @@ def test_build_runtime_product_universe_context_derives_full_snapshot_contract_f
 
 
 @pytest.mark.contract
+def test_build_runtime_product_universe_context_blocks_strict_formal_mode_without_observed_source():
+    inputs, result = build_runtime_product_universe_context(
+        market_raw={"historical_dataset": _historical_dataset()},
+        as_of="2026-04-05T10:00:00Z",
+        formal_path_required=True,
+    )
+
+    assert inputs["requested"] is True
+    assert inputs["formal_path_required"] is True
+    assert inputs["formal_path_status"] == "blocked"
+    assert inputs["failure_artifact"]["failed_stage"] == "input_eligibility"
+    assert "builtin catalog fallback disabled" in inputs["failure_artifact"]["reason"]
+    assert result is None
+
+
+@pytest.mark.contract
 def test_build_runtime_product_valuation_context_maps_bucket_observations_to_products():
     inputs, result = build_runtime_product_valuation_context(
         market_raw={
@@ -292,6 +309,33 @@ def test_build_runtime_product_valuation_context_maps_bucket_observations_to_pro
     assert satellite_payload["status"] == "observed"
     assert satellite_payload["percentile"] == pytest.approx(0.0, abs=1e-6)
     assert "cn_gold_etf" not in result["products"]
+
+
+@pytest.mark.contract
+def test_build_runtime_product_valuation_context_blocks_strict_formal_mode_without_runtime_universe():
+    inputs, result = build_runtime_product_valuation_context(
+        market_raw={
+            "valuation_observations": {
+                "equity_cn": {
+                    "metric_name": "pe_ttm",
+                    "current_value": 18.0,
+                    "source_ref": "akshare:valuation:equity_cn",
+                    "as_of": "2026-04-05",
+                    "history_values": [21.0, 24.0, 27.0, 30.0],
+                    "audit_window": _audit_window(),
+                }
+            }
+        },
+        as_of="2026-04-05T10:00:00Z",
+        formal_path_required=True,
+    )
+
+    assert inputs["requested"] is True
+    assert inputs["formal_path_required"] is True
+    assert inputs["formal_path_status"] == "blocked"
+    assert inputs["failure_artifact"]["failed_stage"] == "input_eligibility"
+    assert "observed runtime product universe unavailable" in inputs["failure_artifact"]["reason"]
+    assert result is None
 
 
 @pytest.mark.contract
@@ -347,6 +391,189 @@ def test_enrich_market_raw_with_runtime_product_inputs_preserves_policy_signals(
     assert market_raw["product_valuation_inputs"]["requested"] is True
     assert market_raw["product_valuation_result"]["source_status"] == "observed"
     assert market_raw["policy_news_signals"][0]["signal_id"] == "energy-positive"
+
+
+@pytest.mark.contract
+def test_enrich_market_raw_with_runtime_product_inputs_preserves_tinyshare_inputs_in_strict_formal_mode(monkeypatch):
+    monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
+    runtime_candidates = [
+        ProductCandidate(
+            product_id="ts_equity_core_etf",
+            product_name="核心宽基ETF",
+            asset_bucket="equity_cn",
+            product_family="core",
+            wrapper_type="etf",
+            provider_source="market_history_tinyshare",
+            provider_symbol="510300.SH",
+            tags=["core", "broad_market"],
+        ),
+        ProductCandidate(
+            product_id="ts_bond_core_etf",
+            product_name="国债ETF",
+            asset_bucket="bond_cn",
+            product_family="defense",
+            wrapper_type="etf",
+            provider_source="market_history_tinyshare",
+            provider_symbol="511010.SH",
+            tags=["defense", "bond"],
+        ),
+        ProductCandidate(
+            product_id="ts_gold_core_etf",
+            product_name="黄金ETF",
+            asset_bucket="gold",
+            product_family="defense",
+            wrapper_type="etf",
+            provider_source="market_history_tinyshare",
+            provider_symbol="518880.SH",
+            tags=["gold"],
+        ),
+    ]
+
+    def tinyshare_universe_result() -> dict[str, object]:
+        return {
+            "snapshot_id": "tinyshare_runtime_catalog_2026-04-05",
+            "source_status": "observed",
+            "source_name": "tinyshare_runtime_catalog",
+            "source_ref": "tinyshare://runtime_catalog?markets=stocks,funds",
+            "as_of": "2026-04-05",
+            "data_status": "observed",
+            "item_count": len(runtime_candidates),
+            "audit_window": {
+                "start_date": "2026-04-03",
+                "end_date": "2026-04-03",
+                "trading_days": 1,
+                "observed_days": 1,
+                "inferred_days": 0,
+            },
+            "items": [
+                {
+                    "product_id": candidate.product_id,
+                    "ts_code": candidate.provider_symbol,
+                    "wrapper": candidate.wrapper_type,
+                    "asset_bucket": candidate.asset_bucket,
+                    "market": "CN",
+                    "region": candidate.region,
+                    "theme_tags": list(candidate.tags),
+                    "risk_labels": list(candidate.risk_labels),
+                    "source_ref": "tinyshare://runtime_catalog?markets=stocks,funds",
+                    "data_status": "observed",
+                    "as_of": "2026-04-05",
+                }
+                for candidate in runtime_candidates
+            ],
+            "products": {
+                candidate.product_id: {
+                    "status": "observed",
+                    "tradable": True,
+                    "source_name": "tinyshare_runtime_catalog",
+                    "source_ref": "tinyshare://runtime_catalog?markets=stocks,funds",
+                    "as_of": "2026-04-05",
+                    "data_status": "observed",
+                    "audit_window": None,
+                }
+                for candidate in runtime_candidates
+            },
+            "runtime_candidates": [candidate.to_dict() for candidate in runtime_candidates],
+        }
+
+    def tinyshare_valuation_result() -> dict[str, object]:
+        return {
+            "source_status": "observed",
+            "source_name": "tinyshare_runtime_valuation",
+            "source_ref": "tinyshare://daily_basic?trade_date=20260403",
+            "as_of": "2026-04-05",
+            "products": {
+                "ts_equity_core_etf": {
+                    "status": "observed",
+                    "pe_ratio": 18.0,
+                    "pb_ratio": 2.1,
+                    "percentile": 0.22,
+                    "valuation_mode": "index_proxy",
+                    "data_status": "computed_from_observed",
+                    "audit_window": {
+                        "start_date": "2025-04-03",
+                        "end_date": "2026-04-03",
+                        "trading_days": 243,
+                        "observed_days": 243,
+                        "inferred_days": 0,
+                    },
+                    "source_ref": "tinyshare://valuation/equity_cn",
+                    "as_of": "2026-04-05",
+                }
+            },
+            "bucket_proxies": {
+                "equity_cn": {
+                    "status": "observed",
+                    "pe_ratio": 18.0,
+                    "pb_ratio": 2.1,
+                    "percentile": 0.22,
+                    "valuation_mode": "index_proxy",
+                    "data_status": "computed_from_observed",
+                    "audit_window": {
+                        "start_date": "2025-04-03",
+                        "end_date": "2026-04-03",
+                        "trading_days": 243,
+                        "observed_days": 243,
+                        "inferred_days": 0,
+                    },
+                    "source_ref": "tinyshare://valuation/equity_cn",
+                    "as_of": "2026-04-05",
+                },
+                "satellite": {
+                    "status": "observed",
+                    "pe_ratio": 22.0,
+                    "pb_ratio": 2.8,
+                    "percentile": 0.28,
+                    "valuation_mode": "holdings_proxy",
+                    "data_status": "computed_from_observed",
+                    "audit_window": {
+                        "start_date": "2025-04-03",
+                        "end_date": "2026-04-03",
+                        "trading_days": 243,
+                        "observed_days": 243,
+                        "inferred_days": 0,
+                    },
+                    "source_ref": "tinyshare://valuation/satellite",
+                    "as_of": "2026-04-05",
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        "product_mapping.runtime_inputs.load_tinyshare_runtime_catalog",
+        lambda *, as_of, cache_dir=None: (runtime_candidates, tinyshare_universe_result()),
+    )
+    monkeypatch.setattr(
+        "product_mapping.runtime_inputs.build_tinyshare_runtime_valuation_result",
+        lambda candidates, *, as_of, cache_dir=None: tinyshare_valuation_result(),
+    )
+
+    market_raw = enrich_market_raw_with_runtime_product_inputs(
+        {
+            "policy_news_signals": [
+                {
+                    "signal_id": "energy-positive",
+                    "as_of": "2026-04-05T10:00:00Z",
+                    "published_at": "2026-04-04T09:00:00Z",
+                    "source_type": "news",
+                    "source_name": "newswire",
+                    "source_refs": ["https://example.com/energy"],
+                    "direction": "bullish",
+                    "strength": 0.9,
+                    "confidence": 0.8,
+                    "target_buckets": ["satellite"],
+                    "target_tags": ["cyclical"],
+                }
+            ]
+        },
+        as_of="2026-04-05T10:00:00Z",
+        formal_path_required=True,
+    )
+
+    assert market_raw["product_universe_inputs"]["formal_path_required"] is True
+    assert market_raw["product_universe_result"]["source_status"] == "observed"
+    assert market_raw["product_valuation_inputs"]["formal_path_required"] is True
+    assert market_raw["product_valuation_result"]["source_status"] == "observed"
 
 
 @pytest.mark.contract

@@ -235,6 +235,7 @@ def test_build_runtime_product_universe_context_uses_tinyshare_runtime_catalog_w
         market_raw={},
         as_of="2026-04-05T10:00:00Z",
         cache_dir=Path("/tmp/layer2_tinyshare_contract"),
+        formal_path_required=True,
     )
 
     assert inputs["requested"] is True
@@ -420,6 +421,7 @@ def test_build_runtime_product_valuation_context_uses_tinyshare_runtime_result_w
     inputs, result = build_runtime_product_valuation_context(
         market_raw={},
         as_of="2026-04-05T10:00:00Z",
+        formal_path_required=True,
     )
 
     assert inputs["requested"] is True

@@ -16,7 +16,14 @@ from product_mapping.runtime_inputs import enrich_market_raw_with_runtime_produc
 from runtime_optimizer.engine import run_runtime_optimizer
 from runtime_optimizer.types import RuntimeOptimizerMode
 from snapshot_ingestion.engine import build_snapshot_bundle
-from shared.audit import CoverageSummary, DisclosureDecision, EvidenceBundle, RunOutcomeStatus
+from shared.audit import (
+    CoverageSummary,
+    DisclosureDecision,
+    EvidenceBundle,
+    ExecutionPolicy,
+    RunOutcomeStatus,
+    coerce_execution_policy,
+)
 
 from orchestrator.types import (
     OrchestratorAuditRecord,
@@ -1249,7 +1256,7 @@ def _gate1_evidence_bundle(
         requested_result_category="formal_independent_result",
         resolved_result_category=resolved_result_category,
         run_outcome_status=run_outcome_status,
-        execution_policy="FORMAL_ESTIMATION_ALLOWED",
+        execution_policy=ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value,
         disclosure_policy="FORMAL_STANDARD",
         simulation_mode=_text(_as_dict(_as_dict(goal_solver_input).get("solver_params")).get("simulation_mode")),
         input_refs=input_refs,
@@ -1894,6 +1901,35 @@ def _extract_execution_plan_account_context(
     )
 
 
+def _formal_path_required(envelope: dict[str, Any]) -> bool:
+    explicit = envelope.get("formal_path_required")
+    if explicit is not None:
+        return bool(explicit)
+    execution_policy = envelope.get("execution_policy")
+    if execution_policy is None:
+        return False
+    return coerce_execution_policy(execution_policy) in {
+        ExecutionPolicy.FORMAL_STRICT,
+        ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED,
+    }
+
+
+def _collect_formal_path_preflight_issues(payloads: dict[str, Any], *, prefix: str) -> tuple[list[str], list[str]]:
+    blocking: list[str] = []
+    degraded: list[str] = []
+    for name, raw_payload in payloads.items():
+        payload = _as_dict(raw_payload)
+        preflight = _as_dict(payload.get("formal_path_preflight"))
+        status = _text(preflight.get("run_outcome_status"))
+        if status == "blocked":
+            predicates = list(preflight.get("blocking_predicates") or []) or ["formal_path_blocked"]
+            blocking.extend(f"{prefix}[{name}]={predicate}" for predicate in predicates)
+        elif status == "degraded":
+            reasons = list(preflight.get("degradation_reasons") or []) or ["formal_path_degraded"]
+            degraded.extend(f"{prefix}[{name}]={reason}" for reason in reasons)
+    return blocking, degraded
+
+
 def _maybe_build_execution_plan(
     *,
     run_id: str,
@@ -1901,6 +1937,7 @@ def _maybe_build_execution_plan(
     status: WorkflowStatus,
     goal_solver_output: Any,
     envelope: dict[str, Any],
+    formal_path_required: bool,
 ) -> Any | None:
     if status == WorkflowStatus.BLOCKED or workflow_type not in {
         WorkflowType.ONBOARDING,
@@ -1937,6 +1974,7 @@ def _maybe_build_execution_plan(
         valuation_result=valuation_result,
         policy_news_signals=policy_news_signals,
         product_proxy_result=product_proxy_result,
+        formal_path_required=formal_path_required,
         account_total_value=account_total_value,
         current_weights=current_weights,
         available_cash=available_cash,
@@ -1950,6 +1988,7 @@ def _build_solver_candidate_product_contexts(
     candidate_allocations: list[Any],
     envelope: dict[str, Any],
     snapshot_bundle: Any | None,
+    formal_path_required: bool,
 ) -> dict[str, Any]:
     restrictions = _extract_execution_plan_restrictions(envelope)
     valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
@@ -1977,6 +2016,7 @@ def _build_solver_candidate_product_contexts(
             policy_news_signals=policy_news_signals,
             product_proxy_result=product_proxy_result,
             historical_dataset=historical_dataset,
+            formal_path_required=formal_path_required,
         )
     return contexts
 
@@ -2077,16 +2117,19 @@ def run_orchestrator(
     prior_calibration: Any | None = None,
 ) -> OrchestratorResult:
     envelope = dict(raw_inputs)
+    formal_path_required = _formal_path_required(envelope)
     if envelope.get("market_raw") is None:
         envelope["_auto_market_raw_injected"] = True
         envelope["market_raw"] = enrich_market_raw_with_runtime_product_inputs(
             {},
             as_of=str(envelope.get("as_of") or ""),
+            formal_path_required=formal_path_required,
         )
     elif isinstance(envelope.get("market_raw"), dict):
         envelope["market_raw"] = enrich_market_raw_with_runtime_product_inputs(
             envelope.get("market_raw"),
             as_of=str(envelope.get("as_of") or ""),
+            formal_path_required=formal_path_required,
         )
     requested_workflow = _requested_workflow_from_any(trigger)
     normalized_trigger = _trigger_from_any(trigger)
@@ -2181,14 +2224,31 @@ def run_orchestrator(
                         candidate_allocations=allocation_result.candidate_allocations,
                         envelope=envelope,
                         snapshot_bundle=snapshot_bundle,
+                        formal_path_required=formal_path_required,
+                    )
+                    candidate_context_blocking, candidate_context_degraded = _collect_formal_path_preflight_issues(
+                        solver_input["candidate_product_contexts"],
+                        prefix="candidate_product_context",
+                    )
+                    blocking_reasons.extend(
+                        [reason for reason in candidate_context_blocking if reason not in blocking_reasons]
+                    )
+                    degraded_notes.extend(
+                        [reason for reason in candidate_context_degraded if reason not in degraded_notes]
                     )
                     goal_solver_input_used = solver_input
-                    goal_solver_output = run_goal_solver(solver_input)
-                    goal_solver_output = _enrich_goal_solver_output(
-                        goal_solver_output,
-                        solver_input,
-                    )
-                    solver_snapshot_id = _obj(goal_solver_output).get("input_snapshot_id")
+                    if not candidate_context_blocking:
+                        try:
+                            goal_solver_output = run_goal_solver(solver_input)
+                        except ValueError as exc:
+                            blocking_reasons.append(str(exc))
+                            goal_solver_output = None
+                        if goal_solver_output is not None:
+                            goal_solver_output = _enrich_goal_solver_output(
+                                goal_solver_output,
+                                solver_input,
+                            )
+                            solver_snapshot_id = _obj(goal_solver_output).get("input_snapshot_id")
                     if effective_trigger.workflow_type == WorkflowType.QUARTERLY:
                         runtime_inputs, missing_runtime_inputs = _resolve_runtime_inputs(
                             envelope,
@@ -2198,6 +2258,8 @@ def run_orchestrator(
                             blocking_reasons.append(
                                 "missing runtime inputs: " + ", ".join(missing_runtime_inputs)
                             )
+                        elif goal_solver_output is None:
+                            blocking_reasons.append("goal solver baseline unavailable for runtime optimization")
                         else:
                             runtime_result = run_runtime_optimizer(
                                 solver_output=goal_solver_output,
@@ -2284,6 +2346,28 @@ def run_orchestrator(
         status=status,
         goal_solver_output=goal_solver_output,
         envelope=envelope,
+        formal_path_required=formal_path_required,
+    )
+    if execution_plan is not None:
+        execution_plan_preflight = _as_dict(_as_dict(execution_plan).get("formal_path_preflight"))
+        if _text(execution_plan_preflight.get("run_outcome_status")) == "blocked":
+            for predicate in list(execution_plan_preflight.get("blocking_predicates") or []) or [
+                "execution_plan_formal_path_blocked"
+            ]:
+                if predicate not in blocking_reasons:
+                    blocking_reasons.append(str(predicate))
+        elif _text(execution_plan_preflight.get("run_outcome_status")) == "degraded":
+            for reason in list(execution_plan_preflight.get("degradation_reasons") or []) or [
+                "execution_plan_formal_path_degraded"
+            ]:
+                if reason not in degraded_notes:
+                    degraded_notes.append(str(reason))
+    blocking_reasons = _unique_items(blocking_reasons)
+    degraded_notes = _unique_items(degraded_notes)
+    status = _status_from_flags(
+        blocking_reasons=blocking_reasons,
+        degraded_notes=degraded_notes,
+        escalation_reasons=escalation_reasons,
     )
     # Plan guidance from frontdesk context
     plan_context = _as_dict(envelope.get("frontdesk_execution_plan_context"))

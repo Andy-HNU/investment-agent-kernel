@@ -180,6 +180,32 @@ def test_run_orchestrator_onboarding_builds_goal_baseline(
 
 
 @pytest.mark.contract
+def test_run_orchestrator_blocks_strict_formal_path_without_observed_runtime_inputs(
+    goal_solver_input_base,
+    calibration_result_base,
+):
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "run_onboarding_formal_path_blocked"},
+        raw_inputs={
+            "bundle_id": "bundle_acc001_20260329T120000Z",
+            "snapshot_bundle": {"bundle_id": "bundle_acc001_20260329T120000Z"},
+            "calibration_result": calibration_result_base,
+            "allocation_engine_input": _allocation_input(goal_solver_input_base),
+            "goal_solver_input": goal_solver_input_base,
+            "formal_path_required": True,
+        },
+    )
+
+    assert result.status == WorkflowStatus.BLOCKED
+    assert result.goal_solver_output is None
+    assert result.execution_plan is None
+    assert any("candidate_product_context" in reason for reason in result.blocking_reasons)
+    assert result.run_outcome_status == "blocked"
+    assert result.resolved_result_category is None
+    assert result.disclosure_decision["disclosure_level"] == "unavailable"
+
+
+@pytest.mark.contract
 def test_run_orchestrator_onboarding_persistence_plan_includes_execution_plan_artifact(
     goal_solver_input_base,
     calibration_result_base,
@@ -1306,7 +1332,7 @@ def test_run_orchestrator_onboarding_auto_enriches_runtime_product_inputs_withou
     monkeypatch.setattr(
         orchestrator_engine,
         "enrich_market_raw_with_runtime_product_inputs",
-        lambda market_raw, *, as_of: enriched_market_raw,
+        lambda market_raw, *, as_of, formal_path_required=False: enriched_market_raw,
     )
 
     monkeypatch.setattr(

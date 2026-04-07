@@ -23,13 +23,25 @@ class RunOutcomeStatus(str, Enum):
 
 FormalPathStatus = RunOutcomeStatus
 
+
+class ExecutionPolicy(str, Enum):
+    FORMAL_STRICT = "formal_strict"
+    FORMAL_ESTIMATION_ALLOWED = "formal_estimation_allowed"
+    EXPLORATORY = "exploratory"
+
+
+class DisclosurePolicy(str, Enum):
+    FORMAL_DISCLOSURE = "formal_disclosure"
+    DEGRADED_DISCLOSURE = "degraded_disclosure"
+    DIAGNOSTIC_ONLY = "diagnostic_only"
+
 _RESULT_CATEGORIES = {
     "formal_independent_result",
     "formal_estimated_result",
     "degraded_formal_result",
     "exploratory_result",
 }
-_FORMAL_EXECUTION_POLICIES = {"FORMAL_STRICT", "FORMAL_ESTIMATION_ALLOWED"}
+_FORMAL_EXECUTION_POLICIES = {ExecutionPolicy.FORMAL_STRICT.value, ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value}
 _DISCLOSURE_LEVELS = {"point_and_range", "range_only", "diagnostic_only", "unavailable"}
 _CONFIDENCE_LEVELS = {"high", "medium", "low"}
 _DATA_COMPLETENESS = {"complete", "partial", "sparse"}
@@ -59,6 +71,18 @@ def coerce_run_outcome_status(value: RunOutcomeStatus | str) -> RunOutcomeStatus
         return RunOutcomeStatus(str(value).strip().lower())
     except ValueError as exc:  # pragma: no cover - exercised via contract test
         raise ValueError(f"unknown run_outcome_status: {value}") from exc
+
+
+def coerce_execution_policy(value: ExecutionPolicy | str | None) -> ExecutionPolicy:
+    if value is None:
+        return ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED
+    if isinstance(value, ExecutionPolicy):
+        return value
+    normalized = str(value).strip().lower()
+    try:
+        return ExecutionPolicy(normalized)
+    except ValueError as exc:  # pragma: no cover - exercised via contract test
+        raise ValueError(f"unknown execution_policy: {value}") from exc
 
 
 def coerce_formal_path_status(value: FormalPathStatus | str) -> FormalPathStatus:
@@ -451,6 +475,83 @@ class EvidenceBundle:
                 "secondary_companion_artifacts": self.secondary_companion_artifacts,
             }
         )
+
+
+@dataclass(frozen=True)
+class FailureArtifact:
+    request_identity: dict[str, Any] = field(default_factory=dict)
+    requested_result_category: str = ""
+    execution_policy: str = ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value
+    disclosure_policy: str = DisclosurePolicy.FORMAL_DISCLOSURE.value
+    failed_stage: str = ""
+    blocking_predicates: list[str] = field(default_factory=list)
+    available_evidence_refs: dict[str, str] = field(default_factory=dict)
+    missing_evidence_refs: dict[str, str] = field(default_factory=dict)
+    next_recoverable_actions: list[str] = field(default_factory=list)
+    trustworthy_partial_diagnostics: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "requested_result_category", str(self.requested_result_category or "").strip().lower())
+        if self.requested_result_category and self.requested_result_category not in _RESULT_CATEGORIES:
+            raise ValueError(f"unknown requested_result_category: {self.requested_result_category}")
+        object.__setattr__(self, "execution_policy", coerce_execution_policy(self.execution_policy).value)
+        disclosure_policy = str(self.disclosure_policy or "").strip().lower()
+        if disclosure_policy not in {
+            DisclosurePolicy.FORMAL_DISCLOSURE.value,
+            DisclosurePolicy.DEGRADED_DISCLOSURE.value,
+            DisclosurePolicy.DIAGNOSTIC_ONLY.value,
+        }:
+            raise ValueError(f"unknown disclosure_policy: {self.disclosure_policy}")
+        object.__setattr__(self, "disclosure_policy", disclosure_policy)
+        failed_stage = str(self.failed_stage or "").strip().lower()
+        if not failed_stage:
+            raise ValueError("failed_stage is required")
+        object.__setattr__(self, "failed_stage", failed_stage)
+        object.__setattr__(
+            self,
+            "request_identity",
+            {str(key): _serialize(value) for key, value in dict(self.request_identity or {}).items() if str(key).strip()},
+        )
+        object.__setattr__(
+            self,
+            "available_evidence_refs",
+            {
+                str(key): str(value)
+                for key, value in dict(self.available_evidence_refs or {}).items()
+                if str(key).strip()
+            },
+        )
+        object.__setattr__(
+            self,
+            "missing_evidence_refs",
+            {
+                str(key): str(value)
+                for key, value in dict(self.missing_evidence_refs or {}).items()
+                if str(key).strip()
+            },
+        )
+        object.__setattr__(
+            self,
+            "blocking_predicates",
+            [str(item).strip() for item in list(self.blocking_predicates or []) if str(item).strip()],
+        )
+        object.__setattr__(
+            self,
+            "next_recoverable_actions",
+            [str(item).strip() for item in list(self.next_recoverable_actions or []) if str(item).strip()],
+        )
+        object.__setattr__(self, "trustworthy_partial_diagnostics", bool(self.trustworthy_partial_diagnostics))
+
+    @classmethod
+    def from_any(cls, value: "FailureArtifact | dict[str, Any] | None") -> "FailureArtifact | None":
+        if value is None:
+            return None
+        if isinstance(value, cls):
+            return value
+        return cls(**dict(value))
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
 
 
 @dataclass(frozen=True)

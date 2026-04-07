@@ -310,6 +310,8 @@ class CandidateProductContext:
     selected_proxy_refs: list[str] = field(default_factory=list)
     product_history_profiles: list[ProductHistoryProfile] = field(default_factory=list)
     product_simulation_input: ProductSimulationInput | None = None
+    formal_path_preflight: dict[str, Any] = field(default_factory=dict)
+    failure_artifact: dict[str, Any] | None = None
     notes: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -333,6 +335,8 @@ class CandidateProductContext:
             "product_simulation_input": (
                 None if self.product_simulation_input is None else self.product_simulation_input.to_dict()
             ),
+            "formal_path_preflight": dict(self.formal_path_preflight or {}),
+            "failure_artifact": None if self.failure_artifact is None else dict(self.failure_artifact),
             "notes": list(self.notes),
         }
 
