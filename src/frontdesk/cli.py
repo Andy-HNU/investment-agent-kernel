@@ -899,6 +899,13 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
             f"workflow={payload.get('workflow')}",
             f"status={payload.get('status')}",
         ]
+        if payload.get("run_outcome_status") is not None:
+            lines.append(f"run_outcome_status={payload.get('run_outcome_status')}")
+        if payload.get("resolved_result_category") is not None:
+            lines.append(f"resolved_result_category={payload.get('resolved_result_category')}")
+        disclosure_decision = payload.get("disclosure_decision") or decision_card.get("disclosure_decision") or {}
+        if disclosure_decision.get("disclosure_level") is not None:
+            lines.append(f"disclosure_level={disclosure_decision.get('disclosure_level')}")
         if decision_card:
             lines.extend(
                 [
@@ -994,7 +1001,14 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         f"workflow={payload['workflow_type']}",
         f"status={payload['status']}",
     ]
+    if payload.get("run_outcome_status") is not None:
+        lines.append(f"run_outcome_status={payload.get('run_outcome_status')}")
+    if payload.get("resolved_result_category") is not None:
+        lines.append(f"resolved_result_category={payload.get('resolved_result_category')}")
     decision_card = payload.get("decision_card") or {}
+    disclosure_decision = payload.get("disclosure_decision") or decision_card.get("disclosure_decision") or {}
+    if disclosure_decision.get("disclosure_level") is not None:
+        lines.append(f"disclosure_level={disclosure_decision.get('disclosure_level')}")
     if decision_card:
         lines.extend(
             [

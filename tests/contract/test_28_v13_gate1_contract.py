@@ -104,9 +104,9 @@ def test_gate1_probability_method_contract_maps_legacy_labels_into_closed_intern
     assert normalize_product_probability_method("product_proxy_adjustment_estimate") == "product_estimated_path"
     assert normalize_product_probability_method("bucket_only_no_product_proxy_adjustment") == "product_estimated_path"
     assert normalize_product_probability_method("hybrid_independent_estimate") == "hybrid_independent_estimate"
-    assert context.product_probability_method == "product_proxy_adjustment_estimate"
+    assert context.product_probability_method == "product_estimated_path"
     assert context.normalized_product_probability_method == "product_estimated_path"
-    assert result.product_probability_method == "bucket_only_no_product_proxy_adjustment"
+    assert result.product_probability_method == "product_estimated_path"
     assert result.normalized_product_probability_method == "product_estimated_path"
     assert result.simulation_coverage_summary["distribution_ready_coverage"] == pytest.approx(0.0)
 
@@ -221,4 +221,49 @@ def test_gate1_core_contracts_serialize_v13_schema_and_formal_estimated_result_i
             estimation_basis="product_proxy_path",
             minimum_estimated_weight_adjusted_coverage=0.6,
             minimum_explanation_ready_coverage=0.6,
+        )
+
+
+@pytest.mark.contract
+def test_evidence_bundle_rejects_outcome_status_mismatch_and_formal_exploratory_resolution():
+    with pytest.raises(ValueError, match="formal_path_status must match run_outcome_status"):
+        EvidenceBundle(
+            request_id="req-demo",
+            execution_policy="FORMAL_STRICT",
+            disclosure_policy="FORMAL_STANDARD",
+            requested_result_category="formal_independent_result",
+            resolved_result_category="formal_independent_result",
+            run_outcome_status="blocked",
+            formal_path_status="degraded",
+        )
+
+    with pytest.raises(ValueError, match="formal execution_policy cannot resolve exploratory_result"):
+        EvidenceBundle(
+            request_id="req-demo",
+            execution_policy="FORMAL_STRICT",
+            disclosure_policy="FORMAL_STANDARD",
+            requested_result_category="formal_independent_result",
+            resolved_result_category="exploratory_result",
+            run_outcome_status="completed",
+            formal_path_status="completed",
+        )
+
+
+@pytest.mark.contract
+def test_disclosure_decision_and_confidence_policy_enforce_closed_contract_caps():
+    with pytest.raises(ValueError, match="unknown disclosure_level"):
+        DisclosureDecision(
+            result_category="formal_independent_result",
+            disclosure_level="full_text",
+        )
+
+    with pytest.raises(ValueError, match="confidence cap for formal_estimated_result cannot exceed medium"):
+        ConfidenceDerivationPolicy(
+            result_category="formal_estimated_result",
+            minimum_independent_weight_adjusted_coverage_for_high=1.0,
+            minimum_distribution_ready_coverage_for_high=1.0,
+            minimum_calibration_quality_for_high="acceptable",
+            maximum_confidence_by_result_category={
+                "formal_estimated_result": "high",
+            },
         )

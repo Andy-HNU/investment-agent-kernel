@@ -9,12 +9,14 @@ from calibration.engine import run_calibration
 from decision_card.builder import build_decision_card
 from decision_card.types import DecisionCardBuildInput, DecisionCardType
 from goal_solver.engine import run_goal_solver
+from goal_solver.types import normalize_product_probability_method
 from product_mapping import build_candidate_product_context, build_execution_plan
 from product_mapping.types import ProductCandidate
 from product_mapping.runtime_inputs import enrich_market_raw_with_runtime_product_inputs
 from runtime_optimizer.engine import run_runtime_optimizer
 from runtime_optimizer.types import RuntimeOptimizerMode
 from snapshot_ingestion.engine import build_snapshot_bundle
+from shared.audit import CoverageSummary, DisclosureDecision, EvidenceBundle, RunOutcomeStatus
 
 from orchestrator.types import (
     OrchestratorAuditRecord,
@@ -934,6 +936,10 @@ def _build_card_input(
     runtime_restriction: RuntimeRestriction,
     execution_plan_summary: dict[str, Any],
     audit_record: OrchestratorAuditRecord | None,
+    run_outcome_status: str | None,
+    resolved_result_category: str | None,
+    disclosure_decision: dict[str, Any],
+    evidence_bundle: dict[str, Any],
     input_provenance: Any,
     blocking_reasons: list[str],
     degraded_notes: list[str],
@@ -954,6 +960,10 @@ def _build_card_input(
         runtime_restriction=runtime_restriction,
         execution_plan_summary=execution_plan_summary,
         audit_record=audit_record,
+        run_outcome_status=run_outcome_status,
+        resolved_result_category=resolved_result_category,
+        disclosure_decision=disclosure_decision,
+        evidence_bundle=evidence_bundle,
         input_provenance=input_provenance,
         blocking_reasons=list(blocking_reasons),
         degraded_notes=list(degraded_notes),
@@ -1054,6 +1064,208 @@ def _status_from_flags(
 
 def _quality_value(value: Any, key: str) -> str:
     return (_text(_as_dict(value).get(key)) or "").lower()
+
+
+def _gate1_coverage_summary(goal_solver_output: Any) -> CoverageSummary:
+    result = _as_dict(_as_dict(goal_solver_output).get("recommended_result"))
+    return CoverageSummary.from_any(result.get("simulation_coverage_summary")) or CoverageSummary.from_any({})  # type: ignore[return-value]
+
+
+def _gate1_run_outcome_status(
+    *,
+    status: WorkflowStatus,
+    blocking_reasons: list[str],
+    degraded_notes: list[str],
+    escalation_reasons: list[str],
+) -> RunOutcomeStatus:
+    if status == WorkflowStatus.BLOCKED or blocking_reasons:
+        return RunOutcomeStatus.BLOCKED
+    if status in {WorkflowStatus.DEGRADED, WorkflowStatus.ESCALATED} or degraded_notes or escalation_reasons:
+        return RunOutcomeStatus.DEGRADED
+    return RunOutcomeStatus.COMPLETED
+
+
+def _gate1_resolved_result_category(
+    *,
+    run_outcome_status: RunOutcomeStatus,
+    goal_solver_output: Any,
+    coverage_summary: CoverageSummary,
+) -> str | None:
+    if run_outcome_status in {RunOutcomeStatus.UNAVAILABLE, RunOutcomeStatus.BLOCKED}:
+        return None
+    if run_outcome_status == RunOutcomeStatus.DEGRADED:
+        return "degraded_formal_result"
+    result = _as_dict(_as_dict(goal_solver_output).get("recommended_result"))
+    if not result:
+        return None
+    normalized_method = normalize_product_probability_method(
+        result.get("product_probability_method") or "product_estimated_path"
+    )
+    if (
+        normalized_method == "product_independent_path"
+        and coverage_summary.independent_weight_adjusted_coverage >= 0.999
+        and coverage_summary.independent_horizon_complete_coverage >= 0.999
+        and coverage_summary.distribution_ready_coverage >= 0.999
+    ):
+        return "formal_independent_result"
+    return "formal_estimated_result"
+
+
+def _gate1_data_completeness(coverage_summary: CoverageSummary) -> str:
+    if (
+        coverage_summary.weight_adjusted_coverage >= 0.95
+        and coverage_summary.explanation_ready_coverage >= 0.95
+    ):
+        return "complete"
+    if coverage_summary.weight_adjusted_coverage >= 0.5 or coverage_summary.selected_product_count > 0:
+        return "partial"
+    return "sparse"
+
+
+def _gate1_calibration_quality(calibration_result: Any) -> str:
+    quality = _quality_value(calibration_result, "calibration_quality")
+    if quality in {"strong", "acceptable", "weak", "insufficient_sample"}:
+        return quality
+    return {
+        "full": "acceptable",
+        "partial": "weak",
+        "degraded": "weak",
+    }.get(quality, "insufficient_sample")
+
+
+def _gate1_confidence_level(
+    *,
+    resolved_result_category: str | None,
+    data_completeness: str,
+    calibration_quality: str,
+    coverage_summary: CoverageSummary,
+) -> str:
+    if (
+        resolved_result_category == "formal_independent_result"
+        and data_completeness == "complete"
+        and calibration_quality in {"strong", "acceptable"}
+        and coverage_summary.distribution_ready_coverage >= 0.95
+    ):
+        return "high"
+    if resolved_result_category == "formal_estimated_result":
+        return "medium"
+    return "low"
+
+
+def _gate1_disclosure_decision(
+    *,
+    resolved_result_category: str | None,
+    run_outcome_status: RunOutcomeStatus,
+    coverage_summary: CoverageSummary,
+    calibration_result: Any,
+    degraded_notes: list[str],
+    blocking_reasons: list[str],
+) -> DisclosureDecision:
+    data_completeness = _gate1_data_completeness(coverage_summary)
+    calibration_quality = _gate1_calibration_quality(calibration_result)
+    confidence_level = _gate1_confidence_level(
+        resolved_result_category=resolved_result_category,
+        data_completeness=data_completeness,
+        calibration_quality=calibration_quality,
+        coverage_summary=coverage_summary,
+    )
+    if resolved_result_category == "formal_independent_result" and confidence_level == "high":
+        disclosure_level = "point_and_range"
+    elif resolved_result_category in {"formal_estimated_result", "degraded_formal_result"}:
+        disclosure_level = "range_only"
+    elif run_outcome_status in {RunOutcomeStatus.UNAVAILABLE, RunOutcomeStatus.BLOCKED}:
+        disclosure_level = "unavailable"
+    else:
+        disclosure_level = "diagnostic_only"
+    reasons = list(degraded_notes or blocking_reasons)
+    if not reasons and resolved_result_category == "formal_estimated_result":
+        reasons = ["estimated_result_requires_range_disclosure"]
+    if not reasons and disclosure_level == "unavailable":
+        reasons = ["formal_result_unavailable"]
+    return DisclosureDecision(
+        result_category=resolved_result_category or "",
+        disclosure_level=disclosure_level,
+        confidence_level=confidence_level,
+        data_completeness=data_completeness,
+        calibration_quality=calibration_quality,
+        point_value_allowed=disclosure_level == "point_and_range",
+        range_required=disclosure_level in {"point_and_range", "range_only"},
+        diagnostic_only=disclosure_level == "diagnostic_only",
+        precision_cap=disclosure_level,
+        reasons=reasons,
+    )
+
+
+def _gate1_evidence_bundle(
+    *,
+    run_id: str,
+    bundle_id: str | None,
+    solver_snapshot_id: str | None,
+    goal_solver_input: Any,
+    calibration_result: Any,
+    run_outcome_status: RunOutcomeStatus,
+    resolved_result_category: str | None,
+    coverage_summary: CoverageSummary,
+    disclosure_decision: DisclosureDecision,
+    blocking_reasons: list[str],
+    degraded_notes: list[str],
+) -> EvidenceBundle:
+    goal_input = _as_dict(goal_solver_input)
+    next_recoverable_actions: list[str] = []
+    if blocking_reasons:
+        next_recoverable_actions.append("repair_formal_inputs")
+    elif degraded_notes:
+        next_recoverable_actions.append("improve_evidence_coverage")
+    input_refs = {
+        key: value
+        for key, value in {
+            "snapshot_id": _text(goal_input.get("snapshot_id")) or "",
+            "bundle_id": bundle_id or "",
+            "solver_snapshot_id": solver_snapshot_id or "",
+        }.items()
+        if value
+    }
+    evidence_refs = {
+        key: value
+        for key, value in {
+            "run_id": run_id,
+            "calibration_id": _text(_as_dict(calibration_result).get("calibration_id")) or "",
+        }.items()
+        if value
+    }
+    return EvidenceBundle(
+        bundle_schema_version="v1.3",
+        execution_policy_version="v1.3",
+        disclosure_policy_version="v1.3",
+        mapping_signature=f"goal_solver:{goal_input.get('snapshot_id') or 'unknown'}",
+        history_revision=_text(_as_dict(goal_input.get("solver_params")).get("version")) or "unknown",
+        distribution_revision=_text(_as_dict(calibration_result).get("calibration_id")) or "unknown",
+        solver_revision=_text(_as_dict(goal_input.get("solver_params")).get("version")) or "unknown",
+        code_revision="v1.3-task2",
+        calibration_revision=_text(_as_dict(calibration_result).get("calibration_id")) or "unknown",
+        request_id=run_id,
+        account_profile_id=_text(goal_input.get("account_profile_id")) or "",
+        as_of=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        requested_result_category="formal_independent_result",
+        resolved_result_category=resolved_result_category,
+        run_outcome_status=run_outcome_status,
+        execution_policy="FORMAL_ESTIMATION_ALLOWED",
+        disclosure_policy="FORMAL_STANDARD",
+        simulation_mode=_text(_as_dict(_as_dict(goal_solver_input).get("solver_params")).get("simulation_mode")),
+        input_refs=input_refs,
+        evidence_refs=evidence_refs,
+        coverage_summary=coverage_summary,
+        calibration_summary={
+            "calibration_quality": _gate1_calibration_quality(calibration_result),
+        },
+        formal_path_status=run_outcome_status.value,
+        failed_stage=None if run_outcome_status != RunOutcomeStatus.BLOCKED else "result_category_resolution",
+        blocking_predicates=list(blocking_reasons),
+        degradation_reasons=list(degraded_notes),
+        next_recoverable_actions=next_recoverable_actions,
+        diagnostics_trustworthy=run_outcome_status != RunOutcomeStatus.BLOCKED,
+        disclosure_decision=disclosure_decision,
+    )
 
 
 def _evaluate_preflight_controls(
@@ -2101,6 +2313,39 @@ def run_orchestrator(
         and plan_context.get("pending")
     ):
         execution_plan_summary = _build_execution_plan_summary(plan_context.get("pending"))
+    gate1_run_outcome_status = _gate1_run_outcome_status(
+        status=status,
+        blocking_reasons=blocking_reasons,
+        degraded_notes=degraded_notes,
+        escalation_reasons=escalation_reasons,
+    )
+    gate1_coverage_summary = _gate1_coverage_summary(goal_solver_output)
+    gate1_resolved_result_category = _gate1_resolved_result_category(
+        run_outcome_status=gate1_run_outcome_status,
+        goal_solver_output=goal_solver_output,
+        coverage_summary=gate1_coverage_summary,
+    )
+    gate1_disclosure_decision = _gate1_disclosure_decision(
+        resolved_result_category=gate1_resolved_result_category,
+        run_outcome_status=gate1_run_outcome_status,
+        coverage_summary=gate1_coverage_summary,
+        calibration_result=calibration_result,
+        degraded_notes=degraded_notes,
+        blocking_reasons=blocking_reasons,
+    )
+    gate1_evidence_bundle = _gate1_evidence_bundle(
+        run_id=run_id,
+        bundle_id=bundle_id,
+        solver_snapshot_id=solver_snapshot_id,
+        goal_solver_input=goal_solver_input_used,
+        calibration_result=calibration_result,
+        run_outcome_status=gate1_run_outcome_status,
+        resolved_result_category=gate1_resolved_result_category,
+        coverage_summary=gate1_coverage_summary,
+        disclosure_decision=gate1_disclosure_decision,
+        blocking_reasons=blocking_reasons,
+        degraded_notes=degraded_notes,
+    )
     card_build_input = _build_card_input(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,
@@ -2114,6 +2359,10 @@ def run_orchestrator(
         runtime_restriction=runtime_restriction,
         execution_plan_summary=execution_plan_summary,
         audit_record=None,
+        run_outcome_status=gate1_run_outcome_status.value,
+        resolved_result_category=gate1_resolved_result_category,
+        disclosure_decision=gate1_disclosure_decision.to_dict(),
+        evidence_bundle=gate1_evidence_bundle.to_dict(),
         input_provenance=_build_input_provenance(
             envelope,
             effective_trigger.workflow_type,
@@ -2175,6 +2424,10 @@ def run_orchestrator(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,
         status=status,
+        run_outcome_status=gate1_run_outcome_status.value,
+        resolved_result_category=gate1_resolved_result_category,
+        disclosure_decision=gate1_disclosure_decision.to_dict(),
+        evidence_bundle=gate1_evidence_bundle.to_dict(),
         requested_workflow_type=requested_workflow,
         bundle_id=bundle_id,
         calibration_id=calibration_data.get("calibration_id"),

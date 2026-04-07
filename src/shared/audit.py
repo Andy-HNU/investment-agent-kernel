@@ -23,6 +23,17 @@ class RunOutcomeStatus(str, Enum):
 
 FormalPathStatus = RunOutcomeStatus
 
+_RESULT_CATEGORIES = {
+    "formal_independent_result",
+    "formal_estimated_result",
+    "degraded_formal_result",
+    "exploratory_result",
+}
+_FORMAL_EXECUTION_POLICIES = {"FORMAL_STRICT", "FORMAL_ESTIMATION_ALLOWED"}
+_DISCLOSURE_LEVELS = {"point_and_range", "range_only", "diagnostic_only", "unavailable"}
+_CONFIDENCE_LEVELS = {"high", "medium", "low"}
+_DATA_COMPLETENESS = {"complete", "partial", "sparse"}
+
 
 _LEGACY_FORMAL_PATH_STATUS_ALIASES = {
     "formal": RunOutcomeStatus.COMPLETED.value,
@@ -198,6 +209,40 @@ class DisclosureDecision:
     precision_cap: str = "diagnostic_only"
     reasons: list[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        normalized_category = str(self.result_category or "").strip().lower()
+        if normalized_category and normalized_category not in _RESULT_CATEGORIES:
+            raise ValueError(f"unknown result_category: {self.result_category}")
+        disclosure_level = str(self.disclosure_level or "diagnostic_only").strip().lower()
+        if disclosure_level not in _DISCLOSURE_LEVELS:
+            raise ValueError(f"unknown disclosure_level: {self.disclosure_level}")
+        confidence_level = str(self.confidence_level or "low").strip().lower()
+        if confidence_level not in _CONFIDENCE_LEVELS:
+            raise ValueError(f"unknown confidence_level: {self.confidence_level}")
+        data_completeness = str(self.data_completeness or "partial").strip().lower()
+        if data_completeness not in _DATA_COMPLETENESS:
+            raise ValueError(f"unknown data_completeness: {self.data_completeness}")
+        calibration_quality = str(self.calibration_quality or "insufficient_sample").strip().lower()
+        if calibration_quality not in {"strong", "acceptable", "weak", "insufficient_sample"}:
+            raise ValueError(f"unknown calibration_quality: {self.calibration_quality}")
+        precision_cap = str(self.precision_cap or disclosure_level).strip().lower()
+        if precision_cap not in _DISCLOSURE_LEVELS:
+            raise ValueError(f"unknown precision_cap: {self.precision_cap}")
+        object.__setattr__(self, "result_category", normalized_category)
+        object.__setattr__(self, "disclosure_level", disclosure_level)
+        object.__setattr__(self, "confidence_level", confidence_level)
+        object.__setattr__(self, "data_completeness", data_completeness)
+        object.__setattr__(self, "calibration_quality", calibration_quality)
+        object.__setattr__(self, "point_value_allowed", bool(self.point_value_allowed))
+        object.__setattr__(self, "range_required", bool(self.range_required))
+        object.__setattr__(self, "diagnostic_only", bool(self.diagnostic_only))
+        object.__setattr__(self, "precision_cap", precision_cap)
+        object.__setattr__(
+            self,
+            "reasons",
+            [str(item).strip() for item in list(self.reasons or []) if str(item).strip()],
+        )
+
     @classmethod
     def from_any(cls, value: "DisclosureDecision | dict[str, Any] | None") -> "DisclosureDecision | None":
         if value is None:
@@ -296,9 +341,13 @@ class EvidenceBundle:
         self.account_profile_id = str(self.account_profile_id or "").strip()
         self.as_of = str(self.as_of or "").strip()
         self.requested_result_category = str(self.requested_result_category or "").strip().lower()
+        if self.requested_result_category and self.requested_result_category not in _RESULT_CATEGORIES:
+            raise ValueError(f"unknown requested_result_category: {self.requested_result_category}")
         self.resolved_result_category = (
             None if self.resolved_result_category in (None, "") else str(self.resolved_result_category).strip().lower()
         )
+        if self.resolved_result_category and self.resolved_result_category not in _RESULT_CATEGORIES:
+            raise ValueError(f"unknown resolved_result_category: {self.resolved_result_category}")
         self.run_outcome_status = coerce_run_outcome_status(self.run_outcome_status)
         self.execution_policy = str(self.execution_policy or "").strip()
         self.disclosure_policy = str(self.disclosure_policy or "").strip()
@@ -310,12 +359,22 @@ class EvidenceBundle:
         self.coverage_summary = CoverageSummary.from_any(self.coverage_summary)
         self.calibration_summary = None if self.calibration_summary is None else dict(self.calibration_summary)
         self.formal_path_status = coerce_formal_path_status(self.formal_path_status or self.run_outcome_status.value)
+        if self.formal_path_status != self.run_outcome_status:
+            raise ValueError(
+                "formal_path_status must match run_outcome_status: "
+                f"{self.formal_path_status.value} != {self.run_outcome_status.value}"
+            )
         self.failed_stage = None if self.failed_stage in (None, "") else str(self.failed_stage).strip().lower()
         self.blocking_predicates = [str(item) for item in self.blocking_predicates if str(item).strip()]
         self.degradation_reasons = [str(item) for item in self.degradation_reasons if str(item).strip()]
         self.next_recoverable_actions = [str(item) for item in self.next_recoverable_actions if str(item).strip()]
         self.disclosure_decision = DisclosureDecision.from_any(self.disclosure_decision)
         self.secondary_companion_artifacts = list(self.secondary_companion_artifacts)
+        if (
+            self.execution_policy in _FORMAL_EXECUTION_POLICIES
+            and self.resolved_result_category == "exploratory_result"
+        ):
+            raise ValueError("formal execution_policy cannot resolve exploratory_result")
 
     @classmethod
     def from_any(cls, value: "EvidenceBundle | dict[str, Any] | None") -> "EvidenceBundle | None":

@@ -1373,6 +1373,10 @@ def _build_probability_explanation(
     product_contribution_layer = product_contributions
 
     return {
+        "run_outcome_status": _metric(inp.run_outcome_status) or "",
+        "resolved_result_category": _metric(inp.resolved_result_category) or "",
+        "disclosure_decision": dict(inp.disclosure_decision or {}),
+        "evidence_bundle": dict(inp.evidence_bundle or {}),
         "recommended_allocation_label": recommended_label,
         "recommended_success_probability": recommended_probability,
         "recommended_expected_annual_return": recommended_expected_annual_return,
@@ -1405,6 +1409,15 @@ def _build_probability_explanation(
         "constraint_layer": constraint_layer,
         "counterfactual_layer": counterfactual_layer,
         "product_contribution_layer": product_contribution_layer,
+    }
+
+
+def _gate1_card_fields(inp: DecisionCardBuildInput) -> dict[str, Any]:
+    return {
+        "run_outcome_status": inp.run_outcome_status,
+        "resolved_result_category": inp.resolved_result_category,
+        "disclosure_decision": dict(inp.disclosure_decision or {}),
+        "evidence_bundle": dict(inp.evidence_bundle or {}),
     }
 
 
@@ -1966,6 +1979,7 @@ def _build_runtime_action_card(inp: DecisionCardBuildInput, runtime_result: dict
         runner_up_action=runner_up,
         low_confidence=low_confidence,
         execution_plan_summary=_execution_plan_summary(inp),
+        **_gate1_card_fields(inp),
     )
     return _finalize_card(card)
 
@@ -2092,6 +2106,7 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         frontier_analysis=frontier_analysis,
         product_evidence_panel=product_evidence_panel,
         execution_plan_summary=_execution_plan_summary(inp),
+        **_gate1_card_fields(inp),
     )
     return _finalize_card(card)
 
@@ -2135,6 +2150,7 @@ def _build_blocked_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         ),
         low_confidence=True,
         execution_plan_summary=_execution_plan_summary(inp),
+        **_gate1_card_fields(inp),
     )
     return _finalize_card(card)
 
@@ -2242,6 +2258,7 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         frontier_analysis=frontier_analysis,
         product_evidence_panel=product_evidence_panel,
         execution_plan_summary=_execution_plan_summary(inp),
+        **_gate1_card_fields(inp),
     )
     return _finalize_card(card)
 

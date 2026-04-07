@@ -1407,6 +1407,15 @@ def _frontdesk_summary(
         "run_id": result_payload.get("run_id"),
         "workflow_type": result_payload.get("workflow_type"),
         "status": result_payload.get("status"),
+        "run_outcome_status": result_payload.get("run_outcome_status") or decision_card.get("run_outcome_status"),
+        "resolved_result_category": result_payload.get("resolved_result_category")
+        or decision_card.get("resolved_result_category"),
+        "disclosure_decision": dict(
+            result_payload.get("disclosure_decision") or decision_card.get("disclosure_decision") or {}
+        ),
+        "evidence_bundle": dict(
+            result_payload.get("evidence_bundle") or decision_card.get("evidence_bundle") or {}
+        ),
         "decision_card": decision_card,
         "key_metrics": decision_card.get("key_metrics", {}),
         "input_provenance": decision_card.get("input_provenance", {}),

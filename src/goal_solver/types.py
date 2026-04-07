@@ -19,11 +19,17 @@ def _normalize_profile_label(value: Any) -> str:
 
 _CONFIDENCE_LEVELS = {"high", "medium", "low"}
 _CALIBRATION_QUALITIES = {"strong", "acceptable", "weak", "insufficient_sample"}
-_RESULT_CATEGORY_MAX_CONFIDENCE = {
+_RESULT_CATEGORIES = {
     "formal_independent_result",
     "formal_estimated_result",
     "degraded_formal_result",
     "exploratory_result",
+}
+_RESULT_CATEGORY_MAX_CONFIDENCE = {
+    "formal_independent_result": "high",
+    "formal_estimated_result": "medium",
+    "degraded_formal_result": "low",
+    "exploratory_result": "low",
 }
 _ESTIMATION_BASES = {
     "proxy_path",
@@ -31,6 +37,7 @@ _ESTIMATION_BASES = {
     "bucket_estimate",
     "hybrid_independent_estimate",
 }
+_CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
 class ProductProbabilityMethod(str, Enum):
@@ -62,13 +69,7 @@ def normalize_product_probability_method(value: Any) -> str:
 
 
 def _coerce_product_probability_method_label(value: Any) -> str:
-    raw = _canonicalize_product_probability_method(value)
-    if raw in _LEGACY_PRODUCT_PROBABILITY_METHOD_MAP:
-        return raw
-    try:
-        return ProductProbabilityMethod(raw).value
-    except ValueError as exc:  # pragma: no cover - exercised via contract test
-        raise ValueError(f"unknown product_probability_method: {value}") from exc
+    return normalize_product_probability_method(value)
 
 
 def _normalize_coverage_summary(value: Any) -> dict[str, Any]:
@@ -100,6 +101,8 @@ class ConfidenceDerivationPolicy:
 
     def __post_init__(self) -> None:
         normalized_category = None if self.result_category in (None, "") else str(self.result_category).strip().lower()
+        if normalized_category is not None and normalized_category not in _RESULT_CATEGORIES:
+            raise ValueError(f"unknown result_category: {self.result_category}")
         object.__setattr__(self, "result_category", normalized_category)
         object.__setattr__(
             self,
@@ -131,6 +134,11 @@ class ConfidenceDerivationPolicy:
                 raise ValueError(f"unknown result_category confidence cap: {category}")
             if level not in _CONFIDENCE_LEVELS:
                 raise ValueError(f"unknown confidence_level: {level}")
+            allowed_max = _RESULT_CATEGORY_MAX_CONFIDENCE[category]
+            if _CONFIDENCE_ORDER[level] > _CONFIDENCE_ORDER[allowed_max]:
+                raise ValueError(
+                    f"confidence cap for {category} cannot exceed {allowed_max}: {level}"
+                )
         object.__setattr__(self, "maximum_confidence_by_result_category", normalized_max)
 
     def to_dict(self) -> dict[str, Any]:
@@ -295,7 +303,7 @@ class ProductSimulationInput:
 @dataclass
 class CandidateProductContext:
     allocation_name: str
-    product_probability_method: str = "product_proxy_adjustment_estimate"
+    product_probability_method: str = "product_estimated_path"
     bucket_expected_return_adjustments: dict[str, float] = field(default_factory=dict)
     bucket_volatility_multipliers: dict[str, float] = field(default_factory=dict)
     selected_product_ids: list[str] = field(default_factory=list)
@@ -443,7 +451,7 @@ class SuccessProbabilityResult:
     bucket_success_probability: float | None = None
     product_proxy_adjusted_success_probability: float | None = None
     product_independent_success_probability: float | None = None
-    product_probability_method: str = "bucket_only_no_product_proxy_adjustment"
+    product_probability_method: str = "product_estimated_path"
     selected_product_ids: list[str] = field(default_factory=list)
     selected_proxy_refs: list[str] = field(default_factory=list)
     bucket_expected_return_adjustments: dict[str, float] = field(default_factory=dict)
@@ -482,7 +490,7 @@ class FrontierScenario:
     max_drawdown_90pct: float
     product_proxy_adjusted_success_probability: float | None = None
     product_independent_success_probability: float | None = None
-    product_probability_method: str = "bucket_only_no_product_proxy_adjustment"
+    product_probability_method: str = "product_estimated_path"
     selected_product_ids: list[str] = field(default_factory=list)
     bucket_expected_return_adjustments: dict[str, float] = field(default_factory=dict)
     bucket_volatility_multipliers: dict[str, float] = field(default_factory=dict)

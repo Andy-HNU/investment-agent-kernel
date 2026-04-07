@@ -61,6 +61,10 @@ class DecisionCardBuildInput:
     workflow_decision: Any | None = None
     runtime_restriction: Any | None = None
     audit_record: Any | None = None
+    run_outcome_status: str | None = None
+    resolved_result_category: str | None = None
+    disclosure_decision: dict[str, Any] = field(default_factory=dict)
+    evidence_bundle: dict[str, Any] = field(default_factory=dict)
     input_provenance: dict[str, Any] = field(default_factory=dict)
     execution_plan_summary: dict[str, Any] = field(default_factory=dict)
     blocking_reasons: list[str] = field(default_factory=list)
@@ -89,6 +93,10 @@ class DecisionCardBuildInput:
             workflow_decision=data.get("workflow_decision"),
             runtime_restriction=data.get("runtime_restriction"),
             audit_record=data.get("audit_record"),
+            run_outcome_status=data.get("run_outcome_status"),
+            resolved_result_category=data.get("resolved_result_category"),
+            disclosure_decision=dict(data.get("disclosure_decision", {})),
+            evidence_bundle=dict(data.get("evidence_bundle", {})),
             input_provenance=dict(data.get("input_provenance", {})),
             execution_plan_summary=dict(data.get("execution_plan_summary", {})),
             blocking_reasons=list(data.get("blocking_reasons", [])),
@@ -153,6 +161,10 @@ class DecisionCard:
     input_source_summary: list[str] = field(default_factory=list)
     input_source_sections: list[dict[str, Any]] = field(default_factory=list)
     audit_records: list[dict[str, Any]] = field(default_factory=list)
+    run_outcome_status: str | None = None
+    resolved_result_category: str | None = None
+    disclosure_decision: dict[str, Any] = field(default_factory=dict)
+    evidence_bundle: dict[str, Any] = field(default_factory=dict)
     formal_path_visibility: dict[str, Any] = field(default_factory=dict)
     candidate_options: list[dict[str, Any]] = field(default_factory=list)
     goal_alternatives: list[dict[str, Any]] = field(default_factory=list)

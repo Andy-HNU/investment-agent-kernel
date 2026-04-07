@@ -123,6 +123,10 @@ class OrchestratorResult:
     runtime_restriction: RuntimeRestriction | None = None
     audit_record: OrchestratorAuditRecord | None = None
     persistence_plan: OrchestratorPersistencePlan | None = None
+    run_outcome_status: str | None = None
+    resolved_result_category: str | None = None
+    disclosure_decision: dict[str, Any] = field(default_factory=dict)
+    evidence_bundle: dict[str, Any] = field(default_factory=dict)
     blocking_reasons: list[str] = field(default_factory=list)
     degraded_notes: list[str] = field(default_factory=list)
     escalation_reasons: list[str] = field(default_factory=list)
@@ -149,6 +153,10 @@ class OrchestratorResult:
             "runtime_restriction": _serialize(self.runtime_restriction),
             "audit_record": _serialize(self.audit_record),
             "persistence_plan": _serialize(self.persistence_plan),
+            "run_outcome_status": self.run_outcome_status,
+            "resolved_result_category": self.resolved_result_category,
+            "disclosure_decision": _serialize(self.disclosure_decision),
+            "evidence_bundle": _serialize(self.evidence_bundle),
             "blocking_reasons": list(self.blocking_reasons),
             "degraded_notes": list(self.degraded_notes),
             "escalation_reasons": list(self.escalation_reasons),

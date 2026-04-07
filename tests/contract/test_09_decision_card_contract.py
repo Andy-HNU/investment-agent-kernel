@@ -251,7 +251,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                     "success_probability": 0.68,
                     "bucket_success_probability": 0.68,
                     "product_proxy_adjusted_success_probability": 0.65,
-                    "product_probability_method": "product_proxy_adjustment_estimate",
+                    "product_probability_method": "product_estimated_path",
                     "implied_required_annual_return": 0.08,
                     "expected_terminal_value": 1_030_000.0,
                     "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
@@ -264,7 +264,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                         "success_probability": 0.68,
                         "bucket_success_probability": 0.68,
                         "product_proxy_adjusted_success_probability": 0.65,
-                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "product_probability_method": "product_estimated_path",
                         "implied_required_annual_return": 0.08,
                         "expected_terminal_value": 1_030_000.0,
                         "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
@@ -278,7 +278,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                         "success_probability": 0.74,
                         "bucket_success_probability": 0.74,
                         "product_proxy_adjusted_success_probability": 0.70,
-                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "product_probability_method": "product_estimated_path",
                         "implied_required_annual_return": 0.08,
                         "expected_terminal_value": 1_080_000.0,
                         "risk_summary": {"max_drawdown_90pct": 0.29, "shortfall_probability": 0.26},
@@ -291,7 +291,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                         "allocation_name": "balanced_progression__moderate__02",
                         "display_name": "平衡推进方案",
                         "product_proxy_adjusted_success_probability": 0.65,
-                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "product_probability_method": "product_estimated_path",
                         "expected_terminal_value": 1_030_000.0,
                         "expected_annual_return": 0.061,
                         "max_drawdown_90pct": 0.16,
@@ -301,7 +301,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                         "allocation_name": "goal_chasing__aggressive__01",
                         "display_name": "冲目标方案",
                         "product_proxy_adjusted_success_probability": 0.70,
-                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "product_probability_method": "product_estimated_path",
                         "expected_terminal_value": 1_080_000.0,
                         "expected_annual_return": 0.079,
                         "max_drawdown_90pct": 0.29,
@@ -316,7 +316,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
                         "allocation_name": "balanced_progression__moderate__02",
                         "display_name": "平衡推进方案",
                         "product_proxy_adjusted_success_probability": 0.65,
-                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "product_probability_method": "product_estimated_path",
                         "expected_terminal_value": 1_030_000.0,
                         "expected_annual_return": 0.061,
                         "max_drawdown_90pct": 0.16,
@@ -421,7 +421,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
 
     assert card["key_metrics"]["bucket_success_probability"] == "68.00%"
     assert card["key_metrics"]["product_proxy_adjusted_success_probability"] == "65.00%"
-    assert card["key_metrics"]["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert card["key_metrics"]["product_probability_method"] == "product_estimated_path"
     assert card["key_metrics"]["implied_required_annual_return"] == "8.00%"
     assert card["key_metrics"]["expected_annual_return"] == "6.10%"
     assert card["candidate_options"][0]["expected_annual_return"] == "6.10%"
@@ -435,7 +435,7 @@ def test_goal_baseline_card_surfaces_probability_explanation_and_product_evidenc
     assert "highest_probability_allocation_name" not in card["probability_explanation"]
     assert "不是最高达成率方案" in card["probability_explanation"]["why_not_highest_probability"]
     assert card["probability_explanation"]["why_not_target_return_priority"] == "no_candidate_meets_required_annual_return"
-    assert card["probability_explanation"]["product_probability_method"] == "product_proxy_adjustment_estimate"
+    assert card["probability_explanation"]["product_probability_method"] == "product_estimated_path"
     assert "代理修正" in card["probability_explanation"]["product_probability_disclosure"]
     assert card["probability_explanation"]["constraint_contributions"][0]["name"] == "required_annual_return"
     assert card["probability_explanation"]["evidence_layer"]["formal_path_status"] in {"formal", "ok", "degraded", "not_requested"}
@@ -758,7 +758,7 @@ def test_goal_baseline_card_surfaces_unavailable_frontier_reasons():
                     "success_probability": 0.68,
                     "bucket_success_probability": 0.68,
                     "product_proxy_adjusted_success_probability": 0.65,
-                    "product_probability_method": "product_proxy_adjustment_estimate",
+                    "product_probability_method": "product_estimated_path",
                     "implied_required_annual_return": 0.08,
                     "expected_terminal_value": 1_030_000.0,
                     "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
@@ -770,7 +770,7 @@ def test_goal_baseline_card_surfaces_unavailable_frontier_reasons():
                         "success_probability": 0.68,
                         "bucket_success_probability": 0.68,
                         "product_proxy_adjusted_success_probability": 0.65,
-                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "product_probability_method": "product_estimated_path",
                         "implied_required_annual_return": 0.08,
                         "risk_summary": {"max_drawdown_90pct": 0.16, "shortfall_probability": 0.28},
                         "weights": {"equity_cn": 0.55, "bond_cn": 0.25, "gold": 0.10, "satellite": 0.10},
@@ -782,7 +782,7 @@ def test_goal_baseline_card_surfaces_unavailable_frontier_reasons():
                         "allocation_name": "balanced_progression__moderate__02",
                         "display_name": "平衡推进方案",
                         "product_proxy_adjusted_success_probability": 0.65,
-                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "product_probability_method": "product_estimated_path",
                         "expected_terminal_value": 1_030_000.0,
                         "expected_annual_return": 0.061,
                         "max_drawdown_90pct": 0.16,
@@ -792,7 +792,7 @@ def test_goal_baseline_card_surfaces_unavailable_frontier_reasons():
                         "allocation_name": "balanced_progression__moderate__02",
                         "display_name": "平衡推进方案",
                         "product_proxy_adjusted_success_probability": 0.65,
-                        "product_probability_method": "product_proxy_adjustment_estimate",
+                        "product_probability_method": "product_estimated_path",
                         "expected_terminal_value": 1_030_000.0,
                         "expected_annual_return": 0.061,
                         "max_drawdown_90pct": 0.16,
