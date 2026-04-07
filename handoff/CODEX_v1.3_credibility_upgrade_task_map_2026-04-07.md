@@ -278,6 +278,20 @@ exploratory_result
 
 - 仅用于探索、演示、调试
 - 不得冒充正式建议
+- 只能来自 `execution_policy = EXPLORATORY`
+- 不得作为 formal run 失败后的主结果类别
+
+formal run 的主结果只允许是：
+
+- `formal_independent_result`
+- `formal_estimated_result`
+- `degraded_formal_result`
+- `null`
+
+如果 formal run 失败后仍希望提供探索性内容：
+
+- 只能作为 `secondary_companion_artifact`
+- 不得写入同一次 formal run 的 `resolved_result_category`
 
 #### Entry Criteria
 
@@ -301,8 +315,8 @@ exploratory_result
   - 至少能生成可信区间或可信结构化失败
 
 - `exploratory_result`
-  - 任意 relaxed mode 结果
-  - 或 formal path 无法满足但允许探索输出
+  - `execution_policy = EXPLORATORY`
+  - relaxed/exploratory 输入与披露条件成立
 
 #### Promotion Criteria
 
@@ -395,6 +409,36 @@ class DisclosureDecision:
 
 禁止各模块自行定义另一套 `confidence_level` 规则。
 
+### Confidence Derivation Policy
+
+`confidence_level` 不是自由字段，必须由以下输入联合推导：
+
+- `resolved_result_category`
+- `coverage_summary`
+- `data_completeness`
+- `calibration_quality`
+- `distribution_readiness`
+- `explanation_readiness`
+
+建议结构：
+
+```python
+@dataclass
+class ConfidenceDerivationPolicy:
+    result_category: str | None
+    minimum_independent_weight_adjusted_coverage_for_high: float
+    minimum_distribution_ready_coverage_for_high: float
+    minimum_calibration_quality_for_high: str
+    maximum_confidence_by_result_category: dict[str, str]
+```
+
+强约束：
+
+- `formal_independent_result` 才允许 `confidence_level = high`
+- `formal_estimated_result` 最高只能到 `medium`
+- `degraded_formal_result` 最高只能到 `low`
+- `run_outcome_status in {unavailable, blocked}` 时不生成 `confidence_level`
+
 附加约束：
 
 - `degraded` 不得显示超过证据等级的精度
@@ -461,6 +505,15 @@ class CoverageSummary:
 ```python
 @dataclass
 class EvidenceBundle:
+    bundle_schema_version: str
+    execution_policy_version: str
+    disclosure_policy_version: str
+    mapping_signature: str
+    history_revision: str
+    distribution_revision: str
+    solver_revision: str
+    code_revision: str
+    calibration_revision: str
     request_id: str
     account_profile_id: str
     as_of: str
@@ -486,6 +539,7 @@ class EvidenceBundle:
 
 - `formal_path_status` 仅作为对外兼容别名保留
 - `formal_path_status` 必须与 `run_outcome_status` 值完全一致
+- 没有版本/签名字段的 bundle 不得视为可复验正式证据
 
 ### Contract Migration Window
 
@@ -622,6 +676,13 @@ class FailureArtifact:
 - 不得只给自由文本 reason
 - `failed_stage` 不允许使用开放文本
 
+`trustworthy_partial_diagnostics` 不是自由布尔值，至少要求：
+
+- `available_evidence_refs` 可追踪
+- `explanation_readiness != not_ready`
+- 关键诊断字段不依赖 forbidden substitute
+- `failed_stage` 已知且落在固定词表
+
 ### Preflight Validation
 
 正式 run 进入 solver 之前必须经过 preflight：
@@ -704,6 +765,19 @@ class ModeResolutionDecision:
   - `mark_unavailable`
   - `block_formal_run`
 
+补充约束：
+
+- 在 `execution_policy = FORMAL_STRICT` 下，`select_lower_eligible_mode` 不得成为新版 fallback
+- 若 lower mode 会改变：
+  - `resolved_result_category`
+  - `disclosure_level`
+  - `confidence_level`
+  - `distribution_readiness`
+  则不得只做 mode 选择，必须重新走：
+  - 结果类别判定
+  - 披露资格判定
+  - EvidenceBundle 写入
+
 ### 优先实现顺序
 
 1. `student_t`
@@ -757,6 +831,8 @@ class DistributionModelState:
 ```python
 @dataclass
 class ExpectedReturnDecomposition:
+    decomposition_basis: str
+    additivity_convention: str
     base_return_component: float
     risk_premium_component: float
     valuation_component: float
@@ -774,6 +850,76 @@ class ExpectedReturnDecomposition:
 
 - 允许 residual
 - 不强行把所有误差分摊进“看起来好听”的 component
+- 必须明确 `decomposition_basis`
+  - `ex_ante_model_based`
+  - `scenario_attribution`
+  - `heuristic_mix`
+- 必须明确 `additivity_convention`
+  - `arithmetic`
+  - `geometric`
+  - `approximate`
+
+### Success Event Contract
+
+成功率必须明确绑定到统一的成功事件，禁止不同模块各算各的 success。
+
+```python
+@dataclass
+class SuccessEventSpec:
+    horizon_months: int
+    target_type: str
+    target_value: float
+    drawdown_constraint: float | None
+    benchmark_ref: str | None
+    contribution_policy: str
+    rebalancing_policy: str
+    return_basis: str
+    fee_basis: str
+```
+
+最小要求：
+
+- Monte Carlo
+- calibration
+- decision card
+- Claw explain
+
+都必须引用同一份 `SuccessEventSpec`。
+
+默认 formal success 定义必须写死：
+
+- horizon 由 goal/profile 决定
+- contribution policy 明确是否继续定投
+- rebalancing policy 明确是否再平衡
+- return basis 明确 `nominal` 或 `real`
+- fee basis 明确 `gross` 或 `net`
+
+### Formal Estimated Result Contract
+
+`formal_estimated_result` 不能只是“independent 不够时的剩余桶”，必须有正向定义。
+
+```python
+@dataclass
+class FormalEstimatedResultSpec:
+    estimation_basis: str
+    minimum_estimated_weight_adjusted_coverage: float
+    minimum_explanation_ready_coverage: float
+    point_estimate_allowed: bool
+    required_range_disclosure: bool
+```
+
+允许的 `estimation_basis` 仅限：
+
+- `proxy_path`
+- `factor_model`
+- `bucket_estimate`
+- `hybrid_independent_estimate`
+
+要求：
+
+- `formal_estimated_result` 必须显式写出 `estimation_basis`
+- 默认只允许 `range_only`
+- 不得因 independent coverage 不足而自动“滑落”到 estimated；必须满足 estimated 自身 entry criteria
 
 ### 成功率披露从单点升级为 policy 驱动
 
@@ -910,6 +1056,8 @@ class CalibrationSummary:
 class EvidenceInvarianceReport:
     baseline_run_ref: str
     optimized_run_ref: str
+    semantic_refs: dict[str, str]
+    artifact_refs: dict[str, str]
     invariant_fields: list[str]
     exact_match_fields: list[str]
     tolerated_numeric_diffs: dict[str, float]
@@ -920,7 +1068,8 @@ class EvidenceInvarianceReport:
 性能优化默认要求：
 
 - 结果类别和披露资格必须完全一致
-- 核心 evidence refs 必须完全一致
+- `semantic_refs` 必须完全一致
+- `artifact_refs` 可以变化，但不得影响语义判定
 - 数值容差只能用于非类别字段，并且必须显式登记
 
 ### 共享状态从“缓存”升级为“状态依赖图”
