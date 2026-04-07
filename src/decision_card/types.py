@@ -29,6 +29,25 @@ def _serialize(value: Any) -> Any:
 
 
 @dataclass
+class SecondaryCompanionArtifact:
+    source_failure_ref: str
+    companion_kind: str
+    exploratory_summary: dict[str, Any] = field(default_factory=dict)
+    disclosure_level: str = "diagnostic_only"
+    trustworthy_for_formal_decision: bool = False
+
+    def __post_init__(self) -> None:
+        self.source_failure_ref = str(self.source_failure_ref).strip()
+        self.companion_kind = str(self.companion_kind).strip().lower()
+        self.exploratory_summary = dict(self.exploratory_summary or {})
+        self.disclosure_level = str(self.disclosure_level or "diagnostic_only").strip().lower()
+        self.trustworthy_for_formal_decision = bool(self.trustworthy_for_formal_decision)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass
 class DecisionCardBuildInput:
     card_type: DecisionCardType
     workflow_type: str

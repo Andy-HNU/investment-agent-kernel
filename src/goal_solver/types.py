@@ -4,6 +4,8 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any
 
+from shared.audit import CoverageSummary
+
 
 class RankingMode(str, Enum):
     SUFFICIENCY_FIRST = "sufficiency_first"
@@ -13,6 +15,126 @@ class RankingMode(str, Enum):
 
 def _normalize_profile_label(value: Any) -> str:
     return str(getattr(value, "value", value)).strip().lower()
+
+
+_CONFIDENCE_LEVELS = {"high", "medium", "low"}
+_CALIBRATION_QUALITIES = {"strong", "acceptable", "weak", "insufficient_sample"}
+_RESULT_CATEGORY_MAX_CONFIDENCE = {
+    "formal_independent_result",
+    "formal_estimated_result",
+    "degraded_formal_result",
+    "exploratory_result",
+}
+_ESTIMATION_BASES = {
+    "proxy_path",
+    "factor_model",
+    "bucket_estimate",
+    "hybrid_independent_estimate",
+}
+
+
+class ProductProbabilityMethod(str, Enum):
+    PRODUCT_INDEPENDENT_PATH = "product_independent_path"
+    PRODUCT_ESTIMATED_PATH = "product_estimated_path"
+    PRODUCT_PROXY_PATH = "product_proxy_path"
+    HYBRID_INDEPENDENT_ESTIMATE = "hybrid_independent_estimate"
+
+
+_LEGACY_PRODUCT_PROBABILITY_METHOD_MAP: dict[str, ProductProbabilityMethod] = {
+    "product_proxy_adjustment_estimate": ProductProbabilityMethod.PRODUCT_ESTIMATED_PATH,
+    "bucket_only_no_product_proxy_adjustment": ProductProbabilityMethod.PRODUCT_ESTIMATED_PATH,
+}
+
+
+def _canonicalize_product_probability_method(value: Any) -> str:
+    raw = str(getattr(value, "value", value) or "").strip().lower()
+    return raw.replace(" ", "_")
+
+
+def normalize_product_probability_method(value: Any) -> str:
+    raw = _canonicalize_product_probability_method(value)
+    if raw in _LEGACY_PRODUCT_PROBABILITY_METHOD_MAP:
+        return _LEGACY_PRODUCT_PROBABILITY_METHOD_MAP[raw].value
+    try:
+        return ProductProbabilityMethod(raw).value
+    except ValueError as exc:  # pragma: no cover - exercised via contract test
+        raise ValueError(f"unknown product_probability_method: {value}") from exc
+
+
+def _coerce_product_probability_method_label(value: Any) -> str:
+    raw = _canonicalize_product_probability_method(value)
+    if raw in _LEGACY_PRODUCT_PROBABILITY_METHOD_MAP:
+        return raw
+    try:
+        return ProductProbabilityMethod(raw).value
+    except ValueError as exc:  # pragma: no cover - exercised via contract test
+        raise ValueError(f"unknown product_probability_method: {value}") from exc
+
+
+def _normalize_coverage_summary(value: Any) -> dict[str, Any]:
+    summary = CoverageSummary.from_any(value)
+    return {} if summary is None else summary.to_dict()
+
+
+def _normalize_ratio_threshold(value: Any, *, field_name: str) -> float:
+    numeric = float(value)
+    if numeric < 0.0 or numeric > 1.0:
+        raise ValueError(f"{field_name} must be between 0.0 and 1.0: {value}")
+    return numeric
+
+
+def _normalize_estimation_basis(value: Any) -> str:
+    raw = str(getattr(value, "value", value) or "").strip().lower().replace(" ", "_")
+    if raw not in _ESTIMATION_BASES:
+        raise ValueError(f"unknown estimation_basis: {value}")
+    return raw
+
+
+@dataclass(frozen=True)
+class ConfidenceDerivationPolicy:
+    result_category: str | None
+    minimum_independent_weight_adjusted_coverage_for_high: float
+    minimum_distribution_ready_coverage_for_high: float
+    minimum_calibration_quality_for_high: str
+    maximum_confidence_by_result_category: dict[str, str]
+
+    def __post_init__(self) -> None:
+        normalized_category = None if self.result_category in (None, "") else str(self.result_category).strip().lower()
+        object.__setattr__(self, "result_category", normalized_category)
+        object.__setattr__(
+            self,
+            "minimum_independent_weight_adjusted_coverage_for_high",
+            _normalize_ratio_threshold(
+                self.minimum_independent_weight_adjusted_coverage_for_high,
+                field_name="minimum_independent_weight_adjusted_coverage_for_high",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "minimum_distribution_ready_coverage_for_high",
+            _normalize_ratio_threshold(
+                self.minimum_distribution_ready_coverage_for_high,
+                field_name="minimum_distribution_ready_coverage_for_high",
+            ),
+        )
+        calibration_quality = str(self.minimum_calibration_quality_for_high).strip().lower()
+        if calibration_quality not in _CALIBRATION_QUALITIES:
+            raise ValueError(f"unknown minimum_calibration_quality_for_high: {self.minimum_calibration_quality_for_high}")
+        object.__setattr__(self, "minimum_calibration_quality_for_high", calibration_quality)
+        normalized_max = {
+            str(category).strip().lower(): str(level).strip().lower()
+            for category, level in dict(self.maximum_confidence_by_result_category or {}).items()
+            if str(category).strip()
+        }
+        for category, level in normalized_max.items():
+            if category not in _RESULT_CATEGORY_MAX_CONFIDENCE:
+                raise ValueError(f"unknown result_category confidence cap: {category}")
+            if level not in _CONFIDENCE_LEVELS:
+                raise ValueError(f"unknown confidence_level: {level}")
+        object.__setattr__(self, "maximum_confidence_by_result_category", normalized_max)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 RANKING_MODE_MATRIX: dict[tuple[str, str], RankingMode] = {
@@ -157,6 +279,9 @@ class ProductSimulationInput:
     audit_window: dict[str, Any] | None = None
     coverage_summary: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.coverage_summary = _normalize_coverage_summary(self.coverage_summary)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "products": [item.to_dict() for item in self.products],
@@ -178,6 +303,15 @@ class CandidateProductContext:
     product_history_profiles: list[ProductHistoryProfile] = field(default_factory=list)
     product_simulation_input: ProductSimulationInput | None = None
     notes: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.product_probability_method = _coerce_product_probability_method_label(self.product_probability_method)
+        if isinstance(self.product_simulation_input, dict):
+            self.product_simulation_input = ProductSimulationInput(**self.product_simulation_input)
+
+    @property
+    def normalized_product_probability_method(self) -> str:
+        return normalize_product_probability_method(self.product_probability_method)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -258,6 +392,47 @@ class RiskBudget:
 
 
 @dataclass
+class SuccessEventSpec:
+    horizon_months: int
+    target_type: str
+    target_value: float
+    drawdown_constraint: float | None
+    benchmark_ref: str | None
+    contribution_policy: str
+    rebalancing_policy: str
+    return_basis: str
+    fee_basis: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class FormalEstimatedResultSpec:
+    estimation_basis: str
+    minimum_estimated_weight_adjusted_coverage: float
+    minimum_explanation_ready_coverage: float
+    point_estimate_allowed: bool = False
+    required_range_disclosure: bool = True
+
+    def __post_init__(self) -> None:
+        self.estimation_basis = _normalize_estimation_basis(self.estimation_basis)
+        self.minimum_estimated_weight_adjusted_coverage = _normalize_ratio_threshold(
+            self.minimum_estimated_weight_adjusted_coverage,
+            field_name="minimum_estimated_weight_adjusted_coverage",
+        )
+        self.minimum_explanation_ready_coverage = _normalize_ratio_threshold(
+            self.minimum_explanation_ready_coverage,
+            field_name="minimum_explanation_ready_coverage",
+        )
+        self.point_estimate_allowed = bool(self.point_estimate_allowed)
+        self.required_range_disclosure = bool(self.required_range_disclosure)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class SuccessProbabilityResult:
     allocation_name: str
     weights: dict[str, float]
@@ -280,6 +455,16 @@ class SuccessProbabilityResult:
     summary: str = ""
     complexity_label: str = ""
     infeasibility_reasons: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.risk_summary, dict):
+            self.risk_summary = RiskSummary(**self.risk_summary)
+        self.product_probability_method = _coerce_product_probability_method_label(self.product_probability_method)
+        self.simulation_coverage_summary = _normalize_coverage_summary(self.simulation_coverage_summary)
+
+    @property
+    def normalized_product_probability_method(self) -> str:
+        return normalize_product_probability_method(self.product_probability_method)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -307,6 +492,14 @@ class FrontierScenario:
     drawdown_gap: float = 0.0
     target_return_gap: float = 0.0
     rationale: str = ""
+
+    def __post_init__(self) -> None:
+        self.product_probability_method = _coerce_product_probability_method_label(self.product_probability_method)
+        self.simulation_coverage_summary = _normalize_coverage_summary(self.simulation_coverage_summary)
+
+    @property
+    def normalized_product_probability_method(self) -> str:
+        return normalize_product_probability_method(self.product_probability_method)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

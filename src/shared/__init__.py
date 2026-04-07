@@ -3,11 +3,16 @@
 from .audit import (
     AuditRecord,
     AuditWindow,
+    CoverageSummary,
     DataStatus,
+    DisclosureDecision,
+    EvidenceBundle,
     FormalPathStatus,
     FormalPathVisibility,
+    RunOutcomeStatus,
     coerce_data_status,
     coerce_formal_path_status,
+    coerce_run_outcome_status,
 )
 
 
@@ -44,11 +49,16 @@ _DEMO_SCENARIO_EXPORTS = {
 __all__ = [
     "AuditRecord",
     "AuditWindow",
+    "CoverageSummary",
     "DataStatus",
+    "DisclosureDecision",
+    "EvidenceBundle",
     "FormalPathStatus",
     "FormalPathVisibility",
+    "RunOutcomeStatus",
     "coerce_data_status",
     "coerce_formal_path_status",
+    "coerce_run_outcome_status",
 ]
 __all__.extend(sorted(_DEMO_FLOW_EXPORTS))
 __all__.extend(sorted(_DEMO_SCENARIO_EXPORTS))

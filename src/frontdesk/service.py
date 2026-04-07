@@ -515,16 +515,16 @@ def _classify_formal_path_visibility(
     if str(card.get("card_type") or "") == "blocked":
         status = FormalPathStatus.BLOCKED
     elif fallback_scope:
-        status = FormalPathStatus.FALLBACK_USED_BUT_NOT_FORMAL
+        status = FormalPathStatus.DEGRADED
     elif degraded_scope or missing_audit_fields:
         status = FormalPathStatus.DEGRADED
     else:
-        status = FormalPathStatus.FORMAL
+        status = FormalPathStatus.COMPLETED
 
     recommended_action = str(card.get("recommended_action") or "").strip()
     execution_eligible = True
     execution_reason = "eligible"
-    if status is not FormalPathStatus.FORMAL:
+    if status is not FormalPathStatus.COMPLETED:
         execution_eligible = False
         execution_reason = status.value
     elif any(item == "manual_review_required" for item in card.get("execution_notes") or []):

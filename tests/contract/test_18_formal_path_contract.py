@@ -28,7 +28,8 @@ def test_coerce_data_status_rejects_unknown_value():
 
 @pytest.mark.contract
 def test_coerce_formal_path_status_accepts_known_values():
-    assert coerce_formal_path_status("formal") == FormalPathStatus.FORMAL
+    assert coerce_formal_path_status("formal") == FormalPathStatus.COMPLETED
+    assert coerce_formal_path_status("completed") == FormalPathStatus.COMPLETED
     assert coerce_formal_path_status(FormalPathStatus.DEGRADED) == FormalPathStatus.DEGRADED
 
 
@@ -128,6 +129,6 @@ def test_formal_path_visibility_serializes_status_and_reasons():
         }
     )
 
-    assert visibility.status == FormalPathStatus.FALLBACK_USED_BUT_NOT_FORMAL
-    assert visibility.to_dict()["status"] == "fallback_used_but_not_formal"
+    assert visibility.status == FormalPathStatus.DEGRADED
+    assert visibility.to_dict()["status"] == "degraded"
     assert visibility.to_dict()["missing_audit_fields"] == ["market_raw.audit_window"]
