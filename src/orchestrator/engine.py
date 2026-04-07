@@ -17,13 +17,16 @@ from runtime_optimizer.engine import run_runtime_optimizer
 from runtime_optimizer.types import RuntimeOptimizerMode
 from snapshot_ingestion.engine import build_snapshot_bundle
 from shared.audit import (
+    AuditWindow,
     CoverageSummary,
+    DataStatus,
     DisclosureDecision,
     EvidenceBundle,
     ExecutionPolicy,
     FailureArtifact,
     RunOutcomeStatus,
     build_evidence_invariance_report,
+    coerce_data_status,
     coerce_execution_policy,
 )
 
@@ -51,6 +54,39 @@ _GOAL_SOLVER_CONSTRAINT_FIELDS = (
 )
 
 _SAFE_ACTION_TYPES = ("freeze", "observe")
+_FORMAL_PATH_REQUIRED_FIELDS = {"market_raw", "account_raw", "behavior_raw", "live_portfolio"}
+_GATE1_SOURCE_PRIORITY = {
+    "externally_fetched": 5,
+    "user_provided": 4,
+    "system_inferred": 3,
+    "default_assumed": 2,
+    "synthetic_demo": 1,
+}
+_GATE1_DATA_STATUS_PRIORITY = {
+    DataStatus.OBSERVED: 5,
+    DataStatus.COMPUTED_FROM_OBSERVED: 4,
+    DataStatus.INFERRED: 3,
+    DataStatus.PRIOR_DEFAULT: 2,
+    DataStatus.MANUAL_ANNOTATION: 1,
+    DataStatus.SYNTHETIC_DEMO: 0,
+}
+_GATE1_NON_FORMAL_DATA_STATUSES = {
+    DataStatus.PRIOR_DEFAULT,
+    DataStatus.SYNTHETIC_DEMO,
+    DataStatus.MANUAL_ANNOTATION,
+}
+_GATE1_SOURCE_TO_DATA_STATUS = {
+    "user_provided": DataStatus.OBSERVED,
+    "system_inferred": DataStatus.INFERRED,
+    "default_assumed": DataStatus.PRIOR_DEFAULT,
+    "externally_fetched": DataStatus.OBSERVED,
+}
+_GATE1_DOMAIN_FIELD_PREFIXES = {
+    "market_raw": ("market", "market."),
+    "account_raw": ("account", "account.", "holdings"),
+    "behavior_raw": ("behavior", "behavior."),
+    "live_portfolio": ("live_portfolio", "account", "account.", "holdings"),
+}
 _HIGH_RISK_ACTION_TYPES = {
     "rebalance_full",
     "sell_all",
@@ -797,6 +833,110 @@ def _build_input_provenance(
     return provenance
 
 
+def _gate1_input_record_priority(record: dict[str, Any]) -> tuple[int, int, int, int]:
+    source_type = str(record.get("source_type") or "").strip()
+    data_status_raw = record.get("data_status")
+    try:
+        data_status = coerce_data_status(
+            data_status_raw or _GATE1_SOURCE_TO_DATA_STATUS.get(source_type, DataStatus.INFERRED).value
+        )
+    except ValueError:
+        data_status = DataStatus.INFERRED
+    audit_window = AuditWindow.from_any(record.get("audit_window"))
+    return (
+        _GATE1_SOURCE_PRIORITY.get(source_type, 0),
+        _GATE1_DATA_STATUS_PRIORITY.get(data_status, 0),
+        1 if str(record.get("source_ref") or "").strip() else 0,
+        1 if audit_window is not None and audit_window.has_required_window() else 0,
+    )
+
+
+def _gate1_best_input_records(input_provenance: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    provenance = input_provenance or {}
+    preferred: dict[str, dict[str, Any]] = {}
+    ordered_sources = ("externally_fetched", "user_provided", "system_inferred", "default_assumed")
+    for source_type in ordered_sources:
+        for item in list(provenance.get(source_type) or []):
+            record = dict(_as_dict(item))
+            field = str(record.get("field") or "").strip()
+            if not field:
+                continue
+            record.setdefault("source_type", source_type)
+            current = preferred.get(field)
+            if current is None or _gate1_input_record_priority(record) > _gate1_input_record_priority(current):
+                preferred[field] = record
+    return preferred
+
+
+def _gate1_record_matches_required_domain(domain: str, record: dict[str, Any]) -> bool:
+    field = str(record.get("field") or "").strip()
+    if not field:
+        return False
+    if field == domain:
+        return True
+    prefixes = _GATE1_DOMAIN_FIELD_PREFIXES.get(domain, ())
+    return any(field == prefix or field.startswith(prefix) for prefix in prefixes)
+
+
+def _gate1_record_for_required_domain(
+    domain: str,
+    *,
+    input_provenance: dict[str, Any] | None,
+    preferred_records: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    preferred = preferred_records or _gate1_best_input_records(input_provenance)
+    exact = preferred.get(domain)
+    if exact is not None:
+        return exact
+    best: dict[str, Any] | None = None
+    for record in preferred.values():
+        if not _gate1_record_matches_required_domain(domain, record):
+            continue
+        if best is None or _gate1_input_record_priority(record) > _gate1_input_record_priority(best):
+            best = record
+    return best
+
+
+def _gate1_formal_evidence_degradation_reasons(
+    *,
+    input_provenance: dict[str, Any] | None,
+) -> list[str]:
+    records = _gate1_best_input_records(input_provenance)
+    reasons: list[str] = []
+    for field in sorted(_FORMAL_PATH_REQUIRED_FIELDS):
+        record = _gate1_record_for_required_domain(
+            field,
+            input_provenance=input_provenance,
+            preferred_records=records,
+        )
+        if record is None:
+            reasons.append(f"{field} formal audit record missing")
+            continue
+        source_type = str(record.get("source_type") or "").strip()
+        try:
+            data_status = coerce_data_status(
+                record.get("data_status")
+                or _GATE1_SOURCE_TO_DATA_STATUS.get(source_type, DataStatus.INFERRED).value
+            )
+        except ValueError:
+            data_status = DataStatus.INFERRED
+        if data_status in _GATE1_NON_FORMAL_DATA_STATUSES:
+            reasons.append(f"{field} is backed by non-formal data_status={data_status.value}")
+        if source_type == "externally_fetched":
+            audit_window = AuditWindow.from_any(record.get("audit_window"))
+            if not str(record.get("source_ref") or "").strip():
+                reasons.append(f"{field} missing formal audit source_ref")
+            if not str(record.get("as_of") or "").strip():
+                reasons.append(f"{field} missing formal audit as_of")
+            if audit_window is None or not audit_window.has_required_window():
+                reasons.append(f"{field} missing formal audit_window")
+    deduped: list[str] = []
+    for reason in reasons:
+        if reason not in deduped:
+            deduped.append(reason)
+    return deduped
+
+
 def _whole_number_text(value: Any) -> str:
     try:
         return str(int(round(float(value))))
@@ -1086,10 +1226,16 @@ def _gate1_run_outcome_status(
     blocking_reasons: list[str],
     degraded_notes: list[str],
     escalation_reasons: list[str],
+    formal_evidence_degradation_reasons: list[str],
 ) -> RunOutcomeStatus:
     if status == WorkflowStatus.BLOCKED or blocking_reasons:
         return RunOutcomeStatus.BLOCKED
-    if status in {WorkflowStatus.DEGRADED, WorkflowStatus.ESCALATED} or degraded_notes or escalation_reasons:
+    if (
+        status in {WorkflowStatus.DEGRADED, WorkflowStatus.ESCALATED}
+        or degraded_notes
+        or escalation_reasons
+        or formal_evidence_degradation_reasons
+    ):
         return RunOutcomeStatus.DEGRADED
     return RunOutcomeStatus.COMPLETED
 
@@ -1120,7 +1266,13 @@ def _gate1_resolved_result_category(
     return "formal_estimated_result"
 
 
-def _gate1_data_completeness(coverage_summary: CoverageSummary) -> str:
+def _gate1_data_completeness(
+    coverage_summary: CoverageSummary,
+    *,
+    formal_evidence_degraded: bool,
+) -> str:
+    if formal_evidence_degraded:
+        return "partial"
     if (
         coverage_summary.weight_adjusted_coverage >= 0.95
         and coverage_summary.explanation_ready_coverage >= 0.95
@@ -1148,12 +1300,14 @@ def _gate1_confidence_level(
     data_completeness: str,
     calibration_quality: str,
     coverage_summary: CoverageSummary,
+    formal_evidence_degraded: bool,
 ) -> str:
     if (
         resolved_result_category == "formal_independent_result"
         and data_completeness == "complete"
         and calibration_quality in {"strong", "acceptable"}
         and coverage_summary.distribution_ready_coverage >= 0.95
+        and not formal_evidence_degraded
     ):
         return "high"
     if resolved_result_category == "formal_estimated_result":
@@ -1169,14 +1323,19 @@ def _gate1_disclosure_decision(
     calibration_result: Any,
     degraded_notes: list[str],
     blocking_reasons: list[str],
+    formal_evidence_degradation_reasons: list[str],
 ) -> DisclosureDecision:
-    data_completeness = _gate1_data_completeness(coverage_summary)
+    data_completeness = _gate1_data_completeness(
+        coverage_summary,
+        formal_evidence_degraded=bool(formal_evidence_degradation_reasons),
+    )
     calibration_quality = _gate1_calibration_quality(calibration_result)
     confidence_level = _gate1_confidence_level(
         resolved_result_category=resolved_result_category,
         data_completeness=data_completeness,
         calibration_quality=calibration_quality,
         coverage_summary=coverage_summary,
+        formal_evidence_degraded=bool(formal_evidence_degradation_reasons),
     )
     if resolved_result_category == "formal_independent_result" and confidence_level == "high":
         disclosure_level = "point_and_range"
@@ -1186,7 +1345,7 @@ def _gate1_disclosure_decision(
         disclosure_level = "unavailable"
     else:
         disclosure_level = "diagnostic_only"
-    reasons = list(degraded_notes or blocking_reasons)
+    reasons = list(formal_evidence_degradation_reasons or degraded_notes or blocking_reasons)
     if not reasons and resolved_result_category == "formal_estimated_result":
         reasons = ["estimated_result_requires_range_disclosure"]
     if not reasons and disclosure_level == "unavailable":
@@ -2497,11 +2656,21 @@ def run_orchestrator(
         and plan_context.get("pending")
     ):
         execution_plan_summary = _build_execution_plan_summary(plan_context.get("pending"))
+    gate1_input_provenance = _build_input_provenance(
+        envelope,
+        effective_trigger.workflow_type,
+        has_prior_baseline=has_prior_baseline,
+    )
+    gate1_formal_evidence_degradation_reasons = _gate1_formal_evidence_degradation_reasons(
+        input_provenance=gate1_input_provenance,
+    )
+    gate1_degraded_notes = _unique_items(degraded_notes + gate1_formal_evidence_degradation_reasons)
     gate1_run_outcome_status = _gate1_run_outcome_status(
         status=status,
         blocking_reasons=blocking_reasons,
         degraded_notes=degraded_notes,
         escalation_reasons=escalation_reasons,
+        formal_evidence_degradation_reasons=gate1_formal_evidence_degradation_reasons,
     )
     gate1_coverage_summary = _gate1_coverage_summary(goal_solver_output)
     candidate_context_failure_artifacts = _collect_failure_artifacts(
@@ -2539,8 +2708,9 @@ def run_orchestrator(
         run_outcome_status=gate1_run_outcome_status,
         coverage_summary=gate1_coverage_summary,
         calibration_result=calibration_result,
-        degraded_notes=degraded_notes,
+        degraded_notes=gate1_degraded_notes,
         blocking_reasons=blocking_reasons,
+        formal_evidence_degradation_reasons=gate1_formal_evidence_degradation_reasons,
     )
     gate1_evidence_bundle = _gate1_evidence_bundle(
         run_id=run_id,
@@ -2555,7 +2725,7 @@ def run_orchestrator(
         execution_policy=execution_policy,
         failure_artifact=primary_failure_artifact,
         blocking_reasons=blocking_reasons,
-        degraded_notes=degraded_notes,
+        degraded_notes=gate1_degraded_notes,
         snapshot_bundle=snapshot_bundle,
         runtime_result=runtime_result,
     )
@@ -2592,13 +2762,9 @@ def run_orchestrator(
         resolved_result_category=gate1_resolved_result_category,
         disclosure_decision=gate1_disclosure_decision.to_dict(),
         evidence_bundle=gate1_evidence_bundle.to_dict(),
-        input_provenance=_build_input_provenance(
-            envelope,
-            effective_trigger.workflow_type,
-            has_prior_baseline=has_prior_baseline,
-        ),
+        input_provenance=gate1_input_provenance,
         blocking_reasons=blocking_reasons,
-        degraded_notes=degraded_notes,
+        degraded_notes=gate1_degraded_notes,
         escalation_reasons=escalation_reasons,
         control_directives=control_directives,
     )

@@ -575,9 +575,10 @@ def test_frontdesk_onboarding_auto_uses_tinyshare_runtime_inputs_when_token_pres
     assert summary["refresh_summary"]["provider_name"] == "runtime_market_history"
     market_detail = next(item for item in summary["refresh_summary"]["domain_details"] if item["domain"] == "market_raw")
     assert market_detail["historical_dataset"]["source_name"] == "tinyshare"
-    assert summary["formal_path_visibility"]["reasons"] == [
-        "behavior_raw is backed by non-formal data_status=prior_default"
-    ]
+    assert summary["formal_path_visibility"]["status"] == "degraded"
+    assert "behavior_raw is backed by non-formal data_status=prior_default" in summary[
+        "formal_path_visibility"
+    ]["reasons"]
     assert pending["product_universe_audit_summary"]["requested"] is True
     assert pending["product_universe_audit_summary"]["source_status"] == "observed"
     assert pending["valuation_audit_summary"]["requested"] is True
@@ -585,6 +586,47 @@ def test_frontdesk_onboarding_auto_uses_tinyshare_runtime_inputs_when_token_pres
     assert pending["runtime_candidate_count"] == 3
     assert summary["decision_card"]["probability_explanation"]["product_probability_method"] == "product_independent_path"
     assert summary["decision_card"]["probability_explanation"]["product_independent_success_probability"] != ""
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_demotes_gate1_contract_when_required_formal_input_is_prior_default(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("TINYSHARE_TOKEN", "test-token")
+    monkeypatch.setattr(
+        "product_mapping.runtime_inputs.load_tinyshare_runtime_catalog",
+        lambda *, as_of, cache_dir=None: (_runtime_catalog(), _tinyshare_universe_result()),
+    )
+    monkeypatch.setattr(
+        "product_mapping.runtime_inputs.build_tinyshare_runtime_valuation_result",
+        lambda candidates, *, as_of, cache_dir=None: _tinyshare_valuation_result(),
+    )
+
+    def fake_fetch_timeseries(spec, *, pin, cache, allow_fallback, return_used_pin):  # type: ignore[no-untyped-def]
+        rows = [
+            {"date": "2026-04-01", "open": 1.0, "high": 1.1, "low": 0.9, "close": 1.0, "volume": 100.0},
+            {"date": "2026-04-02", "open": 1.0, "high": 1.2, "low": 0.95, "close": 1.03, "volume": 110.0},
+            {"date": "2026-04-03", "open": 1.03, "high": 1.25, "low": 1.0, "close": 1.05, "volume": 120.0},
+        ]
+        return rows, pin
+
+    monkeypatch.setattr("snapshot_ingestion.providers.fetch_timeseries", fake_fetch_timeseries)
+    monkeypatch.setattr("product_mapping.engine.fetch_timeseries", fake_fetch_timeseries)
+
+    summary = run_frontdesk_onboarding(
+        _profile(account_profile_id="layer2_tinyshare_runtime_gate1_semantics"),
+        db_path=tmp_path / "frontdesk.sqlite",
+    )
+
+    assert summary["formal_path_visibility"]["status"] == "degraded"
+    assert summary["run_outcome_status"] == "degraded"
+    assert summary["resolved_result_category"] == "degraded_formal_result"
+    assert summary["disclosure_decision"]["disclosure_level"] == "range_only"
+    assert summary["disclosure_decision"]["confidence_level"] == "low"
+    assert summary["evidence_bundle"]["formal_path_status"] == "degraded"
+    assert "behavior_raw is backed by non-formal data_status=prior_default" in summary["evidence_bundle"][
+        "degradation_reasons"
+    ]
 
 
 @pytest.mark.contract

@@ -217,7 +217,9 @@ def test_run_orchestrator_serializes_goal_solver_payload_contract_fields_through
     payload = result.to_dict()
 
     assert result.status == WorkflowStatus.COMPLETED
-    assert result.resolved_result_category == "formal_estimated_result"
+    assert result.run_outcome_status == "degraded"
+    assert result.resolved_result_category == "degraded_formal_result"
+    assert result.disclosure_decision["disclosure_level"] == "range_only"
     assert result.goal_solver_output is not None
     assert result.goal_solver_output.recommended_result.success_event_spec is not None
     assert result.goal_solver_output.recommended_result.formal_estimated_result_spec is not None

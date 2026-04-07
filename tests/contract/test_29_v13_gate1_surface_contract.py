@@ -3,8 +3,14 @@ from __future__ import annotations
 from frontdesk.cli import render_frontdesk_summary
 from frontdesk.service import run_frontdesk_onboarding
 from frontdesk.storage import FrontdeskStore
-from orchestrator.engine import run_orchestrator
+from orchestrator.engine import (
+    _build_input_provenance,
+    _gate1_formal_evidence_degradation_reasons,
+    run_orchestrator,
+)
+from orchestrator.types import WorkflowType
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
+from tests.support.formal_snapshot_helpers import write_formal_snapshot_source
 
 
 def _profile(*, account_profile_id: str) -> UserOnboardingProfile:
@@ -91,3 +97,40 @@ def test_frontdesk_summary_storage_and_cli_surface_gate1_contract_fields(tmp_pat
     assert f"run_outcome_status={summary['run_outcome_status']}" in output
     assert f"resolved_result_category={summary['resolved_result_category']}" in output
     assert "disclosure_level=" in output
+
+
+def test_frontdesk_onboarding_with_complete_formal_snapshot_keeps_formal_independent_gate1_surface(tmp_path):
+    profile = _profile(account_profile_id="gate1_surface_formal_snapshot")
+    db_path = tmp_path / "gate1_surface_formal_snapshot.sqlite"
+
+    summary = run_frontdesk_onboarding(
+        profile,
+        db_path=db_path,
+        external_snapshot_source=write_formal_snapshot_source(tmp_path, profile),
+    )
+
+    assert summary["run_outcome_status"] == "completed"
+    assert summary["resolved_result_category"] == "formal_independent_result"
+    assert summary["disclosure_decision"]["disclosure_level"] == "point_and_range"
+    assert summary["disclosure_decision"]["confidence_level"] == "high"
+    assert summary["formal_path_visibility"]["status"] == "completed"
+
+
+def test_gate1_formal_evidence_domain_aliases_cover_synthesized_provenance_fields():
+    provenance = _build_input_provenance(
+        {
+            "market_raw": {"historical_dataset": {"source_name": "observed"}},
+            "account_raw": {"total_value": 18_000.0},
+            "behavior_raw": {"cooldown_active": False},
+            "live_portfolio": {"total_value": 18_000.0},
+        },
+        WorkflowType.ONBOARDING,
+        has_prior_baseline=False,
+    )
+
+    reasons = _gate1_formal_evidence_degradation_reasons(input_provenance=provenance)
+
+    assert "market_raw formal audit record missing" not in reasons
+    assert "account_raw formal audit record missing" not in reasons
+    assert "behavior_raw formal audit record missing" not in reasons
+    assert "live_portfolio formal audit record missing" not in reasons
