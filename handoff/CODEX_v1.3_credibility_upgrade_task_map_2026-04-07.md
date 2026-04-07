@@ -135,6 +135,10 @@ exploratory_result
   -> formal_independent_result
 ```
 
+该迁移图描述的是**结果工件成熟度晋升路径**，不是单次 run 内部执行状态机。
+
+单次 run 内只允许解析出一个 `resolved_result_category`，不得在一次 run 内经历该图的多级迁移。
+
 附加约束：
 
 - 主结果类别只能单向晋升，不能在同一次 formal run 中先晋升再回落并混合输出
@@ -275,6 +279,9 @@ exploratory_result
 - 仍然属于正式路径
 - 但证据或覆盖不足以支持高精度披露
 - 允许给区间、限制性解释与恢复建议
+- 只在存在主结果输出时成立
+- 若只剩结构化失败、无主结果输出，则 `resolved_result_category = null`
+- `FailureArtifact` 不是 `degraded_formal_result` 的一种展示形式，而是 `unavailable/blocked` 的失败工件
 
 `exploratory_result`
 
@@ -294,6 +301,31 @@ formal run 的主结果只允许是：
 
 - 只能作为 `secondary_companion_artifact`
 - 不得写入同一次 formal run 的 `resolved_result_category`
+
+### Secondary Companion Artifact
+
+`secondary_companion_artifact` 只能承接 formal run 失败后的附带探索信息，不得成为新的灰色主结果通道。
+
+最小约束：
+
+- 不得影响 `resolved_result_category`
+- 不得被 Claw 当作 formal truth 源
+- 不得覆盖或替代：
+  - `FailureArtifact`
+  - `DisclosureDecision`
+  - `EvidenceBundle`
+
+建议结构：
+
+```python
+@dataclass
+class SecondaryCompanionArtifact:
+    source_failure_ref: str
+    companion_kind: str
+    exploratory_summary: dict[str, Any]
+    disclosure_level: str
+    trustworthy_for_formal_decision: bool
+```
 
 #### Entry Criteria
 
@@ -770,6 +802,10 @@ class ModeResolutionDecision:
 补充约束：
 
 - 在 `execution_policy = FORMAL_STRICT` 下，`select_lower_eligible_mode` 不得成为新版 fallback
+- 只要 `requested_mode != selected_mode`，就必须重新走：
+  - 结果类别判定
+  - 披露资格判定
+  - EvidenceBundle 写入
 - 若 lower mode 会改变：
   - `resolved_result_category`
   - `disclosure_level`
@@ -779,6 +815,29 @@ class ModeResolutionDecision:
   - 结果类别判定
   - 披露资格判定
   - EvidenceBundle 写入
+
+### Product Probability Method Contract
+
+`product_probability_method` 必须是规范化 contract 字段，不允许自由文本。
+
+它必须由以下输入规范化映射得到：
+
+- `simulation_mode`
+- `estimation_basis`
+- `coverage mode`
+
+允许值闭集：
+
+- `product_independent_path`
+- `product_estimated_path`
+- `product_proxy_path`
+- `hybrid_independent_estimate`
+
+要求：
+
+- `product_probability_method` 不是对 `simulation_mode` 的自由包装
+- Claw、decision card、debug artifact 必须共用同一映射
+- `formal_independent_result` 不得输出 `product_proxy_path`
 
 ### 优先实现顺序
 
