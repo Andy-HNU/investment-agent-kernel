@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from frontdesk.cli import render_frontdesk_summary
 from frontdesk.service import run_frontdesk_onboarding
 from frontdesk.storage import FrontdeskStore
@@ -10,7 +12,10 @@ from orchestrator.engine import (
 )
 from orchestrator.types import WorkflowType
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
-from tests.support.formal_snapshot_helpers import write_formal_snapshot_source
+from tests.support.formal_snapshot_helpers import (
+    build_formal_snapshot_payload,
+    write_formal_snapshot_source,
+)
 
 
 def _profile(*, account_profile_id: str) -> UserOnboardingProfile:
@@ -114,6 +119,47 @@ def test_frontdesk_onboarding_with_complete_formal_snapshot_keeps_formal_indepen
     assert summary["disclosure_decision"]["disclosure_level"] == "point_and_range"
     assert summary["disclosure_decision"]["confidence_level"] == "high"
     assert summary["formal_path_visibility"]["status"] == "completed"
+
+
+def test_frontdesk_onboarding_external_snapshot_primary_does_not_bootstrap_runtime_market_inputs(
+    monkeypatch,
+    tmp_path,
+):
+    profile = _profile(account_profile_id="gate1_surface_snapshot_primary")
+    db_path = tmp_path / "gate1_surface_snapshot_primary.sqlite"
+    snapshot_path = tmp_path / "gate1_surface_snapshot_primary.json"
+    payload = build_formal_snapshot_payload(profile)
+    payload["market_raw"].pop("product_universe_result", None)
+    payload["market_raw"].pop("product_valuation_result", None)
+    historical_dataset = dict(payload["market_raw"].get("historical_dataset") or {})
+    historical_dataset.pop("product_simulation_input", None)
+    payload["market_raw"]["historical_dataset"] = historical_dataset
+    snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    monkeypatch.setattr("product_mapping.runtime_inputs._tinyshare_has_token", lambda: True)
+
+    def _unexpected_runtime_bootstrap(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("external formal snapshot should remain snapshot-primary")
+
+    monkeypatch.setattr(
+        "product_mapping.runtime_inputs.load_tinyshare_runtime_catalog",
+        _unexpected_runtime_bootstrap,
+    )
+    monkeypatch.setattr(
+        "product_mapping.runtime_inputs.build_tinyshare_runtime_valuation_result",
+        _unexpected_runtime_bootstrap,
+    )
+
+    summary = run_frontdesk_onboarding(
+        profile,
+        db_path=db_path,
+        external_snapshot_source=snapshot_path,
+    )
+
+    assert summary["run_outcome_status"] == "degraded"
+    assert summary["resolved_result_category"] == "degraded_formal_result"
+    assert summary["disclosure_decision"]["disclosure_level"] == "range_only"
+    assert summary["evidence_bundle"]["input_refs"].get("provider_signature") in {None, ""}
 
 
 def test_gate1_formal_evidence_domain_aliases_cover_synthesized_provenance_fields():

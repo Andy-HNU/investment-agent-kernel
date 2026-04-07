@@ -290,11 +290,14 @@ def test_frontdesk_external_snapshot_without_audit_window_is_non_formal(tmp_path
     )
 
     visibility = summary["formal_path_visibility"]
-    assert summary["status"] == "blocked"
-    assert visibility["status"] == "blocked"
+    assert summary["status"] == "completed"
+    assert summary["run_outcome_status"] == "degraded"
+    assert summary["resolved_result_category"] == "degraded_formal_result"
+    assert summary["disclosure_decision"]["disclosure_level"] == "range_only"
+    assert visibility["status"] == "degraded"
     assert visibility["execution_eligible"] is False
     assert "market_raw.audit_window" in visibility["missing_audit_fields"]
-    assert summary["user_state"]["formal_path_visibility"]["status"] == "blocked"
+    assert summary["user_state"]["formal_path_visibility"]["status"] == "degraded"
     assert any(record["field"] == "market_raw" and record["data_status"] == "observed" for record in summary["audit_records"])
 
 
@@ -349,8 +352,11 @@ def test_frontdesk_inline_provider_marks_synthetic_demo_non_formal(tmp_path):
     )
 
     visibility = summary["formal_path_visibility"]
-    assert summary["status"] == "blocked"
-    assert visibility["status"] == "blocked"
+    assert summary["status"] == "completed"
+    assert summary["run_outcome_status"] == "degraded"
+    assert summary["resolved_result_category"] == "degraded_formal_result"
+    assert summary["disclosure_decision"]["disclosure_level"] == "range_only"
+    assert visibility["status"] == "degraded"
     assert visibility["execution_eligible"] is False
     assert any("market_raw is backed by non-formal data_status=synthetic_demo" in reason for reason in visibility["reasons"])
 

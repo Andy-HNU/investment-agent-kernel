@@ -796,6 +796,9 @@ def _apply_external_snapshot(
     external_items = _external_snapshot_items(external_payload)
     merged_provenance = _merge_external_provenance(input_provenance, external_items)
     merged_raw_inputs["input_provenance"] = merged_provenance
+    for key in ("external_snapshot_meta", "external_metadata"):
+        if external_payload.get(key) is not None:
+            merged_raw_inputs[key] = deepcopy(external_payload[key])
     return merged_raw_inputs, merged_provenance, external_items
 
 
@@ -828,6 +831,14 @@ def _apply_external_provider_config(
     external_payload = None
     if fetched_snapshot is not None:
         external_payload = deepcopy(fetched_snapshot.raw_overrides)
+        external_payload["external_snapshot_meta"] = {
+            "source": fetched_snapshot.source_ref,
+            "provider_name": fetched_snapshot.provider_name,
+            "source_kind": "provider_config",
+            "as_of": fetched_snapshot.freshness.get("as_of"),
+            "fetched_at": fetched_snapshot.fetched_at,
+            "domains": dict(fetched_snapshot.freshness.get("domains") or {}),
+        }
         external_payload["external_metadata"] = {
             "provider_name": fetched_snapshot.provider_name,
             "fetched_at": fetched_snapshot.fetched_at,
@@ -868,6 +879,24 @@ def _maybe_apply_runtime_market_history(
         account_profile_id=account_profile_id,
         as_of=as_of,
     )
+
+
+def _mark_snapshot_primary_formal_path(
+    raw_inputs: dict[str, Any],
+    *,
+    external_source_ref: str | None,
+    external_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not external_source_ref and not external_payload:
+        return raw_inputs
+    enriched = deepcopy(raw_inputs)
+    enriched["snapshot_primary_formal_path"] = True
+    if external_source_ref:
+        enriched["snapshot_primary_formal_source"] = external_source_ref
+    for key in ("external_snapshot_meta", "external_metadata"):
+        if external_payload is not None and external_payload.get(key) is not None:
+            enriched[key] = deepcopy(external_payload[key])
+    return enriched
 
 
 def _normalize_observed_portfolio_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1592,6 +1621,17 @@ def run_frontdesk_onboarding(
             account_profile_id=onboarding.profile.account_profile_id,
         )
     )
+    if (
+        (external_snapshot_source is not None or external_data_config is not None)
+        and external_status == "fetched"
+        and isinstance(external_payload, dict)
+        and bool(external_payload)
+    ):
+        raw_inputs = _mark_snapshot_primary_formal_path(
+            raw_inputs,
+            external_source_ref=external_source_ref,
+            external_payload=external_payload,
+        )
     raw_inputs.setdefault("formal_path_required", True)
     raw_inputs.setdefault("execution_policy", ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
     run_id = _make_run_id("frontdesk", onboarding.profile.account_profile_id, "onboarding")
@@ -1795,6 +1835,17 @@ def run_frontdesk_followup(
         account_profile_id=account_profile_id,
     )
     active_profile = _normalize_profile_payload(active_profile)
+    if (
+        (external_snapshot_source is not None or external_data_config is not None)
+        and external_status == "fetched"
+        and isinstance(external_payload, dict)
+        and bool(external_payload)
+    ):
+        raw_inputs = _mark_snapshot_primary_formal_path(
+            raw_inputs,
+            external_source_ref=external_source_ref,
+            external_payload=external_payload,
+        )
     raw_inputs.setdefault("formal_path_required", True)
     raw_inputs.setdefault("execution_policy", ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
     run_id = _make_run_id("frontdesk", account_profile_id, workflow_type)

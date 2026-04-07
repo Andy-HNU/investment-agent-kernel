@@ -195,6 +195,10 @@ def _has_any_raw_snapshot_inputs(envelope: dict[str, Any]) -> bool:
     )
 
 
+def _snapshot_primary_formal_path(envelope: dict[str, Any]) -> bool:
+    return _bool(envelope.get("snapshot_primary_formal_path"))
+
+
 def _snapshot_build_context(
     envelope: dict[str, Any],
     prior_solver_input: Any | None,
@@ -900,6 +904,9 @@ def _gate1_record_for_required_domain(
 def _gate1_formal_evidence_degradation_reasons(
     *,
     input_provenance: dict[str, Any] | None,
+    snapshot_primary_formal_path: bool = False,
+    snapshot_bundle: Any | None = None,
+    market_raw: Any | None = None,
 ) -> list[str]:
     records = _gate1_best_input_records(input_provenance)
     reasons: list[str] = []
@@ -930,6 +937,61 @@ def _gate1_formal_evidence_degradation_reasons(
                 reasons.append(f"{field} missing formal audit as_of")
             if audit_window is None or not audit_window.has_required_window():
                 reasons.append(f"{field} missing formal audit_window")
+    if snapshot_primary_formal_path:
+        snapshot_data = _as_dict(snapshot_bundle)
+        snapshot_market = _as_dict(snapshot_data.get("market"))
+        raw_market = _as_dict(market_raw)
+        universe_payload = _as_dict(
+            raw_market.get("product_universe_result")
+            or raw_market.get("runtime_product_universe_result")
+            or raw_market.get("product_universe_snapshot")
+            or snapshot_market.get("product_universe_result")
+            or snapshot_market.get("runtime_product_universe_result")
+            or snapshot_market.get("product_universe_snapshot")
+        )
+        valuation_payload = _as_dict(
+            raw_market.get("product_valuation_result")
+            or raw_market.get("valuation_result")
+            or snapshot_market.get("product_valuation_result")
+            or snapshot_market.get("valuation_result")
+        )
+        historical_payload = _as_dict(
+            raw_market.get("historical_dataset")
+            or snapshot_market.get("historical_dataset")
+            or snapshot_data.get("historical_dataset_metadata")
+        )
+        simulation_input = _as_dict(historical_payload.get("product_simulation_input"))
+        simulation_coverage = _as_dict(simulation_input.get("coverage_summary"))
+
+        universe_status = (
+            _text(universe_payload.get("source_status") or universe_payload.get("data_status")) or ""
+        ).lower()
+        valuation_status = (
+            _text(valuation_payload.get("source_status") or valuation_payload.get("data_status")) or ""
+        ).lower()
+        try:
+            observed_product_count = int(simulation_coverage.get("observed_product_count") or 0)
+        except (TypeError, ValueError):
+            observed_product_count = 0
+
+        if not universe_payload:
+            reasons.append("snapshot_primary_formal_path missing product_universe_result")
+        elif universe_status not in {"observed", "verified"}:
+            reasons.append(
+                "snapshot_primary_formal_path product_universe_result is not formal_observed"
+            )
+        if not valuation_payload:
+            reasons.append("snapshot_primary_formal_path missing product_valuation_result")
+        elif valuation_status not in {"observed", "verified"}:
+            reasons.append(
+                "snapshot_primary_formal_path product_valuation_result is not formal_observed"
+            )
+        if not simulation_input:
+            reasons.append("snapshot_primary_formal_path missing product_simulation_input")
+        elif observed_product_count <= 0:
+            reasons.append(
+                "snapshot_primary_formal_path product_simulation_input has no observed products"
+            )
     deduped: list[str] = []
     for reason in reasons:
         if reason not in deduped:
@@ -2373,7 +2435,8 @@ def run_orchestrator(
     envelope = dict(raw_inputs)
     execution_policy = _execution_policy(envelope)
     formal_path_required = _formal_path_required(envelope)
-    if envelope.get("market_raw") is None:
+    snapshot_primary_formal_path = _snapshot_primary_formal_path(envelope)
+    if envelope.get("market_raw") is None and not snapshot_primary_formal_path:
         envelope["_auto_market_raw_injected"] = True
         envelope["market_raw"] = enrich_market_raw_with_runtime_product_inputs(
             {},
@@ -2381,7 +2444,7 @@ def run_orchestrator(
             formal_path_required=formal_path_required,
             execution_policy=execution_policy.value,
         )
-    elif isinstance(envelope.get("market_raw"), dict):
+    elif isinstance(envelope.get("market_raw"), dict) and not snapshot_primary_formal_path:
         envelope["market_raw"] = enrich_market_raw_with_runtime_product_inputs(
             envelope.get("market_raw"),
             as_of=str(envelope.get("as_of") or ""),
@@ -2663,6 +2726,9 @@ def run_orchestrator(
     )
     gate1_formal_evidence_degradation_reasons = _gate1_formal_evidence_degradation_reasons(
         input_provenance=gate1_input_provenance,
+        snapshot_primary_formal_path=snapshot_primary_formal_path,
+        snapshot_bundle=snapshot_bundle,
+        market_raw=envelope.get("market_raw"),
     )
     gate1_degraded_notes = _unique_items(degraded_notes + gate1_formal_evidence_degradation_reasons)
     gate1_run_outcome_status = _gate1_run_outcome_status(

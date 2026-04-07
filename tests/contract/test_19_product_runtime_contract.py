@@ -743,15 +743,23 @@ def test_frontdesk_onboarding_auto_generates_runtime_audits_and_maintenance_poli
     pending = summary["pending_execution_plan"]
     db_path = tmp_path / "frontdesk.sqlite"
     user_state = load_user_state("layer2_runtime_policy_user", db_path=db_path)
-    assert summary["status"] == "blocked"
-    assert summary["formal_path_visibility"]["status"] == "blocked"
+    assert summary["status"] == "completed"
+    assert summary["run_outcome_status"] == "degraded"
+    assert summary["resolved_result_category"] == "degraded_formal_result"
+    assert summary["disclosure_decision"]["disclosure_level"] == "range_only"
+    assert summary["formal_path_visibility"]["status"] == "degraded"
     assert summary["external_snapshot_status"] == "fetched"
-    assert pending is None
+    assert pending is not None
+    assert pending["product_universe_audit_summary"]["requested"] is False
+    assert pending["product_universe_audit_summary"]["source_status"] == "not_requested"
+    assert pending["valuation_audit_summary"]["requested"] is False
+    assert pending["valuation_audit_summary"]["source_status"] == "not_requested"
+    assert pending["maintenance_policy_summary"]
     assert user_state is not None
-    assert user_state["pending_execution_plan"] is None
-    assert user_state["formal_path_visibility"]["status"] == "blocked"
+    assert user_state["pending_execution_plan"] is not None
+    assert user_state["formal_path_visibility"]["status"] == "degraded"
     assert summary["refresh_summary"]["provider_name"] == "fixture_inline_provider"
-    assert summary["user_state"]["decision_card"]["formal_path_visibility"]["status"] == "blocked"
+    assert summary["user_state"]["decision_card"]["formal_path_visibility"]["status"] == "degraded"
 
 
 @pytest.mark.contract
