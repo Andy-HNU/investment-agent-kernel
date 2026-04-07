@@ -718,44 +718,6 @@ def _find_allocation(candidates: list[StrategicAllocation], name: str) -> Strate
     raise ValueError(f"allocation_not_found name={name}")
 
 
-def _infeasibility_score(
-    result: SuccessProbabilityResult,
-    allocation: StrategicAllocation,
-    constraints: AccountConstraints,
-) -> float:
-    weights = allocation.weights
-    score = 0.0
-
-    drawdown = result.risk_summary.max_drawdown_90pct
-    if drawdown > constraints.max_drawdown_tolerance:
-        score += 2.0 * (drawdown - constraints.max_drawdown_tolerance) / max(
-            constraints.max_drawdown_tolerance,
-            1e-6,
-        )
-
-    for bucket, (lower, upper) in constraints.ips_bucket_boundaries.items():
-        bucket_weight = weights.get(bucket, 0.0)
-        if bucket_weight > upper:
-            score += 1.5 * (bucket_weight - upper) / max(upper, 1e-6)
-        elif bucket_weight < lower and lower > 0.0:
-            score += 1.5 * (lower - bucket_weight) / lower
-
-    sat_weight = _satellite_weight(weights, constraints)
-    if sat_weight > constraints.satellite_cap:
-        score += (sat_weight - constraints.satellite_cap) / max(constraints.satellite_cap, 1e-6)
-
-    for theme, cap in constraints.theme_caps.items():
-        theme_used = _theme_weight(weights, theme, constraints)
-        if theme_used > cap:
-            score += (theme_used - cap) / max(cap, 1e-6)
-
-    liquid_weight = _liquid_weight(weights)
-    if liquid_weight < constraints.liquidity_reserve_min and constraints.liquidity_reserve_min > 0.0:
-        score += 0.5 * (constraints.liquidity_reserve_min - liquid_weight) / constraints.liquidity_reserve_min
-
-    return score
-
-
 def _frontier_gap_score(
     *,
     scenario_expected_annual_return: float | None,
@@ -1152,32 +1114,6 @@ def _build_frontier_diagnostics(
     }
 
 
-def _handle_no_feasible_allocation(
-    all_results: list[SuccessProbabilityResult],
-    candidates: list[StrategicAllocation],
-    constraints: AccountConstraints,
-) -> tuple[StrategicAllocation, SuccessProbabilityResult, list[str]]:
-    scored = [
-        (
-            result,
-            _find_allocation(candidates, result.allocation_name),
-            _infeasibility_score(result, _find_allocation(candidates, result.allocation_name), constraints),
-        )
-        for result in all_results
-    ]
-    best_result, best_allocation, best_score = min(scored, key=lambda item: item[2])
-    dominant_reasons = _summarize_infeasibility_reasons(all_results)
-    notes = [
-        "warning=no_feasible_allocation",
-        f"fallback=closest_feasible_candidate allocation={best_allocation.name}",
-        f"fallback_pressure_score allocation={best_allocation.name} score={best_score:.4f}",
-        f"fallback_dominant_constraints reasons={dominant_reasons}",
-        _selected_fallback_context_note(best_result),
-        "action_required=reassess_goal_amount_or_horizon_or_drawdown_or_candidate_allocations",
-    ]
-    return best_allocation, best_result, notes
-
-
 def _summarize_infeasibility_reasons(all_results: list[SuccessProbabilityResult]) -> str:
     reason_counts: dict[str, int] = {}
     for result in all_results:
@@ -1188,33 +1124,6 @@ def _summarize_infeasibility_reasons(all_results: list[SuccessProbabilityResult]
         return "unknown"
     ordered = sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
     return ",".join(reason for reason, _count in ordered[:3])
-
-
-def _selected_fallback_context_note(result: SuccessProbabilityResult) -> str:
-    reason_to_input = {
-        "drawdown_violation": "drawdown_tolerance",
-        "ips_boundary_violation": "ips_bucket_boundaries",
-        "satellite_cap_violation": "satellite_cap",
-        "theme_cap_violation": "theme_caps",
-        "liquidity_violation": "liquidity_reserve_min",
-    }
-    reason_keys: list[str] = []
-    score_inputs: list[str] = []
-    for reason in result.infeasibility_reasons:
-        reason_key = reason.split()[0]
-        if reason_key not in reason_keys:
-            reason_keys.append(reason_key)
-        score_input = reason_to_input.get(reason_key, "other_constraints")
-        if score_input not in score_inputs:
-            score_inputs.append(score_input)
-    reasons_summary = ",".join(reason_keys[:3]) if reason_keys else "unknown"
-    score_inputs_summary = ",".join(score_inputs[:3]) if score_inputs else "other_constraints"
-    return (
-        "fallback_selected_context "
-        f"allocation={result.allocation_name} "
-        f"reasons={reasons_summary} "
-        f"score_inputs={score_inputs_summary}"
-    )
 
 
 def _build_structure_budget(
@@ -1478,43 +1387,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
         )
 
     if not all_results:
-        fallback = StrategicAllocation(
-            name="fallback",
-            weights={"equity_cn": 0.55, "bond_cn": 0.30, "gold": 0.05, "satellite": 0.10},
-            complexity_score=0.10,
-            description="synthetic fallback allocation",
-        )
-        probability, extra, risk = _run_monte_carlo(
-            fallback.weights,
-            cashflow_schedule,
-            inp.current_portfolio_value,
-            inp.goal.goal_amount,
-            params.market_assumptions,
-            params.n_paths,
-            params.seed,
-        )
-        fallback_result = SuccessProbabilityResult(
-            allocation_name=fallback.name,
-            weights=fallback.weights,
-            success_probability=probability,
-            bucket_success_probability=probability,
-            product_proxy_adjusted_success_probability=None,
-            product_probability_method="bucket_only_no_product_proxy_adjustment",
-            implied_required_annual_return=implied_required_annual_return,
-            expected_annual_return=_scenario_expected_annual_return(
-                initial_value=inp.current_portfolio_value,
-                cashflow_schedule=cashflow_schedule,
-                expected_terminal_value=extra["expected_terminal_value"],
-            ),
-            expected_terminal_value=extra["expected_terminal_value"],
-            risk_summary=risk,
-            is_feasible=True,
-            infeasibility_reasons=[],
-        )
-        all_results = [fallback_result]
-        best_allocation = fallback
-        best_result = fallback_result
-        notes.append("warning=empty_candidate_allocations synthetic_fallback_used")
+        raise ValueError("goal solver requires candidate allocations")
     else:
         feasible_results = [result for result in all_results if result.is_feasible]
         if feasible_results:
@@ -1535,12 +1408,11 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
                     f"recommended={_effective_success_probability(best_result):.4f}"
                 )
         else:
-            best_allocation, best_result, fallback_notes = _handle_no_feasible_allocation(
-                all_results,
-                inp.candidate_allocations,
-                inp.constraints,
+            dominant_reasons = _summarize_infeasibility_reasons(all_results)
+            raise ValueError(
+                "goal solver produced no feasible allocations "
+                f"(dominant_constraints={dominant_reasons})"
             )
-            notes.extend(fallback_notes)
 
     structure_budget = _build_structure_budget(best_allocation, inp.constraints)
     risk_budget = _build_risk_budget(best_result, inp.constraints)

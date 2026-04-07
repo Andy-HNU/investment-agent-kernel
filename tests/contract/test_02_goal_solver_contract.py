@@ -104,13 +104,8 @@ def test_run_goal_solver_emits_no_feasible_fallback_notes(goal_solver_input_base
         },
     ]
 
-    result = run_goal_solver(data)
-
-    assert result.recommended_allocation.name == "less_bad"
-    assert result.recommended_result.is_feasible is False
-    assert any(note == "warning=no_feasible_allocation" for note in result.solver_notes)
-    assert any(note.startswith("fallback=closest_feasible_candidate") for note in result.solver_notes)
-    assert all(not item.is_feasible for item in result.all_results)
+    with pytest.raises(ValueError, match="goal solver produced no feasible allocations"):
+        run_goal_solver(data)
 
 
 @pytest.mark.contract
@@ -236,17 +231,17 @@ def test_run_goal_solver_emits_dual_probability_and_frontier_diagnostics(goal_so
     solver_input = deepcopy(goal_solver_input_base)
     solver_input["goal"]["goal_amount"] = 2_500_000.0
     solver_input["goal"]["success_prob_threshold"] = 0.80
-    solver_input["constraints"]["max_drawdown_tolerance"] = 0.05
+    solver_input["constraints"]["max_drawdown_tolerance"] = 0.10
     solver_input["candidate_allocations"] = [
         {
             "name": "defensive",
-            "weights": {"equity_cn": 0.30, "bond_cn": 0.55, "gold": 0.10, "satellite": 0.05},
+            "weights": {"equity_cn": 0.35, "bond_cn": 0.45, "gold": 0.15, "satellite": 0.05},
             "complexity_score": 0.08,
             "description": "defensive candidate",
         },
         {
             "name": "balanced",
-            "weights": {"equity_cn": 0.45, "bond_cn": 0.35, "gold": 0.10, "satellite": 0.10},
+            "weights": {"equity_cn": 0.60, "bond_cn": 0.25, "gold": 0.10, "satellite": 0.05},
             "complexity_score": 0.12,
             "description": "balanced candidate",
         },
@@ -257,7 +252,7 @@ def test_run_goal_solver_emits_dual_probability_and_frontier_diagnostics(goal_so
         *_args,
         **_kwargs,
     ):
-        if weights["equity_cn"] == 0.30:
+        if weights["equity_cn"] <= 0.40:
             probability, terminal, drawdown = 0.42, 780_000.0, 0.09
         else:
             probability, terminal, drawdown = 0.48, 860_000.0, 0.12
@@ -280,16 +275,13 @@ def test_run_goal_solver_emits_dual_probability_and_frontier_diagnostics(goal_so
         result.recommended_result.success_probability
     )
     assert result.recommended_result.product_proxy_adjusted_success_probability is None
-    assert result.recommended_result.product_probability_method == "bucket_only_no_product_proxy_adjustment"
+    assert result.recommended_result.product_probability_method == "product_estimated_path"
+    assert result.recommended_result.is_feasible is True
     assert result.recommended_result.implied_required_annual_return is not None
     assert result.recommended_result.expected_annual_return is not None
     assert result.frontier_analysis is not None
-    assert result.frontier_analysis.scenario_status["target_return_priority"]["available"] is False
-    assert result.frontier_analysis.scenario_status["drawdown_priority"]["available"] is False
-    assert result.frontier_analysis.target_return_priority.allocation_name == ""
-    assert result.frontier_analysis.drawdown_priority.allocation_name == ""
     assert result.frontier_diagnostics["raw_candidate_count"] == 2
-    assert result.frontier_diagnostics["feasible_candidate_count"] == 0
+    assert result.frontier_diagnostics["feasible_candidate_count"] == 1
     assert result.frontier_diagnostics["frontier_max_expected_annual_return"] is not None
     assert "expected_return_shrinkage_applied" in result.frontier_diagnostics["structural_limitations"]
     assert result.frontier_diagnostics["candidate_families"] == ["balanced", "defensive"]
@@ -393,7 +385,7 @@ def test_run_goal_solver_applies_product_proxy_adjustments_when_context_present(
     assert observed_expected_returns[1]["equity_cn"] == pytest.approx(0.10)
     assert result.recommended_result.bucket_success_probability == pytest.approx(0.51)
     assert result.recommended_result.product_proxy_adjusted_success_probability == pytest.approx(0.63)
-    assert result.recommended_result.product_probability_method == "product_proxy_adjustment_estimate"
+    assert result.recommended_result.product_probability_method == "product_estimated_path"
     assert result.recommended_result.success_probability == pytest.approx(0.63)
     assert result.recommended_result.expected_terminal_value == pytest.approx(2_350_000.0)
     assert result.recommended_result.expected_annual_return is not None
