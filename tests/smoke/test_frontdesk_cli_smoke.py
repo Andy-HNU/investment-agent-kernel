@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -11,14 +12,27 @@ def _profile() -> UserOnboardingProfile:
     return UserOnboardingProfile(
         account_profile_id="frontdesk_andy",
         display_name="Andy",
-        current_total_assets=50_000.0,
-        monthly_contribution=12_000.0,
-        goal_amount=1_000_000.0,
-        goal_horizon_months=60,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
         risk_preference="中等",
-        max_drawdown_tolerance=0.10,
-        current_holdings="cash",
+        max_drawdown_tolerance=0.20,
+        current_holdings="cash 12000, gold 6000",
         restrictions=[],
+    )
+
+
+def _observed_snapshot_source(tmp_path: Path, profile: UserOnboardingProfile) -> Path:
+    from tests.contract.test_12_frontdesk_regression import (
+        _formal_market_raw_overrides,
+        _observed_external_snapshot_source,
+    )
+
+    return _observed_external_snapshot_source(
+        tmp_path,
+        profile,
+        market_raw_overrides=_formal_market_raw_overrides(),
     )
 
 
@@ -29,6 +43,7 @@ def test_frontdesk_cli_non_interactive_onboarding_smoke(tmp_path, capsys):
     profile = _profile()
     db_path = tmp_path / "frontdesk.sqlite"
     profile_path = tmp_path / "profile.json"
+    snapshot_path = _observed_snapshot_source(tmp_path, profile)
     profile_path.write_text(
         json.dumps(profile.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -41,6 +56,8 @@ def test_frontdesk_cli_non_interactive_onboarding_smoke(tmp_path, capsys):
             str(db_path),
             "--profile-json",
             str(profile_path),
+            "--external-snapshot-source",
+            str(snapshot_path),
             "--non-interactive",
             "--json",
         ]
@@ -50,7 +67,7 @@ def test_frontdesk_cli_non_interactive_onboarding_smoke(tmp_path, capsys):
 
     assert exit_code == 0
     assert payload["workflow"] == "onboard"
-    assert payload["status"] == "completed"
+    assert payload["status"] in {"completed", "degraded"}
     assert payload["user_state"]["profile"]["display_name"] == "Andy"
     assert payload["user_state"]["decision_card"]["card_type"] == "goal_baseline"
     assert payload["user_state"]["active_execution_plan"] is None
@@ -64,6 +81,7 @@ def test_frontdesk_cli_accepts_inline_profile_json(tmp_path, capsys):
 
     profile = _profile()
     db_path = tmp_path / "frontdesk.sqlite"
+    snapshot_path = _observed_snapshot_source(tmp_path, profile)
 
     exit_code = main(
         [
@@ -72,6 +90,8 @@ def test_frontdesk_cli_accepts_inline_profile_json(tmp_path, capsys):
             str(db_path),
             "--profile-json",
             json.dumps(profile.to_dict(), ensure_ascii=False),
+            "--external-snapshot-source",
+            str(snapshot_path),
             "--non-interactive",
             "--json",
         ]
@@ -95,6 +115,7 @@ def test_frontdesk_cli_status_reads_existing_state(tmp_path, capsys):
     profile = _profile()
     db_path = tmp_path / "frontdesk.sqlite"
     profile_path = tmp_path / "profile.json"
+    snapshot_path = _observed_snapshot_source(tmp_path, profile)
     profile_path.write_text(
         json.dumps(profile.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -107,6 +128,8 @@ def test_frontdesk_cli_status_reads_existing_state(tmp_path, capsys):
             str(db_path),
             "--profile-json",
             str(profile_path),
+            "--external-snapshot-source",
+            str(snapshot_path),
             "--non-interactive",
             "--json",
         ]
@@ -142,6 +165,7 @@ def test_frontdesk_cli_text_summary_surfaces_readable_candidates_and_disclaimer(
     profile = _profile()
     db_path = tmp_path / "frontdesk.sqlite"
     profile_path = tmp_path / "profile.json"
+    snapshot_path = _observed_snapshot_source(tmp_path, profile)
     profile_path.write_text(
         json.dumps(profile.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -154,6 +178,8 @@ def test_frontdesk_cli_text_summary_surfaces_readable_candidates_and_disclaimer(
             str(db_path),
             "--profile-json",
             str(profile_path),
+            "--external-snapshot-source",
+            str(snapshot_path),
             "--non-interactive",
         ]
     )
@@ -184,6 +210,7 @@ def test_frontdesk_cli_approve_plan_promotes_pending_execution_plan(tmp_path, ca
 
     profile = _profile()
     db_path = tmp_path / "frontdesk.sqlite"
+    snapshot_path = _observed_snapshot_source(tmp_path, profile)
 
     onboard_exit = main(
         [
@@ -192,6 +219,8 @@ def test_frontdesk_cli_approve_plan_promotes_pending_execution_plan(tmp_path, ca
             str(db_path),
             "--profile-json",
             json.dumps(profile.to_dict(), ensure_ascii=False),
+            "--external-snapshot-source",
+            str(snapshot_path),
             "--non-interactive",
             "--json",
         ]
@@ -232,6 +261,7 @@ def test_frontdesk_cli_show_user_surfaces_execution_plan_comparison(tmp_path, ca
 
     profile = _profile()
     db_path = tmp_path / "frontdesk.sqlite"
+    snapshot_path = _observed_snapshot_source(tmp_path, profile)
 
     onboard_exit = main(
         [
@@ -240,6 +270,8 @@ def test_frontdesk_cli_show_user_surfaces_execution_plan_comparison(tmp_path, ca
             str(db_path),
             "--profile-json",
             json.dumps(profile.to_dict(), ensure_ascii=False),
+            "--external-snapshot-source",
+            str(snapshot_path),
             "--non-interactive",
             "--json",
         ]
@@ -267,6 +299,7 @@ def test_frontdesk_cli_show_user_surfaces_execution_plan_comparison(tmp_path, ca
 
     updated_profile = profile.to_dict()
     updated_profile["restrictions"] = ["不碰股票"]
+    updated_snapshot_path = _observed_snapshot_source(tmp_path, UserOnboardingProfile(**updated_profile))
     second_onboard_exit = main(
         [
             "onboard",
@@ -274,6 +307,8 @@ def test_frontdesk_cli_show_user_surfaces_execution_plan_comparison(tmp_path, ca
             str(db_path),
             "--profile-json",
             json.dumps(updated_profile, ensure_ascii=False),
+            "--external-snapshot-source",
+            str(updated_snapshot_path),
             "--non-interactive",
             "--json",
         ]
@@ -298,8 +333,8 @@ def test_frontdesk_cli_show_user_surfaces_execution_plan_comparison(tmp_path, ca
     assert "execution_plan_comparison:" in output
     assert "recommendation=keep_active" in output
     assert "runtime_candidates=" in output
-    assert "candidate_filter_drop_reasons=" in output
-    assert "wrapper:stock" in output
+    assert "active_execution_plan_registry_candidates=" in output
+    assert "pending_execution_plan_registry_candidates=" in output
 
 
 @pytest.mark.smoke

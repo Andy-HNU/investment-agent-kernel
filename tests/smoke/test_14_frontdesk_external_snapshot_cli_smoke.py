@@ -5,19 +5,23 @@ import json
 import pytest
 
 from shared.onboarding import UserOnboardingProfile
+from tests.support.formal_snapshot_helpers import (
+    build_formal_snapshot_payload,
+    write_formal_snapshot_source,
+)
 
 
 def _profile() -> UserOnboardingProfile:
     return UserOnboardingProfile(
         account_profile_id="frontdesk_external_user",
         display_name="Andy",
-        current_total_assets=50_000.0,
-        monthly_contribution=12_000.0,
-        goal_amount=1_000_000.0,
-        goal_horizon_months=60,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
         risk_preference="中等",
-        max_drawdown_tolerance=0.10,
-        current_holdings="cash",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
         restrictions=[],
     )
 
@@ -31,10 +35,21 @@ def test_frontdesk_cli_onboarding_with_external_snapshot_fetches_data(tmp_path, 
     profile_path.write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     db_path = tmp_path / "frontdesk.sqlite"
     external_source = json.dumps(
-        {
-            "market_raw": {"source": "inline-market"},
-            "account_raw": {"weights": {"equity_cn": 0.4, "bond_cn": 0.4, "gold": 0.1, "satellite": 0.1}},
-        },
+        build_formal_snapshot_payload(
+            profile,
+            account_raw_overrides={
+                "weights": {"equity_cn": 0.4, "bond_cn": 0.4, "gold": 0.1, "satellite": 0.1},
+                "total_value": 18_000.0,
+                "available_cash": 12_000.0,
+                "remaining_horizon_months": 36,
+            },
+            live_portfolio_overrides={
+                "weights": {"equity_cn": 0.4, "bond_cn": 0.4, "gold": 0.1, "satellite": 0.1},
+                "total_value": 18_000.0,
+                "available_cash": 12_000.0,
+                "remaining_horizon_months": 36,
+            },
+        ),
         ensure_ascii=False,
     )
 
@@ -85,6 +100,7 @@ def test_frontdesk_cli_onboarding_with_missing_external_snapshot_falls_back(tmp_
     payload = json.loads(captured.out)
 
     assert exit_code == 0
+    assert payload["status"] == "blocked"
     assert payload["external_snapshot_status"] == "fallback"
     assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 0
 
@@ -99,21 +115,28 @@ def test_frontdesk_cli_monthly_with_external_snapshot_fetches_data(tmp_path, cap
     external_path = tmp_path / "external_snapshot.json"
     external_path.write_text(
         json.dumps(
-            {
-                "market_raw": {"source": "file-market"},
-                "account_raw": {
+            build_formal_snapshot_payload(
+                profile,
+                account_raw_overrides={
                     "weights": {"equity_cn": 0.35, "bond_cn": 0.45, "gold": 0.10, "satellite": 0.10},
                     "total_value": 52_000.0,
                     "available_cash": 52_000.0,
-                    "remaining_horizon_months": 60,
+                    "remaining_horizon_months": 36,
                 },
-            },
+                live_portfolio_overrides={
+                    "weights": {"equity_cn": 0.35, "bond_cn": 0.45, "gold": 0.10, "satellite": 0.10},
+                    "total_value": 52_000.0,
+                    "available_cash": 52_000.0,
+                    "remaining_horizon_months": 36,
+                },
+            ),
             ensure_ascii=False,
             indent=2,
         ),
         encoding="utf-8",
     )
     db_path = tmp_path / "frontdesk.sqlite"
+    baseline_snapshot_path = write_formal_snapshot_source(tmp_path, profile)
 
     onboarding_exit_code = main(
         [
@@ -122,6 +145,8 @@ def test_frontdesk_cli_monthly_with_external_snapshot_fetches_data(tmp_path, cap
             str(db_path),
             "--profile-json",
             str(profile_path),
+            "--external-snapshot-source",
+            str(baseline_snapshot_path),
             "--non-interactive",
             "--json",
         ]

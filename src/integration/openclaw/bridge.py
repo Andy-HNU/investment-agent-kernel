@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -45,7 +46,12 @@ def handle_task(task: str, *, db_path: str | Path = DEFAULT_DB_PATH, now: Option
     if intent.name == "onboarding":
         payload = parse_onboarding(task)
         profile = UserOnboardingProfile(**payload)
-        summary = run_frontdesk_onboarding(profile, db_path=db_path)
+        external_snapshot_source = str(os.getenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", "")).strip() or None
+        summary = run_frontdesk_onboarding(
+            profile,
+            db_path=db_path,
+            external_snapshot_source=external_snapshot_source,
+        )
         invocation = {"tool": "frontdesk.onboarding", **payload}
         result = dict(summary)
     elif intent.name == "status":

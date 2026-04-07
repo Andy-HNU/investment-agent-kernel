@@ -12,6 +12,7 @@ from frontdesk.service import (
     run_frontdesk_onboarding,
 )
 from shared.onboarding import UserOnboardingProfile
+from tests.support.formal_snapshot_helpers import write_formal_snapshot_source
 
 
 _FAMILY_CONFIG = {
@@ -115,6 +116,21 @@ def _monthly_override(profile: UserOnboardingProfile, seed: int) -> dict[str, ob
     }
 
 
+def _formal_snapshot_profile(profile: UserOnboardingProfile) -> UserOnboardingProfile:
+    return UserOnboardingProfile(
+        account_profile_id=profile.account_profile_id,
+        display_name=profile.display_name,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
+        restrictions=[],
+    )
+
+
 def _assert_profile_restrictions_respected(snapshot: dict[str, object], onboarding_summary: dict[str, object]) -> None:
     profile = snapshot["profile"]["profile"]
     candidate_options = onboarding_summary.get("candidate_options") or []
@@ -160,7 +176,11 @@ def test_randomized_frontdesk_acceptance_onboarding_three_profiles(seed, family,
     profile = _profile_for_seed(seed, family)
     db_path = tmp_path / f"onboarding_{profile.account_profile_id}.sqlite"
 
-    onboarding = run_frontdesk_onboarding(profile, db_path=db_path)
+    onboarding = run_frontdesk_onboarding(
+        profile,
+        db_path=db_path,
+        external_snapshot_source=write_formal_snapshot_source(tmp_path, _formal_snapshot_profile(profile)),
+    )
     snapshot = load_frontdesk_snapshot(profile.account_profile_id, db_path=db_path)
 
     assert onboarding["status"] in {"completed", "degraded"}
@@ -185,7 +205,11 @@ def test_randomized_frontdesk_acceptance_monthly_continuity_three_profiles(seed,
     profile = _profile_for_seed(seed, family)
     db_path = tmp_path / f"monthly_{profile.account_profile_id}.sqlite"
 
-    onboarding = run_frontdesk_onboarding(profile, db_path=db_path)
+    onboarding = run_frontdesk_onboarding(
+        profile,
+        db_path=db_path,
+        external_snapshot_source=write_formal_snapshot_source(tmp_path, _formal_snapshot_profile(profile)),
+    )
     monthly = run_frontdesk_followup(
         account_profile_id=profile.account_profile_id,
         workflow_type="monthly",
@@ -216,7 +240,11 @@ def test_randomized_frontdesk_acceptance_full_flow(seed, family, tmp_path):
     profile = _profile_for_seed(seed, family)
     db_path = tmp_path / f"{profile.account_profile_id}.sqlite"
 
-    onboarding = run_frontdesk_onboarding(profile, db_path=db_path)
+    onboarding = run_frontdesk_onboarding(
+        profile,
+        db_path=db_path,
+        external_snapshot_source=write_formal_snapshot_source(tmp_path, _formal_snapshot_profile(profile)),
+    )
     snapshot_after_onboarding = load_frontdesk_snapshot(profile.account_profile_id, db_path=db_path)
 
     assert onboarding["status"] in {"completed", "degraded"}

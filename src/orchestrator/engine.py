@@ -21,7 +21,9 @@ from shared.audit import (
     DisclosureDecision,
     EvidenceBundle,
     ExecutionPolicy,
+    FailureArtifact,
     RunOutcomeStatus,
+    build_evidence_invariance_report,
     coerce_execution_policy,
 )
 
@@ -1214,10 +1216,30 @@ def _gate1_evidence_bundle(
     resolved_result_category: str | None,
     coverage_summary: CoverageSummary,
     disclosure_decision: DisclosureDecision,
+    execution_policy: ExecutionPolicy,
+    failure_artifact: FailureArtifact | None,
     blocking_reasons: list[str],
     degraded_notes: list[str],
+    snapshot_bundle: Any,
+    runtime_result: Any,
 ) -> EvidenceBundle:
     goal_input = _as_dict(goal_solver_input)
+    snapshot_data = _as_dict(snapshot_bundle)
+    market = _as_dict(snapshot_data.get("market"))
+    runtime_data = _as_dict(runtime_result)
+    universe_payload = _as_dict(
+        market.get("product_universe_result")
+        or market.get("runtime_product_universe_result")
+        or market.get("product_universe_snapshot")
+    )
+    valuation_payload = _as_dict(
+        market.get("product_valuation_result")
+        or market.get("valuation_result")
+    )
+    historical_payload = _as_dict(
+        market.get("historical_dataset")
+        or snapshot_data.get("historical_dataset_metadata")
+    )
     next_recoverable_actions: list[str] = []
     if blocking_reasons:
         next_recoverable_actions.append("repair_formal_inputs")
@@ -1229,6 +1251,9 @@ def _gate1_evidence_bundle(
             "snapshot_id": _text(goal_input.get("snapshot_id")) or "",
             "bundle_id": bundle_id or "",
             "solver_snapshot_id": solver_snapshot_id or "",
+            "provider_signature": _text(universe_payload.get("provider_signature"))
+            or _text(valuation_payload.get("provider_signature"))
+            or "",
         }.items()
         if value
     }
@@ -1237,18 +1262,52 @@ def _gate1_evidence_bundle(
         for key, value in {
             "run_id": run_id,
             "calibration_id": _text(_as_dict(calibration_result).get("calibration_id")) or "",
+            "universe_signature": _text(universe_payload.get("universe_signature")) or "",
+            "valuation_signature": _text(valuation_payload.get("valuation_signature")) or "",
+            "historical_version": _text(historical_payload.get("version_id")) or "",
+            **(
+                {}
+                if failure_artifact is None
+                else {
+                    f"failure_ref:{key}": value
+                    for key, value in failure_artifact.available_evidence_refs.items()
+                }
+            ),
         }.items()
         if value
     }
+    if failure_artifact is not None:
+        next_recoverable_actions = list(failure_artifact.next_recoverable_actions)
+    failed_stage = None
+    if run_outcome_status == RunOutcomeStatus.BLOCKED:
+        failed_stage = (
+            failure_artifact.failed_stage
+            if failure_artifact is not None
+            else "result_category_resolution"
+        )
     return EvidenceBundle(
         bundle_schema_version="v1.3",
         execution_policy_version="v1.3",
         disclosure_policy_version="v1.3",
-        mapping_signature=f"goal_solver:{goal_input.get('snapshot_id') or 'unknown'}",
-        history_revision=_text(_as_dict(goal_input.get("solver_params")).get("version")) or "unknown",
-        distribution_revision=_text(_as_dict(calibration_result).get("calibration_id")) or "unknown",
+        mapping_signature=(
+            _text(universe_payload.get("mapping_signature"))
+            or _text(universe_payload.get("universe_signature"))
+            or f"goal_solver:{goal_input.get('snapshot_id') or 'unknown'}"
+        ),
+        history_revision=(
+            _text(historical_payload.get("history_revision"))
+            or _text(historical_payload.get("version_id"))
+            or _text(historical_payload.get("as_of"))
+            or _text(_as_dict(goal_input.get("solver_params")).get("version"))
+            or "unknown"
+        ),
+        distribution_revision=(
+            _text(_as_dict(calibration_result).get("distribution_revision"))
+            or _text(_as_dict(calibration_result).get("calibration_id"))
+            or "unknown"
+        ),
         solver_revision=_text(_as_dict(goal_input.get("solver_params")).get("version")) or "unknown",
-        code_revision="v1.3-task2",
+        code_revision=_text(runtime_data.get("code_revision")) or "v1.3-package4",
         calibration_revision=_text(_as_dict(calibration_result).get("calibration_id")) or "unknown",
         request_id=run_id,
         account_profile_id=_text(goal_input.get("account_profile_id")) or "",
@@ -1256,7 +1315,7 @@ def _gate1_evidence_bundle(
         requested_result_category="formal_independent_result",
         resolved_result_category=resolved_result_category,
         run_outcome_status=run_outcome_status,
-        execution_policy=ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value,
+        execution_policy=execution_policy.value,
         disclosure_policy="FORMAL_STANDARD",
         simulation_mode=_text(_as_dict(_as_dict(goal_solver_input).get("solver_params")).get("simulation_mode")),
         input_refs=input_refs,
@@ -1266,11 +1325,17 @@ def _gate1_evidence_bundle(
             "calibration_quality": _gate1_calibration_quality(calibration_result),
         },
         formal_path_status=run_outcome_status.value,
-        failed_stage=None if run_outcome_status != RunOutcomeStatus.BLOCKED else "result_category_resolution",
-        blocking_predicates=list(blocking_reasons),
+        failed_stage=failed_stage,
+        blocking_predicates=list(
+            failure_artifact.blocking_predicates if failure_artifact is not None else blocking_reasons
+        ),
         degradation_reasons=list(degraded_notes),
         next_recoverable_actions=next_recoverable_actions,
-        diagnostics_trustworthy=run_outcome_status != RunOutcomeStatus.BLOCKED,
+        diagnostics_trustworthy=(
+            failure_artifact.trustworthy_partial_diagnostics
+            if failure_artifact is not None
+            else run_outcome_status != RunOutcomeStatus.BLOCKED
+        ),
         disclosure_decision=disclosure_decision,
     )
 
@@ -1901,14 +1966,22 @@ def _extract_execution_plan_account_context(
     )
 
 
+def _execution_policy(envelope: dict[str, Any]) -> ExecutionPolicy:
+    explicit_policy = envelope.get("execution_policy")
+    if explicit_policy is not None:
+        return coerce_execution_policy(explicit_policy)
+    explicit_formal = envelope.get("formal_path_required")
+    if explicit_formal is None:
+        return ExecutionPolicy.EXPLORATORY
+    return (
+        ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED
+        if bool(explicit_formal)
+        else ExecutionPolicy.EXPLORATORY
+    )
+
+
 def _formal_path_required(envelope: dict[str, Any]) -> bool:
-    explicit = envelope.get("formal_path_required")
-    if explicit is not None:
-        return bool(explicit)
-    execution_policy = envelope.get("execution_policy")
-    if execution_policy is None:
-        return False
-    return coerce_execution_policy(execution_policy) in {
+    return _execution_policy(envelope) in {
         ExecutionPolicy.FORMAL_STRICT,
         ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED,
     }
@@ -1930,6 +2003,24 @@ def _collect_formal_path_preflight_issues(payloads: dict[str, Any], *, prefix: s
     return blocking, degraded
 
 
+def _collect_failure_artifacts(payloads: dict[str, Any]) -> list[FailureArtifact]:
+    artifacts: list[FailureArtifact] = []
+    for raw_payload in payloads.values():
+        payload = _as_dict(raw_payload)
+        artifact = FailureArtifact.from_any(payload.get("failure_artifact"))
+        if artifact is not None:
+            artifacts.append(artifact)
+    return artifacts
+
+
+def _primary_failure_artifact(*artifact_groups: list[FailureArtifact]) -> FailureArtifact | None:
+    for group in artifact_groups:
+        for artifact in group:
+            if artifact is not None:
+                return artifact
+    return None
+
+
 def _maybe_build_execution_plan(
     *,
     run_id: str,
@@ -1938,6 +2029,7 @@ def _maybe_build_execution_plan(
     goal_solver_output: Any,
     envelope: dict[str, Any],
     formal_path_required: bool,
+    execution_policy: ExecutionPolicy,
 ) -> Any | None:
     if status == WorkflowStatus.BLOCKED or workflow_type not in {
         WorkflowType.ONBOARDING,
@@ -1975,6 +2067,7 @@ def _maybe_build_execution_plan(
         policy_news_signals=policy_news_signals,
         product_proxy_result=product_proxy_result,
         formal_path_required=formal_path_required,
+        execution_policy=execution_policy.value,
         account_total_value=account_total_value,
         current_weights=current_weights,
         available_cash=available_cash,
@@ -1989,6 +2082,7 @@ def _build_solver_candidate_product_contexts(
     envelope: dict[str, Any],
     snapshot_bundle: Any | None,
     formal_path_required: bool,
+    execution_policy: ExecutionPolicy,
 ) -> dict[str, Any]:
     restrictions = _extract_execution_plan_restrictions(envelope)
     valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
@@ -2017,6 +2111,7 @@ def _build_solver_candidate_product_contexts(
             product_proxy_result=product_proxy_result,
             historical_dataset=historical_dataset,
             formal_path_required=formal_path_required,
+            execution_policy=execution_policy.value,
         )
     return contexts
 
@@ -2117,6 +2212,7 @@ def run_orchestrator(
     prior_calibration: Any | None = None,
 ) -> OrchestratorResult:
     envelope = dict(raw_inputs)
+    execution_policy = _execution_policy(envelope)
     formal_path_required = _formal_path_required(envelope)
     if envelope.get("market_raw") is None:
         envelope["_auto_market_raw_injected"] = True
@@ -2124,12 +2220,14 @@ def run_orchestrator(
             {},
             as_of=str(envelope.get("as_of") or ""),
             formal_path_required=formal_path_required,
+            execution_policy=execution_policy.value,
         )
     elif isinstance(envelope.get("market_raw"), dict):
         envelope["market_raw"] = enrich_market_raw_with_runtime_product_inputs(
             envelope.get("market_raw"),
             as_of=str(envelope.get("as_of") or ""),
             formal_path_required=formal_path_required,
+            execution_policy=execution_policy.value,
         )
     requested_workflow = _requested_workflow_from_any(trigger)
     normalized_trigger = _trigger_from_any(trigger)
@@ -2225,6 +2323,7 @@ def run_orchestrator(
                         envelope=envelope,
                         snapshot_bundle=snapshot_bundle,
                         formal_path_required=formal_path_required,
+                        execution_policy=execution_policy,
                     )
                     candidate_context_blocking, candidate_context_degraded = _collect_formal_path_preflight_issues(
                         solver_input["candidate_product_contexts"],
@@ -2347,6 +2446,7 @@ def run_orchestrator(
         goal_solver_output=goal_solver_output,
         envelope=envelope,
         formal_path_required=formal_path_required,
+        execution_policy=execution_policy,
     )
     if execution_plan is not None:
         execution_plan_preflight = _as_dict(_as_dict(execution_plan).get("formal_path_preflight"))
@@ -2404,6 +2504,31 @@ def run_orchestrator(
         escalation_reasons=escalation_reasons,
     )
     gate1_coverage_summary = _gate1_coverage_summary(goal_solver_output)
+    candidate_context_failure_artifacts = _collect_failure_artifacts(
+        _as_dict(goal_solver_input_used).get("candidate_product_contexts") or {}
+    )
+    execution_plan_failure_artifacts = (
+        []
+        if execution_plan is None
+        else [artifact for artifact in [FailureArtifact.from_any(_as_dict(execution_plan).get("failure_artifact"))] if artifact is not None]
+    )
+    market_raw_failure_artifacts = (
+        []
+        if not isinstance(envelope.get("market_raw"), dict)
+        else [
+            artifact
+            for artifact in (
+                FailureArtifact.from_any(_as_dict(envelope["market_raw"]).get("product_universe_failure_artifact")),
+                FailureArtifact.from_any(_as_dict(envelope["market_raw"]).get("product_valuation_failure_artifact")),
+            )
+            if artifact is not None
+        ]
+    )
+    primary_failure_artifact = _primary_failure_artifact(
+        candidate_context_failure_artifacts,
+        execution_plan_failure_artifacts,
+        market_raw_failure_artifacts,
+    )
     gate1_resolved_result_category = _gate1_resolved_result_category(
         run_outcome_status=gate1_run_outcome_status,
         goal_solver_output=goal_solver_output,
@@ -2427,8 +2552,28 @@ def run_orchestrator(
         resolved_result_category=gate1_resolved_result_category,
         coverage_summary=gate1_coverage_summary,
         disclosure_decision=gate1_disclosure_decision,
+        execution_policy=execution_policy,
+        failure_artifact=primary_failure_artifact,
         blocking_reasons=blocking_reasons,
         degraded_notes=degraded_notes,
+        snapshot_bundle=snapshot_bundle,
+        runtime_result=runtime_result,
+    )
+    baseline_evidence_bundle = raw_inputs.get("evidence_invariance_baseline") or raw_inputs.get("baseline_evidence_bundle")
+    evidence_invariance_report = (
+        {}
+        if baseline_evidence_bundle in (None, {})
+        else build_evidence_invariance_report(
+            baseline=baseline_evidence_bundle,
+            optimized=gate1_evidence_bundle,
+            baseline_run_ref=str(_as_dict(baseline_evidence_bundle).get("request_id") or "baseline"),
+            optimized_run_ref=run_id,
+            artifact_refs={
+                "bundle_id": str(bundle_id or ""),
+                "snapshot_bundle_origin": snapshot_bundle_origin,
+                "calibration_origin": calibration_origin,
+            },
+        ).to_dict()
     )
     card_build_input = _build_card_input(
         run_id=run_id,
@@ -2480,6 +2625,7 @@ def run_orchestrator(
     )
     card_build_input.audit_record = audit_record
     audit_record.artifact_refs["has_execution_plan"] = execution_plan is not None
+    audit_record.artifact_refs["has_evidence_invariance_report"] = bool(evidence_invariance_report)
     decision_card = build_decision_card(card_build_input)
     audit_record.artifact_refs["has_decision_card"] = decision_card is not None
     persistence_plan = _build_persistence_plan(
@@ -2512,6 +2658,7 @@ def run_orchestrator(
         resolved_result_category=gate1_resolved_result_category,
         disclosure_decision=gate1_disclosure_decision.to_dict(),
         evidence_bundle=gate1_evidence_bundle.to_dict(),
+        evidence_invariance_report=evidence_invariance_report,
         requested_workflow_type=requested_workflow,
         bundle_id=bundle_id,
         calibration_id=calibration_data.get("calibration_id"),

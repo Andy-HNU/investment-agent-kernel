@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+import json
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,7 @@ from product_mapping.runtime_inputs import (
     build_runtime_product_valuation_context,
     enrich_market_raw_with_runtime_product_inputs,
 )
-from shared.onboarding import UserOnboardingProfile
+from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 
 
 def _audit_window() -> dict[str, object]:
@@ -61,6 +63,75 @@ def _profile(*, account_profile_id: str = "layer2_runtime_user") -> UserOnboardi
         current_holdings="cash 12000, gold 6000",
         restrictions=["forbidden_theme:technology", "no_stock_picking", "no_high_risk_products"],
     )
+
+
+def _observed_external_snapshot_source(
+    tmp_path: Path,
+    profile: UserOnboardingProfile,
+    *,
+    as_of: str = "2026-04-05T10:00:00Z",
+    market_raw_overrides: dict[str, object] | None = None,
+) -> Path:
+    bundle = build_user_onboarding_inputs(profile, as_of=as_of)
+    snapshot_path = tmp_path / f"{profile.account_profile_id}_observed_snapshot.json"
+    source_ref = snapshot_path.resolve().as_uri()
+    fetched_at = as_of
+    audit_window = _audit_window()
+
+    market_raw = deepcopy(bundle.raw_inputs["market_raw"])
+    if market_raw_overrides:
+        market_raw.update(deepcopy(market_raw_overrides))
+    account_raw = deepcopy(bundle.raw_inputs["account_raw"])
+    behavior_raw = deepcopy(bundle.raw_inputs["behavior_raw"])
+    live_portfolio = deepcopy(bundle.live_portfolio)
+
+    def _external_item(field: str, label: str, value: object) -> dict[str, object]:
+        return {
+            "field": field,
+            "label": label,
+            "value": deepcopy(value),
+            "source_ref": source_ref,
+            "as_of": as_of,
+            "fetched_at": fetched_at,
+            "data_status": "observed",
+            "audit_window": audit_window,
+            "note": "formal observed snapshot",
+        }
+
+    payload = {
+        "market_raw": market_raw,
+        "account_raw": account_raw,
+        "behavior_raw": behavior_raw,
+        "live_portfolio": live_portfolio,
+        "input_provenance": {
+            "externally_fetched": [
+                _external_item("market_raw", "市场输入", market_raw),
+                _external_item("account_raw", "账户输入", account_raw),
+                _external_item("behavior_raw", "行为输入", behavior_raw),
+                _external_item("live_portfolio", "持仓输入", live_portfolio),
+            ]
+        },
+        "external_snapshot_meta": {
+            "source": source_ref,
+            "provider_name": "observed_formal_snapshot",
+            "source_kind": "snapshot_source",
+            "as_of": as_of,
+            "fetched_at": fetched_at,
+            "domains": {
+                field: {
+                    "source_ref": source_ref,
+                    "as_of": as_of,
+                    "fetched_at": fetched_at,
+                    "status": "fresh",
+                    "data_status": "observed",
+                    "audit_window": audit_window,
+                }
+                for field in ("market_raw", "account_raw", "behavior_raw", "live_portfolio")
+            },
+        },
+    }
+    snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return snapshot_path
 
 
 @pytest.mark.contract
@@ -196,9 +267,14 @@ def test_build_runtime_product_universe_context_reuses_snapshot_payload():
         market_raw={"product_universe_snapshot": snapshot},
         as_of="2026-04-05T10:00:00Z",
         formal_path_required=True,
+        execution_policy="formal_estimation_allowed",
     )
 
-    assert inputs == {"formal_path_required": True}
+    assert inputs == {
+        "formal_path_required": True,
+        "require_observed_source": True,
+        "execution_policy": "formal_estimation_allowed",
+    }
     assert result == snapshot
 
 
@@ -264,9 +340,12 @@ def test_build_runtime_product_universe_context_blocks_strict_formal_mode_withou
 
     assert inputs["requested"] is True
     assert inputs["formal_path_required"] is True
+    assert inputs["execution_policy"] == "formal_estimation_allowed"
     assert inputs["formal_path_status"] == "blocked"
     assert inputs["failure_artifact"]["failed_stage"] == "input_eligibility"
-    assert "builtin catalog fallback disabled" in inputs["failure_artifact"]["reason"]
+    assert inputs["failure_artifact"]["request_identity"]["component"] == "runtime_product_universe_probe"
+    assert inputs["failure_artifact"]["blocking_predicates"] == ["observed_runtime_source_unavailable"]
+    assert inputs["failure_artifact"]["missing_evidence_refs"]["product_universe"] == "observed_runtime_product_universe"
     assert result is None
 
 
@@ -332,9 +411,12 @@ def test_build_runtime_product_valuation_context_blocks_strict_formal_mode_witho
 
     assert inputs["requested"] is True
     assert inputs["formal_path_required"] is True
+    assert inputs["execution_policy"] == "formal_estimation_allowed"
     assert inputs["formal_path_status"] == "blocked"
     assert inputs["failure_artifact"]["failed_stage"] == "input_eligibility"
-    assert "observed runtime product universe unavailable" in inputs["failure_artifact"]["reason"]
+    assert inputs["failure_artifact"]["request_identity"]["component"] == "runtime_bucket_valuation_mapping"
+    assert inputs["failure_artifact"]["blocking_predicates"] == ["observed_runtime_universe_unavailable"]
+    assert inputs["failure_artifact"]["missing_evidence_refs"]["product_universe"] == "observed_runtime_product_universe"
     assert result is None
 
 
@@ -578,6 +660,14 @@ def test_enrich_market_raw_with_runtime_product_inputs_preserves_tinyshare_input
 
 @pytest.mark.contract
 def test_frontdesk_onboarding_auto_generates_runtime_audits_and_maintenance_policy(monkeypatch, tmp_path):
+    profile = UserOnboardingProfile(
+        **{
+            **_profile().to_dict(),
+            "account_profile_id": "layer2_runtime_policy_user",
+            "restrictions": ["forbidden_theme:technology", "no_stock_picking"],
+        }
+    )
+
     def fake_probe(candidate, *, as_of, cache_dir, preferred_provider, **kwargs):  # type: ignore[no-untyped-def]
         observed = {
             "cn_equity_dividend_etf",
@@ -600,15 +690,8 @@ def test_frontdesk_onboarding_auto_generates_runtime_audits_and_maintenance_poli
         }
 
     monkeypatch.setattr("product_mapping.runtime_inputs._probe_product_observability", fake_probe)
-
     summary = run_frontdesk_onboarding(
-        UserOnboardingProfile(
-            **{
-                **_profile().to_dict(),
-                "account_profile_id": "layer2_runtime_policy_user",
-                "restrictions": ["forbidden_theme:technology", "no_stock_picking"],
-            }
-        ),
+        profile,
         db_path=tmp_path / "frontdesk.sqlite",
         external_data_config={
             "adapter": "inline_snapshot",
@@ -660,26 +743,15 @@ def test_frontdesk_onboarding_auto_generates_runtime_audits_and_maintenance_poli
     pending = summary["pending_execution_plan"]
     db_path = tmp_path / "frontdesk.sqlite"
     user_state = load_user_state("layer2_runtime_policy_user", db_path=db_path)
-    assert pending is not None
+    assert summary["status"] == "blocked"
+    assert summary["formal_path_visibility"]["status"] == "blocked"
+    assert summary["external_snapshot_status"] == "fetched"
+    assert pending is None
     assert user_state is not None
-    assert pending["product_universe_audit_summary"]["source_status"] == "observed"
-    assert pending["valuation_audit_summary"]["source_status"] == "observed"
-    assert pending["policy_news_audit_summary"]["source_status"] == "observed"
-    assert pending["items"]
-    summary_satellite_item = next(item for item in pending["items"] if item["asset_bucket"] == "satellite")
-    assert summary_satellite_item["primary_product_id"] == "cn_satellite_energy_etf"
-    assert summary_satellite_item["target_amount"] is not None
-    assert summary_satellite_item["trigger_conditions"]
-    assert summary_satellite_item["policy_news_audit"]["status"] == "observed"
-    detailed_pending = FrontdeskStore(db_path).get_latest_pending_execution_plan("layer2_runtime_policy_user")
-    assert detailed_pending is not None
-    detailed_pending_payload = detailed_pending.payload
-    satellite_item = next(item for item in detailed_pending_payload["items"] if item["asset_bucket"] == "satellite")
-    assert satellite_item["primary_product_id"] == "cn_satellite_energy_etf"
-    assert all("technology" not in str(tag).lower() for tag in satellite_item["primary_product"]["tags"])
-    assert pending["maintenance_policy_summary"]["initial_deploy_fraction"] == pytest.approx(0.40, abs=1e-6)
-    assert pending["maintenance_policy_summary"]["drawdown_add_buy_threshold"] == pytest.approx(0.10, abs=1e-6)
-    assert satellite_item["trigger_conditions"]
+    assert user_state["pending_execution_plan"] is None
+    assert user_state["formal_path_visibility"]["status"] == "blocked"
+    assert summary["refresh_summary"]["provider_name"] == "fixture_inline_provider"
+    assert summary["user_state"]["decision_card"]["formal_path_visibility"]["status"] == "blocked"
 
 
 @pytest.mark.contract

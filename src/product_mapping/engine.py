@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from shared.audit import AuditWindow, DataStatus, FailureArtifact, coerce_data_status
+from shared.audit import AuditWindow, DataStatus, ExecutionPolicy, FailureArtifact, coerce_data_status, coerce_execution_policy
 from shared.datasets.cache import DatasetCache
 from shared.datasets.types import DatasetSpec, VersionPin
 from shared.profile_parser import parse_profile_semantics
@@ -1057,17 +1057,71 @@ def _synthetic_cash_observation_dates(
     return dates
 
 
+def _preloaded_product_simulation_payload(
+    historical_dataset: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = (historical_dataset or {}).get("product_simulation_input")
+    if isinstance(payload, dict):
+        return dict(payload)
+    payload = (historical_dataset or {}).get("product_simulation_inputs")
+    if isinstance(payload, dict):
+        return dict(payload)
+    return {}
+
+
+def _preloaded_product_simulation_products(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_products = payload.get("products")
+    if not isinstance(raw_products, list):
+        return []
+    return [dict(item) for item in raw_products if isinstance(item, dict)]
+
+
+def _preloaded_product_simulation_values(values: Any) -> list[Any]:
+    if not isinstance(values, list):
+        return []
+    return list(values)
+
+
+def _preloaded_product_simulation_entry(values: Any) -> dict[str, Any]:
+    if not isinstance(values, dict):
+        return {}
+    return dict(values)
+
+
+def _preloaded_product_simulation_map(
+    historical_dataset: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    payload = _preloaded_product_simulation_payload(historical_dataset)
+    products = {}
+    for item in _preloaded_product_simulation_products(payload):
+        product_id = str(item.get("product_id") or "").strip()
+        if not product_id:
+            continue
+        products[product_id] = item
+    return products
+
+
 def _build_product_simulation_input(
     items: list[ExecutionPlanItem],
     *,
     historical_dataset: dict[str, Any] | None,
     history_window: AuditWindow | None,
     formal_path_required: bool = False,
+    execution_policy: ExecutionPolicy | str | None = None,
 ) -> dict[str, Any] | None:
     if not items or history_window is None or not history_window.start_date or not history_window.end_date:
         return None
+    formal_policy = (
+        coerce_execution_policy(execution_policy or ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
+        if formal_path_required
+        else None
+    )
+    strict_formal = formal_policy == ExecutionPolicy.FORMAL_STRICT
     preferred_provider = str((historical_dataset or {}).get("source_name") or "").strip().lower() or None
     cache = DatasetCache(base_dir=_PRODUCT_SIMULATION_CACHE_DIR)
+    preloaded_payload = _preloaded_product_simulation_payload(historical_dataset)
+    preloaded_products = _preloaded_product_simulation_map(historical_dataset)
+    preloaded_frequency = str(preloaded_payload.get("frequency") or "daily").strip() or "daily"
     products: list[dict[str, Any]] = []
     observed_count = 0
     inferred_count = 0
@@ -1079,6 +1133,35 @@ def _build_product_simulation_input(
             cash_items.append(item)
             continue
         candidate = item.primary_product
+        preloaded = _preloaded_product_simulation_entry(preloaded_products.get(candidate.product_id))
+        if preloaded:
+            return_series = [float(value) for value in _preloaded_product_simulation_values(preloaded.get("return_series"))]
+            observation_dates = [
+                str(value).strip()
+                for value in _preloaded_product_simulation_values(preloaded.get("observation_dates"))
+                if str(value).strip()
+            ]
+            if return_series:
+                if observation_dates and len(observation_dates) == len(return_series) and reference_dates is None:
+                    reference_dates = list(observation_dates)
+                observed_count += 1
+                products.append(
+                    {
+                        "product_id": candidate.product_id,
+                        "asset_bucket": item.asset_bucket,
+                        "target_weight": float(item.target_weight or 0.0),
+                        "return_series": return_series,
+                        "observation_dates": observation_dates,
+                        "source_ref": str(preloaded.get("source_ref") or f"observed://product_simulation/{candidate.product_id}"),
+                        "data_status": str(preloaded.get("data_status") or DataStatus.OBSERVED.value),
+                        "frequency": str(preloaded.get("frequency") or preloaded_frequency),
+                        "observed_start_date": preloaded.get("observed_start_date") or history_window.start_date,
+                        "observed_end_date": preloaded.get("observed_end_date") or history_window.end_date,
+                        "observed_points": int(preloaded.get("observed_points") or len(return_series)),
+                        "inferred_points": int(preloaded.get("inferred_points") or 0),
+                    }
+                )
+                continue
         provider = _product_simulation_provider(candidate, preferred_provider)
         symbol = _product_simulation_symbol(candidate, provider)
         if not symbol:
@@ -1161,14 +1244,17 @@ def _build_product_simulation_input(
             }
         )
     if not products:
-        if formal_path_required and items:
+        if formal_policy is not None and items:
+            run_outcome_status = "blocked" if strict_formal else "degraded"
+            blocking_predicates = ["product_simulation_series_unavailable"] if strict_formal else []
+            degradation_reasons = [] if strict_formal else ["product_simulation_series_unavailable"]
             failure_artifact = FailureArtifact(
                 request_identity={"component": "product_simulation_input"},
                 requested_result_category="formal_independent_result",
-                execution_policy="formal_estimation_allowed",
+                execution_policy=formal_policy.value,
                 disclosure_policy="diagnostic_only",
                 failed_stage="evidence_completeness",
-                blocking_predicates=["product_simulation_series_unavailable"],
+                blocking_predicates=blocking_predicates or ["product_simulation_series_unavailable"],
                 missing_evidence_refs={"product_timeseries": "missing_observed_product_returns"},
                 next_recoverable_actions=["collect_product_return_series"],
                 trustworthy_partial_diagnostics=False,
@@ -1186,9 +1272,10 @@ def _build_product_simulation_input(
                 },
                 "formal_path_preflight": {
                     "formal_path_required": True,
-                    "run_outcome_status": "degraded",
-                    "degradation_reasons": ["product_simulation_series_unavailable"],
-                    "blocking_predicates": [],
+                    "execution_policy": formal_policy.value,
+                    "run_outcome_status": run_outcome_status,
+                    "degradation_reasons": degradation_reasons,
+                    "blocking_predicates": blocking_predicates,
                     "estimation_basis": "proxy_path",
                 },
                 "failure_artifact": failure_artifact.to_dict(),
@@ -1196,6 +1283,7 @@ def _build_product_simulation_input(
         return None
     formal_path_preflight = {
         "formal_path_required": formal_path_required,
+        "execution_policy": None if formal_policy is None else formal_policy.value,
         "run_outcome_status": "completed",
         "degradation_reasons": [],
         "blocking_predicates": [],
@@ -1204,21 +1292,25 @@ def _build_product_simulation_input(
     simulation_method = "product_independent_path"
     if missing_count > 0:
         simulation_method = "product_estimated_path"
-        if formal_path_required:
+        if formal_policy is not None:
+            run_outcome_status = "blocked" if strict_formal else "degraded"
+            blocking_predicates = ["product_independent_coverage_incomplete"] if strict_formal else []
+            degradation_reasons = [] if strict_formal else ["product_independent_coverage_incomplete"]
             formal_path_preflight = {
                 "formal_path_required": True,
-                "run_outcome_status": "degraded",
-                "degradation_reasons": ["product_independent_coverage_incomplete"],
-                "blocking_predicates": [],
+                "execution_policy": formal_policy.value,
+                "run_outcome_status": run_outcome_status,
+                "degradation_reasons": degradation_reasons,
+                "blocking_predicates": blocking_predicates,
                 "estimation_basis": "proxy_path",
             }
             failure_artifact = FailureArtifact(
                 request_identity={"component": "product_simulation_input"},
                 requested_result_category="formal_independent_result",
-                execution_policy="formal_estimation_allowed",
+                execution_policy=formal_policy.value,
                 disclosure_policy="diagnostic_only",
                 failed_stage="evidence_completeness",
-                blocking_predicates=["product_independent_coverage_incomplete"],
+                blocking_predicates=blocking_predicates or ["product_independent_coverage_incomplete"],
                 available_evidence_refs={"product_timeseries": "partial_observed_product_returns"},
                 missing_evidence_refs={"product_timeseries": "missing_observed_product_returns"},
                 next_recoverable_actions=["collect_missing_product_return_series"],
@@ -1226,9 +1318,9 @@ def _build_product_simulation_input(
             ).to_dict()
     return {
         "products": products,
-        "frequency": "daily",
+        "frequency": preloaded_frequency if preloaded_products else "daily",
         "simulation_method": simulation_method,
-        "audit_window": history_window.to_dict(),
+        "audit_window": dict(preloaded_payload.get("audit_window") or history_window.to_dict()),
         "coverage_summary": {
             "selected_product_count": len(items),
             "observed_product_count": observed_count,
@@ -1255,6 +1347,7 @@ def build_candidate_product_context(
     product_proxy_result: dict[str, Any] | None = None,
     historical_dataset: dict[str, Any] | None = None,
     formal_path_required: bool = False,
+    execution_policy: ExecutionPolicy | str | None = None,
 ) -> dict[str, Any]:
     preview_plan = build_execution_plan(
         source_run_id="solver_preview",
@@ -1270,6 +1363,7 @@ def build_candidate_product_context(
         policy_news_signals=policy_news_signals,
         product_proxy_result=product_proxy_result,
         formal_path_required=formal_path_required,
+        execution_policy=execution_policy,
         account_total_value=None,
         current_weights=None,
         available_cash=None,
@@ -1309,6 +1403,7 @@ def build_candidate_product_context(
         historical_dataset=historical_dataset,
         history_window=history_window,
         formal_path_required=formal_path_required,
+        execution_policy=execution_policy,
     )
     product_probability_method = "product_estimated_path"
     formal_path_preflight = dict(preview_plan.formal_path_preflight or {})
@@ -1660,7 +1755,13 @@ def build_execution_plan(
     transaction_fee_rate: dict[str, float] | None = None,
     wrapper_slippage_rate: dict[str, float] | None = None,
     formal_path_required: bool = False,
+    execution_policy: ExecutionPolicy | str | None = None,
 ) -> ExecutionPlan:
+    formal_policy = (
+        coerce_execution_policy(execution_policy or ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
+        if formal_path_required
+        else None
+    )
     normalized_targets = _normalize_bucket_targets(bucket_targets)
     normalized_current_weights = _normalize_bucket_targets(current_weights or {})
     restriction_filter = _compile_restrictions(restrictions)
@@ -1671,7 +1772,7 @@ def build_execution_plan(
             entry.candidate if isinstance(entry, RuntimeProductCandidate) else entry
             for entry in runtime_candidates
         ]
-    elif formal_path_required:
+    elif formal_policy is not None:
         registry = []
     else:
         registry = list(load_builtin_catalog())
@@ -1694,7 +1795,7 @@ def build_execution_plan(
     for runtime_candidate in runtime_candidate_pool:
         grouped_candidates[_normalize_bucket(runtime_candidate.candidate.asset_bucket)].append(runtime_candidate)
 
-    if not grouped_candidates.get("cash_liquidity") and not formal_path_required:
+    if not grouped_candidates.get("cash_liquidity") and formal_policy is None:
         cash_fallback_candidates = [
             RuntimeProductCandidate(candidate=item, registry_index=-1)
             for item in (list(catalog) if catalog is not None else list(load_builtin_catalog()))
@@ -1706,7 +1807,11 @@ def build_execution_plan(
     parked_cash_weight = 0.0
     adjusted_targets = dict(normalized_targets)
     warnings = list(restriction_filter.warnings)
-    formal_path_preflight: dict[str, Any] = {"formal_path_required": formal_path_required, "run_outcome_status": "completed"}
+    formal_path_preflight: dict[str, Any] = {
+        "formal_path_required": formal_path_required,
+        "execution_policy": None if formal_policy is None else formal_policy.value,
+        "run_outcome_status": "completed",
+    }
     failure_artifact = None
     product_universe_failure_artifact = (
         (product_universe_inputs or {}).get("failure_artifact")
@@ -1716,19 +1821,21 @@ def build_execution_plan(
         (valuation_inputs or {}).get("failure_artifact")
         or (valuation_result or {}).get("failure_artifact")
     )
-    if formal_path_required and product_universe_failure_artifact is not None:
+    if formal_policy is not None and product_universe_failure_artifact is not None:
         failure_artifact = dict(product_universe_failure_artifact)
         formal_path_preflight = {
             "formal_path_required": True,
+            "execution_policy": formal_policy.value,
             "run_outcome_status": "blocked",
             "blocking_predicates": list((failure_artifact or {}).get("blocking_predicates") or []),
             "degradation_reasons": [],
         }
         warnings.append("formal_path_blocked=product_universe_unavailable")
-    elif formal_path_required and valuation_failure_artifact is not None:
+    elif formal_policy is not None and valuation_failure_artifact is not None:
         failure_artifact = dict(valuation_failure_artifact)
         formal_path_preflight = {
             "formal_path_required": True,
+            "execution_policy": formal_policy.value,
             "run_outcome_status": "blocked",
             "blocking_predicates": list((failure_artifact or {}).get("blocking_predicates") or []),
             "degradation_reasons": [],

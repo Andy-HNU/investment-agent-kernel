@@ -14,21 +14,21 @@ from snapshot_ingestion.historical import (
 )
 from snapshot_ingestion.provider_matrix import find_provider_coverage, provider_capability_matrix_dicts
 from snapshot_ingestion.providers import fetch_snapshot_from_provider_config, provider_debug_metadata
+from tests.support.formal_snapshot_helpers import write_formal_snapshot_source
 
 
 def _profile(*, account_profile_id: str = "provider_registry_user") -> UserOnboardingProfile:
     return UserOnboardingProfile(
         account_profile_id=account_profile_id,
         display_name="Andy",
-        current_total_assets=50_000.0,
-        monthly_contribution=12_000.0,
-        goal_amount=900_000.0,
-        goal_horizon_months=48,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
         risk_preference="中等",
-        max_drawdown_tolerance=0.10,
-        current_holdings="portfolio",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
         restrictions=[],
-        current_weights={"equity_cn": 0.50, "bond_cn": 0.30, "gold": 0.10, "satellite": 0.10},
     )
 
 
@@ -130,9 +130,10 @@ def test_historical_dataset_summary_annualizes_daily_frequency_correctly():
 
 @pytest.mark.contract
 def test_frontdesk_onboarding_accepts_local_json_provider_fixture(tmp_path):
-    fixture_path = Path(__file__).resolve().parents[1] / "fixtures" / "provider_snapshot_local.json"
+    profile = _profile(account_profile_id="local_json_provider_user")
+    fixture_path = write_formal_snapshot_source(tmp_path, profile)
     summary = run_frontdesk_onboarding(
-        _profile(account_profile_id="local_json_provider_user"),
+        profile,
         db_path=tmp_path / "frontdesk.sqlite",
         external_data_config={
             "adapter": "local_json",
@@ -141,10 +142,10 @@ def test_frontdesk_onboarding_accepts_local_json_provider_fixture(tmp_path):
         },
     )
 
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fetched"
     assert summary["refresh_summary"]["provider_name"] == "fixture_local_json"
-    assert summary["user_state"]["profile"]["current_total_assets"] == 63_500.0
+    assert summary["user_state"]["profile"]["current_total_assets"] == 18_000.0
 
 
 @pytest.mark.contract

@@ -9,9 +9,13 @@ from calibration.types import (
     BehaviorState,
     CalibrationResult,
     ConstraintState,
+    CalibrationSummary,
     EVParams,
+    DistributionModelState,
     MarketState,
     ParamVersionMeta,
+    ModeResolutionDecision,
+    SimulationModeEligibility,
     RuntimeOptimizerParams,
 )
 from goal_solver.types import GoalSolverParams, MarketAssumptions, RankingMode
@@ -720,6 +724,60 @@ def _coerce_ev_params(params: Any | None) -> EVParams:
     )
 
 
+def _build_calibration_summary(bundle_id: str, calibration_quality: str) -> CalibrationSummary:
+    return CalibrationSummary(
+        sample_count=0,
+        brier_score=None,
+        reliability_buckets=[],
+        regime_breakdown=[],
+        calibration_quality="insufficient_sample" if calibration_quality != "full" else "acceptable",
+        source_ref=f"{bundle_id or 'unknown'}::static_gaussian",
+    )
+
+
+def _build_distribution_model_state(
+    *,
+    bundle_id: str,
+    created_at: Any,
+    calibration_summary: CalibrationSummary,
+) -> DistributionModelState:
+    eligibility = SimulationModeEligibility(
+        simulation_mode="static_gaussian",
+        minimum_sample_months=0,
+        minimum_weight_adjusted_coverage=0.0,
+        requires_regime_stability=False,
+        requires_jump_calibration=False,
+        allowed_result_categories=[
+            "formal_independent_result",
+            "formal_estimated_result",
+            "degraded_formal_result",
+        ],
+        downgrade_target=None,
+        ineligibility_action="mark_unavailable",
+    )
+    mode_resolution = ModeResolutionDecision(
+        requested_mode="static_gaussian",
+        selected_mode="static_gaussian",
+        eligible_modes_in_order=["static_gaussian"],
+        ineligibility_action="mark_unavailable",
+        downgraded=False,
+        downgrade_reason=None,
+    )
+    return DistributionModelState(
+        simulation_mode="static_gaussian",
+        selected_mode="static_gaussian",
+        tail_model=None,
+        regime_sensitive=False,
+        jump_overlay_enabled=False,
+        eligibility_decision=eligibility,
+        mode_resolution_decision=mode_resolution,
+        calibration_summary=calibration_summary,
+        source_ref=f"{bundle_id or 'unknown'}::static_gaussian",
+        as_of=_utc(created_at).isoformat().replace("+00:00", "Z"),
+        data_status="observed",
+    )
+
+
 def run_calibration(
     bundle: SnapshotBundle | dict[str, Any],
     prior_calibration: CalibrationResult | dict[str, Any] | None,
@@ -824,6 +882,13 @@ def run_calibration(
             f"lookback_months={market_assumptions.lookback_months or 0}"
         )
 
+    calibration_summary = _build_calibration_summary(bundle_id, calibration_quality)
+    distribution_model_state = _build_distribution_model_state(
+        bundle_id=bundle_id,
+        created_at=created_at,
+        calibration_summary=calibration_summary,
+    )
+
     reason = _derive_updated_reason(
         calibration_quality,
         updated_reason=updated_reason,
@@ -859,6 +924,8 @@ def run_calibration(
         goal_solver_params=goal_solver_params,
         runtime_optimizer_params=runtime_optimizer_params,
         ev_params=ev_params,
+        distribution_model_state=distribution_model_state,
+        calibration_summary=calibration_summary,
         calibration_quality=calibration_quality,
         degraded_domains=degraded_domains,
         notes=notes,

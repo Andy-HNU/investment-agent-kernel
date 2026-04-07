@@ -261,6 +261,129 @@ def test_build_candidate_product_context_emits_product_simulation_input_from_sel
 
 
 @pytest.mark.contract
+def test_build_candidate_product_context_prefers_preloaded_product_simulation_input(monkeypatch):
+    runtime_pool = [
+        ProductCandidate(
+            product_id="ts_equity_core",
+            product_name="沪深300ETF",
+            asset_bucket="equity_cn",
+            product_family="core",
+            wrapper_type="etf",
+            provider_source="market_history_yfinance",
+            provider_symbol="510300.SS",
+            tags=["core"],
+        ),
+        ProductCandidate(
+            product_id="ts_bond_core",
+            product_name="国债ETF",
+            asset_bucket="bond_cn",
+            product_family="defense",
+            wrapper_type="etf",
+            provider_source="market_history_yfinance",
+            provider_symbol="511010.SS",
+            tags=["bond", "defense"],
+        ),
+        ProductCandidate(
+            product_id="ts_gold_core",
+            product_name="黄金ETF",
+            asset_bucket="gold",
+            product_family="defense",
+            wrapper_type="etf",
+            provider_source="market_history_yfinance",
+            provider_symbol="518880.SS",
+            tags=["gold"],
+        ),
+    ]
+
+    def _unexpected_fetch(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("fetch_timeseries should not be called when preloaded product simulation evidence exists")
+
+    monkeypatch.setattr("product_mapping.engine.fetch_timeseries", _unexpected_fetch)
+
+    context = build_candidate_product_context(
+        source_allocation_id="allocation_preloaded_product_simulation",
+        bucket_targets={"equity_cn": 0.55, "bond_cn": 0.30, "gold": 0.15},
+        restrictions=[],
+        runtime_candidates=runtime_pool,
+        historical_dataset={
+            "source_name": "observed_market_history",
+            "audit_window": {
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-03",
+                "trading_days": 3,
+                "observed_days": 3,
+                "inferred_days": 0,
+            },
+            "product_simulation_input": {
+                "frequency": "daily",
+                "simulation_method": "product_independent_path",
+                "audit_window": {
+                    "start_date": "2026-04-01",
+                    "end_date": "2026-04-03",
+                    "trading_days": 3,
+                    "observed_days": 3,
+                    "inferred_days": 0,
+                },
+                "products": [
+                    {
+                        "product_id": "ts_equity_core",
+                        "asset_bucket": "equity_cn",
+                        "target_weight": 0.0,
+                        "return_series": [0.01, 0.02, -0.01],
+                        "observation_dates": ["2026-04-01", "2026-04-02", "2026-04-03"],
+                        "source_ref": "observed://product_returns/ts_equity_core",
+                        "data_status": "observed",
+                        "frequency": "daily",
+                        "observed_start_date": "2026-04-01",
+                        "observed_end_date": "2026-04-03",
+                        "observed_points": 3,
+                        "inferred_points": 0,
+                    },
+                    {
+                        "product_id": "ts_bond_core",
+                        "asset_bucket": "bond_cn",
+                        "target_weight": 0.0,
+                        "return_series": [0.002, 0.001, 0.0015],
+                        "observation_dates": ["2026-04-01", "2026-04-02", "2026-04-03"],
+                        "source_ref": "observed://product_returns/ts_bond_core",
+                        "data_status": "observed",
+                        "frequency": "daily",
+                        "observed_start_date": "2026-04-01",
+                        "observed_end_date": "2026-04-03",
+                        "observed_points": 3,
+                        "inferred_points": 0,
+                    },
+                    {
+                        "product_id": "ts_gold_core",
+                        "asset_bucket": "gold",
+                        "target_weight": 0.0,
+                        "return_series": [0.004, -0.001, 0.003],
+                        "observation_dates": ["2026-04-01", "2026-04-02", "2026-04-03"],
+                        "source_ref": "observed://product_returns/ts_gold_core",
+                        "data_status": "observed",
+                        "frequency": "daily",
+                        "observed_start_date": "2026-04-01",
+                        "observed_end_date": "2026-04-03",
+                        "observed_points": 3,
+                        "inferred_points": 0,
+                    },
+                ],
+            },
+        },
+    )
+
+    assert context["product_probability_method"] == "product_independent_path"
+    simulation_input = context["product_simulation_input"]
+    assert simulation_input is not None
+    assert [item["product_id"] for item in simulation_input["products"]] == [
+        "ts_equity_core",
+        "ts_bond_core",
+        "ts_gold_core",
+    ]
+    assert all(str(item["source_ref"]).startswith("observed://product_returns/") for item in simulation_input["products"])
+
+
+@pytest.mark.contract
 def test_build_candidate_product_context_prefers_listed_etf_and_keeps_cash_bucket_on_independent_path(monkeypatch):
     runtime_pool = [
         ProductCandidate(

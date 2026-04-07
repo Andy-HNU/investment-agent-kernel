@@ -121,6 +121,101 @@ def _currency_metric(value: Any) -> str:
     return f"{metric:,.0f}"
 
 
+def _disclosure_decision(inp: DecisionCardBuildInput) -> dict[str, Any]:
+    return _obj(inp.disclosure_decision or {})
+
+
+def _disclosure_level(inp: DecisionCardBuildInput) -> str:
+    disclosure = _disclosure_decision(inp)
+    if not disclosure:
+        return "point_and_range"
+    return (_metric(disclosure.get("disclosure_level")) or "diagnostic_only").lower()
+
+
+def _confidence_level(inp: DecisionCardBuildInput) -> str:
+    disclosure = _disclosure_decision(inp)
+    if not disclosure:
+        return "high"
+    return (_metric(disclosure.get("confidence_level")) or "low").lower()
+
+
+def _calibration_quality(inp: DecisionCardBuildInput, goal_output: dict[str, Any]) -> str:
+    disclosure = _disclosure_decision(inp)
+    if not disclosure:
+        return "acceptable"
+    disclosure_quality = _metric(disclosure.get("calibration_quality"))
+    if disclosure_quality:
+        return disclosure_quality.lower()
+    calibration_summary = _obj(goal_output.get("calibration_summary") or {})
+    return (_metric(calibration_summary.get("calibration_quality")) or "insufficient_sample").lower()
+
+
+def _range_width(
+    *,
+    kind: str,
+    confidence_level: str,
+    calibration_quality: str,
+) -> float:
+    base_widths = {
+        "probability": {"high": 0.03, "medium": 0.05, "low": 0.08},
+        "annual_return": {"high": 0.003, "medium": 0.006, "low": 0.010},
+    }
+    calibration_adjustments = {
+        "strong": 0.0,
+        "acceptable": 0.0,
+        "weak": 0.01 if kind == "probability" else 0.002,
+        "insufficient_sample": 0.02 if kind == "probability" else 0.003,
+    }
+    return base_widths[kind].get(confidence_level, base_widths[kind]["low"]) + calibration_adjustments.get(
+        calibration_quality,
+        calibration_adjustments["insufficient_sample"],
+    )
+
+
+def _percent_range_metric(
+    value: Any,
+    *,
+    confidence_level: str,
+    calibration_quality: str,
+    kind: str,
+) -> str:
+    metric = _float_metric(value)
+    if metric is None:
+        return ""
+    width = _range_width(
+        kind=kind,
+        confidence_level=confidence_level,
+        calibration_quality=calibration_quality,
+    )
+    lower = max(0.0, metric - width)
+    upper = metric + width
+    if kind == "probability":
+        upper = min(1.0, upper)
+    return f"{lower * 100:.2f}% ~ {upper * 100:.2f}%"
+
+
+def _disclosed_percent_fields(
+    value: Any,
+    *,
+    inp: DecisionCardBuildInput,
+    goal_output: dict[str, Any],
+    kind: str,
+) -> tuple[str, str]:
+    disclosure_level = _disclosure_level(inp)
+    if disclosure_level in {"diagnostic_only", "unavailable"}:
+        return "", ""
+    point = _percent_metric(value) if disclosure_level == "point_and_range" else ""
+    range_display = ""
+    if disclosure_level in {"point_and_range", "range_only"}:
+        range_display = _percent_range_metric(
+            value,
+            confidence_level=_confidence_level(inp),
+            calibration_quality=_calibration_quality(inp, goal_output),
+            kind=kind,
+        )
+    return point, range_display
+
+
 def _action_type(value: Any) -> str | None:
     data = _obj(value)
     if isinstance(data, dict):
@@ -1232,10 +1327,22 @@ def _build_probability_explanation(
     recommended_probability = _percent_metric(
         _product_layer_success_value(recommended_result)
     )
+    recommended_probability_point, recommended_probability_range = _disclosed_percent_fields(
+        _product_layer_success_value(recommended_result),
+        inp=inp,
+        goal_output=goal_output,
+        kind="probability",
+    )
     recommended_independent_probability = _percent_metric(
         recommended_result.get("product_independent_success_probability")
     )
     recommended_expected_annual_return = _metric(frontier_analysis.get("recommended", {}).get("expected_annual_return")) or ""
+    recommended_expected_annual_return_point, recommended_expected_annual_return_range = _disclosed_percent_fields(
+        recommended_result.get("expected_annual_return", _obj(goal_output.get("frontier_analysis", {})).get("recommended", {}).get("expected_annual_return")),
+        inp=inp,
+        goal_output=goal_output,
+        kind="annual_return",
+    )
     highest_frontier = frontier_analysis.get("highest_probability", {})
     highest_name = _metric(highest_frontier.get("allocation_name"))
     highest_label = _metric(highest_frontier.get("label")) or _candidate_label(highest_name)
@@ -1396,6 +1503,12 @@ def _build_probability_explanation(
         "why_not_drawdown_priority": why_not_drawdown,
         "implied_required_annual_return": _percent_metric(recommended_result.get("implied_required_annual_return")),
         "product_independent_success_probability": recommended_independent_probability,
+        "success_probability_point": recommended_probability_point,
+        "success_probability_range": recommended_probability_range,
+        "expected_annual_return_point": recommended_expected_annual_return_point,
+        "expected_annual_return_range": recommended_expected_annual_return_range,
+        "confidence_level": _confidence_level(inp),
+        "calibration_quality": _calibration_quality(inp, goal_output),
         "product_probability_method": probability_method,
         "product_probability_disclosure": product_probability_disclosure,
         "difficulty_source": difficulty_source,
@@ -2056,6 +2169,18 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     if no_feasible:
         review_conditions = _unique(review_conditions + ["after_relaxing_goal_or_drawdown"])
         next_steps = _unique(["reassess_goal_constraints"] + next_steps)
+    success_probability_point, success_probability_range = _disclosed_percent_fields(
+        _product_layer_success_value(result),
+        inp=inp,
+        goal_output=goal_output,
+        kind="probability",
+    )
+    expected_annual_return_point, expected_annual_return_range = _disclosed_percent_fields(
+        result.get("expected_annual_return", raw_recommended_frontier.get("expected_annual_return")),
+        inp=inp,
+        goal_output=goal_output,
+        kind="annual_return",
+    )
     card = DecisionCard(
         card_id=inp.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
         card_type=DecisionCardType.GOAL_BASELINE,
@@ -2067,7 +2192,8 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         recommendation_reason=reasons,
         not_recommended_reason=[],
         key_metrics={
-            "success_probability": _percent_metric(result.get("success_probability")),
+            "success_probability": success_probability_point,
+            "success_probability_range": success_probability_range,
             "bucket_success_probability": _percent_metric(
                 result.get("bucket_success_probability", result.get("success_probability"))
             ),
@@ -2080,9 +2206,8 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
             "product_probability_method": _metric(result.get("product_probability_method"))
             or "bucket_only_no_product_proxy_adjustment",
             "implied_required_annual_return": _percent_metric(result.get("implied_required_annual_return")),
-            "expected_annual_return": _percent_metric(
-                result.get("expected_annual_return", raw_recommended_frontier.get("expected_annual_return"))
-            ),
+            "expected_annual_return": expected_annual_return_point,
+            "expected_annual_return_range": expected_annual_return_range,
             "expected_terminal_value": _currency_metric(result.get("expected_terminal_value")),
             "max_drawdown_90pct": _percent_metric(risk_summary.get("max_drawdown_90pct")),
             "shortfall_probability": _percent_metric(risk_summary.get("shortfall_probability")),

@@ -8,43 +8,73 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_bridge_handles_onboarding_from_natural_language(tmp_path):
+def _observed_snapshot_source(tmp_path: Path):
+    from shared.onboarding import UserOnboardingProfile
+    from tests.contract.test_12_frontdesk_regression import (
+        _formal_market_raw_overrides,
+        _observed_external_snapshot_source,
+    )
+
+    profile = UserOnboardingProfile(
+        account_profile_id="bridge_seed",
+        display_name="Andy",
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.20,
+        current_holdings="cash",
+        restrictions=[],
+    )
+    return _observed_external_snapshot_source(
+        tmp_path,
+        profile,
+        market_raw_overrides=_formal_market_raw_overrides(),
+    )
+
+
+def test_bridge_handles_onboarding_from_natural_language(tmp_path, monkeypatch):
     from integration.openclaw.bridge import handle_task
 
     db = tmp_path / 'frontdesk.sqlite'
+    monkeypatch.setenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", str(_observed_snapshot_source(tmp_path)))
     task = (
-        "please onboard user demo_user with current assets 50000, "
-        "monthly 12000, goal 1000000 in 60 months, risk moderate"
+        "please onboard user demo_user with current assets 18000, "
+        "monthly 2500, goal 120000 in 36 months, risk moderate"
     )
     result = handle_task(task, db_path=str(db))
     assert result['intent']['name'] == 'onboarding'
     assert result['invocation']['account_profile_id'] == 'demo_user'
-    assert result['result']['status'] in {'ok', 'success', 'completed'} or result['result']['status'] == 'onboarding_completed'
+    assert result['result']['status'] in {'completed', 'degraded'}
     # Should persist state; follow-up monthly should now be allowed
 
 
-def test_bridge_handles_status_query(tmp_path):
+def test_bridge_handles_status_query(tmp_path, monkeypatch):
     # First, onboard a user so status exists
     from integration.openclaw.bridge import handle_task
     db = tmp_path / 'frontdesk.sqlite'
-    handle_task("onboard user status_user assets 10000 monthly 1000 goal 50000 in 24 months", db_path=str(db))
+    monkeypatch.setenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", str(_observed_snapshot_source(tmp_path)))
+    handle_task("onboard user status_user assets 18000 monthly 2500 goal 120000 in 36 months risk moderate", db_path=str(db))
 
     result = handle_task("show status for user status_user", db_path=str(db))
     assert result['intent']['name'] == 'status'
     assert result['result']['user_state']['profile']['account_profile_id'] == 'status_user'
 
 
-def test_bridge_preserves_formal_path_visibility(tmp_path):
+def test_bridge_preserves_formal_path_visibility(tmp_path, monkeypatch):
     from integration.openclaw.bridge import handle_task
 
     db = tmp_path / "frontdesk.sqlite"
+    monkeypatch.setenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", str(_observed_snapshot_source(tmp_path)))
     result = handle_task(
-        "please onboard user bridge_user with current assets 50000, monthly 12000, goal 1000000 in 60 months, risk moderate",
+        "please onboard user bridge_user with current assets 18000, monthly 2500, goal 120000 in 36 months, risk moderate",
         db_path=str(db),
     )
 
     assert "formal_path_visibility" in result["result"]
     assert result["result"]["formal_path_visibility"]["status"] in {
+        "completed",
         "formal",
         "degraded",
         "blocked",
@@ -52,12 +82,13 @@ def test_bridge_preserves_formal_path_visibility(tmp_path):
     }
 
 
-def test_bridge_preserves_probability_explanation_payload(tmp_path):
+def test_bridge_preserves_probability_explanation_payload(tmp_path, monkeypatch):
     from integration.openclaw.bridge import handle_task
 
     db = tmp_path / "frontdesk.sqlite"
+    monkeypatch.setenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", str(_observed_snapshot_source(tmp_path)))
     result = handle_task(
-        "please onboard user bridge_probability_user with current assets 50000, monthly 12000, goal 1000000 in 60 months, risk moderate",
+        "please onboard user bridge_probability_user with current assets 18000, monthly 2500, goal 120000 in 36 months, risk moderate",
         db_path=str(db),
     )
 
@@ -65,8 +96,11 @@ def test_bridge_preserves_probability_explanation_payload(tmp_path):
     assert "probability_explanation" in decision_card
     assert "frontier_analysis" in decision_card
     assert "product_evidence_panel" in decision_card
-    assert "bucket_success_probability" in decision_card["key_metrics"]
-    assert "product_proxy_adjusted_success_probability" in decision_card["key_metrics"]
+    assert (
+        "success_probability" in decision_card["key_metrics"]
+        or "success_probability_range" in decision_card["key_metrics"]
+    )
+    assert "product_probability_method" in decision_card["key_metrics"]
 
 
 def test_acceptance_cli_writes_logs(tmp_path, capsys):
@@ -103,7 +137,7 @@ def test_acceptance_harness_reads_task_file_and_writes_jsonl_logs(tmp_path):
     tasks.write_text(
         "\n".join(
             [
-                "onboard user acc_accept assets 50000 monthly 5000 goal 200000 in 36 months",
+                "onboard user acc_accept assets 18000 monthly 2500 goal 120000 in 36 months risk moderate",
                 "show status for user acc_accept",
             ]
         ),

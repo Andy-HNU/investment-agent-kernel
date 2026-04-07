@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
+import json
 from typing import Any
 
 
@@ -45,6 +46,16 @@ _FORMAL_EXECUTION_POLICIES = {ExecutionPolicy.FORMAL_STRICT.value, ExecutionPoli
 _DISCLOSURE_LEVELS = {"point_and_range", "range_only", "diagnostic_only", "unavailable"}
 _CONFIDENCE_LEVELS = {"high", "medium", "low"}
 _DATA_COMPLETENESS = {"complete", "partial", "sparse"}
+_FAILED_STAGES = {
+    "input_eligibility",
+    "execution_eligibility",
+    "evidence_completeness",
+    "result_category_resolution",
+    "disclosure_resolution",
+    "solver_preflight",
+    "formal_compute",
+    "artifact_persistence",
+}
 
 
 _LEGACY_FORMAL_PATH_STATUS_ALIASES = {
@@ -108,6 +119,10 @@ def _serialize(value: Any) -> Any:
     return value
 
 
+def _json_dumps(value: Any) -> str:
+    return json.dumps(_serialize(value), ensure_ascii=False, sort_keys=True)
+
+
 def _normalize_ratio(value: Any, *, fallback: float) -> float:
     if value is None:
         normalized = fallback
@@ -117,6 +132,17 @@ def _normalize_ratio(value: Any, *, fallback: float) -> float:
             normalized /= 100.0
     if normalized < 0.0 or normalized > 1.0:
         raise ValueError(f"coverage ratio must be between 0.0 and 1.0: {value}")
+    return normalized
+
+
+def _normalize_failed_stage(value: Any, *, allow_none: bool) -> str | None:
+    if value in (None, ""):
+        if allow_none:
+            return None
+        raise ValueError("failed_stage is required")
+    normalized = str(value).strip().lower()
+    if normalized not in _FAILED_STAGES:
+        raise ValueError(f"unknown failed_stage: {value}")
     return normalized
 
 
@@ -373,7 +399,7 @@ class EvidenceBundle:
         if self.resolved_result_category and self.resolved_result_category not in _RESULT_CATEGORIES:
             raise ValueError(f"unknown resolved_result_category: {self.resolved_result_category}")
         self.run_outcome_status = coerce_run_outcome_status(self.run_outcome_status)
-        self.execution_policy = str(self.execution_policy or "").strip()
+        self.execution_policy = coerce_execution_policy(self.execution_policy).value
         self.disclosure_policy = str(self.disclosure_policy or "").strip()
         self.simulation_mode = None if self.simulation_mode in (None, "") else str(self.simulation_mode).strip().lower()
         self.input_refs = {str(key): str(value) for key, value in dict(self.input_refs).items() if str(key).strip()}
@@ -388,7 +414,7 @@ class EvidenceBundle:
                 "formal_path_status must match run_outcome_status: "
                 f"{self.formal_path_status.value} != {self.run_outcome_status.value}"
             )
-        self.failed_stage = None if self.failed_stage in (None, "") else str(self.failed_stage).strip().lower()
+        self.failed_stage = _normalize_failed_stage(self.failed_stage, allow_none=True)
         self.blocking_predicates = [str(item) for item in self.blocking_predicates if str(item).strip()]
         self.degradation_reasons = [str(item) for item in self.degradation_reasons if str(item).strip()]
         self.next_recoverable_actions = [str(item) for item in self.next_recoverable_actions if str(item).strip()]
@@ -478,6 +504,149 @@ class EvidenceBundle:
 
 
 @dataclass(frozen=True)
+class EvidenceInvarianceReport:
+    baseline_run_ref: str
+    optimized_run_ref: str
+    semantic_refs: dict[str, str] = field(default_factory=dict)
+    artifact_refs: dict[str, str] = field(default_factory=dict)
+    invariant_fields: list[str] = field(default_factory=list)
+    exact_match_fields: list[str] = field(default_factory=list)
+    tolerated_numeric_diffs: dict[str, float] = field(default_factory=dict)
+    drift_fields: list[str] = field(default_factory=list)
+    verdict: str = "invariant"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "baseline_run_ref", str(self.baseline_run_ref or "").strip())
+        object.__setattr__(self, "optimized_run_ref", str(self.optimized_run_ref or "").strip())
+        object.__setattr__(
+            self,
+            "semantic_refs",
+            {str(key): str(value) for key, value in dict(self.semantic_refs or {}).items() if str(key).strip()},
+        )
+        object.__setattr__(
+            self,
+            "artifact_refs",
+            {str(key): str(value) for key, value in dict(self.artifact_refs or {}).items() if str(key).strip()},
+        )
+        object.__setattr__(
+            self,
+            "invariant_fields",
+            [str(item) for item in list(self.invariant_fields or []) if str(item).strip()],
+        )
+        object.__setattr__(
+            self,
+            "exact_match_fields",
+            [str(item) for item in list(self.exact_match_fields or []) if str(item).strip()],
+        )
+        object.__setattr__(
+            self,
+            "tolerated_numeric_diffs",
+            {str(key): float(value) for key, value in dict(self.tolerated_numeric_diffs or {}).items() if str(key).strip()},
+        )
+        object.__setattr__(
+            self,
+            "drift_fields",
+            [str(item) for item in list(self.drift_fields or []) if str(item).strip()],
+        )
+        verdict = str(self.verdict or "").strip().lower() or "invariant"
+        if verdict not in {"invariant", "drifted"}:
+            raise ValueError(f"unknown evidence invariance verdict: {self.verdict}")
+        object.__setattr__(self, "verdict", verdict)
+
+    @classmethod
+    def from_any(
+        cls,
+        value: "EvidenceInvarianceReport | dict[str, Any] | None",
+    ) -> "EvidenceInvarianceReport | None":
+        if value is None:
+            return None
+        if isinstance(value, cls):
+            return value
+        payload = dict(value)
+        return cls(
+            baseline_run_ref=payload.get("baseline_run_ref") or "",
+            optimized_run_ref=payload.get("optimized_run_ref") or "",
+            semantic_refs=dict(payload.get("semantic_refs") or {}),
+            artifact_refs=dict(payload.get("artifact_refs") or {}),
+            invariant_fields=list(payload.get("invariant_fields") or []),
+            exact_match_fields=list(payload.get("exact_match_fields") or []),
+            tolerated_numeric_diffs=dict(payload.get("tolerated_numeric_diffs") or {}),
+            drift_fields=list(payload.get("drift_fields") or []),
+            verdict=payload.get("verdict") or "invariant",
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+_EVIDENCE_INVARIANCE_FIELDS = (
+    "requested_result_category",
+    "resolved_result_category",
+    "run_outcome_status",
+    "execution_policy",
+    "disclosure_policy",
+    "simulation_mode",
+    "mapping_signature",
+    "history_revision",
+    "distribution_revision",
+    "solver_revision",
+    "code_revision",
+)
+
+
+def _evidence_bundle_semantic_refs(bundle: EvidenceBundle) -> dict[str, str]:
+    refs = {field: str(getattr(bundle, field) or "") for field in _EVIDENCE_INVARIANCE_FIELDS}
+    refs["disclosure_level"] = (
+        "diagnostic_only"
+        if bundle.disclosure_decision is None
+        else str(bundle.disclosure_decision.disclosure_level or "")
+    )
+    refs["input_refs"] = _json_dumps(bundle.input_refs)
+    refs["evidence_refs"] = _json_dumps(bundle.evidence_refs)
+    if bundle.coverage_summary is not None:
+        refs["coverage_summary"] = _json_dumps(bundle.coverage_summary.to_dict())
+    return {key: value for key, value in refs.items() if value != ""}
+
+
+def build_evidence_invariance_report(
+    *,
+    baseline: EvidenceBundle | dict[str, Any],
+    optimized: EvidenceBundle | dict[str, Any],
+    baseline_run_ref: str,
+    optimized_run_ref: str,
+    artifact_refs: dict[str, Any] | None = None,
+    tolerated_numeric_diffs: dict[str, float] | None = None,
+) -> EvidenceInvarianceReport:
+    baseline_bundle = EvidenceBundle.from_any(baseline)
+    optimized_bundle = EvidenceBundle.from_any(optimized)
+    if baseline_bundle is None or optimized_bundle is None:
+        raise ValueError("baseline and optimized evidence bundles are required")
+
+    baseline_refs = _evidence_bundle_semantic_refs(baseline_bundle)
+    optimized_refs = _evidence_bundle_semantic_refs(optimized_bundle)
+    fields = sorted(set(baseline_refs) | set(optimized_refs))
+    exact_match_fields: list[str] = []
+    drift_fields: list[str] = []
+    for field in fields:
+        if baseline_refs.get(field, "") == optimized_refs.get(field, ""):
+            exact_match_fields.append(field)
+        else:
+            drift_fields.append(field)
+    verdict = "invariant" if not drift_fields else "drifted"
+    return EvidenceInvarianceReport(
+        baseline_run_ref=baseline_run_ref,
+        optimized_run_ref=optimized_run_ref,
+        semantic_refs=optimized_refs,
+        artifact_refs={str(key): str(value) for key, value in dict(artifact_refs or {}).items() if str(key).strip()},
+        invariant_fields=exact_match_fields,
+        exact_match_fields=exact_match_fields,
+        tolerated_numeric_diffs={str(key): float(value) for key, value in dict(tolerated_numeric_diffs or {}).items()},
+        drift_fields=drift_fields,
+        verdict=verdict,
+    )
+
+
+@dataclass(frozen=True)
 class FailureArtifact:
     request_identity: dict[str, Any] = field(default_factory=dict)
     requested_result_category: str = ""
@@ -503,10 +672,7 @@ class FailureArtifact:
         }:
             raise ValueError(f"unknown disclosure_policy: {self.disclosure_policy}")
         object.__setattr__(self, "disclosure_policy", disclosure_policy)
-        failed_stage = str(self.failed_stage or "").strip().lower()
-        if not failed_stage:
-            raise ValueError("failed_stage is required")
-        object.__setattr__(self, "failed_stage", failed_stage)
+        object.__setattr__(self, "failed_stage", _normalize_failed_stage(self.failed_stage, allow_none=False))
         object.__setattr__(
             self,
             "request_identity",

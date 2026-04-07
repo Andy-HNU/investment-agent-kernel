@@ -233,6 +233,14 @@ def _stock_candidate_signature(candidates: list[ProductCandidate]) -> tuple[int,
     return len(stock_entries), digest
 
 
+def _runtime_catalog_signature(candidates: list[ProductCandidate]) -> str:
+    entries = sorted(
+        f"{candidate.product_id}:{str(candidate.provider_symbol or '').strip().upper()}:{candidate.asset_bucket}:{candidate.wrapper_type}"
+        for candidate in candidates
+    )
+    return hashlib.sha1(",".join(entries).encode("utf-8")).hexdigest()
+
+
 def fetch_history_rows(
     symbol: str,
     *,
@@ -407,7 +415,12 @@ def load_runtime_catalog(*, as_of: str, cache_dir: Path | None = None, token: st
     cached = _read_json_cache(cache_path)
     if isinstance(cached, dict) and isinstance(cached.get("runtime_candidates"), list):
         candidates = [ProductCandidate(**dict(item)) for item in list(cached["runtime_candidates"])]
-        return candidates, dict(cached)
+        result = dict(cached)
+        result.setdefault("provider_signature", "tinyshare:stock_basic+fund_basic")
+        result.setdefault("universe_signature", _runtime_catalog_signature(candidates))
+        result.setdefault("mapping_signature", "tinyshare_runtime_catalog_v1")
+        result.setdefault("history_revision", as_of_date)
+        return candidates, result
 
     pro = _pro_api(token)
     stock_df = pro.stock_basic(exchange="", list_status="L", fields="ts_code,name,industry,market,list_date")
@@ -442,11 +455,16 @@ def load_runtime_catalog(*, as_of: str, cache_dir: Path | None = None, token: st
             "audit_window": None,
         }
 
+    universe_signature = _runtime_catalog_signature(candidates)
     result = {
         "snapshot_id": f"tinyshare_runtime_catalog_{as_of_date}",
         "source_status": "observed",
         "source_name": "tinyshare_runtime_catalog",
         "source_ref": source_ref,
+        "provider_signature": "tinyshare:stock_basic+fund_basic",
+        "universe_signature": universe_signature,
+        "mapping_signature": "tinyshare_runtime_catalog_v1",
+        "history_revision": as_of_date,
         "as_of": as_of_date,
         "data_status": DataStatus.OBSERVED.value,
         "item_count": len(items),
@@ -487,13 +505,27 @@ def build_runtime_valuation_result(
         and int(cached.get("stock_candidate_count") or 0) == stock_candidate_count
         and str(cached.get("stock_candidate_signature") or "") == stock_candidate_signature
     ):
-        return dict(cached)
+        result = dict(cached)
+        result.setdefault("provider_signature", "tinyshare:daily_basic")
+        result.setdefault(
+            "valuation_signature",
+            f"tinyshare_runtime_valuation:{stock_candidate_signature}:{result.get('history_revision') or 'cached'}",
+        )
+        result.setdefault("universe_signature", stock_candidate_signature)
+        result.setdefault("mapping_signature", "tinyshare_runtime_valuation_v1")
+        result.setdefault("history_revision", result.get("as_of") or as_of_date)
+        return result
 
     if not stock_candidates:
         result = {
             "source_status": "missing",
             "source_name": "tinyshare_runtime_valuation",
             "source_ref": "tinyshare://daily_basic?trade_date=not_applicable",
+            "provider_signature": "tinyshare:daily_basic",
+            "valuation_signature": f"tinyshare_runtime_valuation:{stock_candidate_signature}:not_applicable",
+            "universe_signature": stock_candidate_signature,
+            "mapping_signature": "tinyshare_runtime_valuation_v1",
+            "history_revision": "not_applicable",
             "as_of": as_of_date,
             "products": {},
             "bucket_proxies": {},
@@ -649,6 +681,11 @@ def build_runtime_valuation_result(
         "source_status": "observed" if products else "missing",
         "source_name": "tinyshare_runtime_valuation",
         "source_ref": f"tinyshare://daily_basic?trade_date={trade_date}",
+        "provider_signature": "tinyshare:daily_basic",
+        "valuation_signature": f"tinyshare_runtime_valuation:{stock_candidate_signature}:{trade_date}",
+        "universe_signature": stock_candidate_signature,
+        "mapping_signature": "tinyshare_runtime_valuation_v1",
+        "history_revision": _normalize_iso_date(trade_date),
         "as_of": as_of_date,
         "products": products,
         "bucket_proxies": bucket_proxies,

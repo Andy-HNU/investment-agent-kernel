@@ -264,6 +264,20 @@ def _heavy_onboarding_payload(account_profile_id: str) -> dict[str, object]:
         "refresh_summary": {"workflow_type": "onboarding"},
         "input_source_summary": {"externally_fetched": 1},
         "formal_path_visibility": {"status": "ok", "execution_eligible": True},
+        "evidence_invariance_report": {
+            "baseline_run_ref": f"frontdesk_{account_profile_id}_baseline",
+            "optimized_run_ref": f"frontdesk_{account_profile_id}_onboarding_20260406T120000Z",
+            "semantic_refs": {
+                "resolved_result_category": "formal_estimated_result",
+                "run_outcome_status": "completed",
+            },
+            "artifact_refs": {"storage_ref": f"sqlite://{account_profile_id}"},
+            "invariant_fields": ["resolved_result_category", "run_outcome_status"],
+            "exact_match_fields": ["resolved_result_category", "run_outcome_status"],
+            "tolerated_numeric_diffs": {},
+            "drift_fields": [],
+            "verdict": "invariant",
+        },
         "audit_records": [],
         "persistence_plan": {
             "artifact_records": {
@@ -331,6 +345,7 @@ def test_frontdesk_persistence_compacts_heavy_onboarding_payloads(tmp_path):
     assert "persistence_plan" not in latest_run_payload
     assert len(json.dumps(latest_run_payload, ensure_ascii=False)) < 200_000
     assert len(json.dumps(latest_baseline_payload, ensure_ascii=False)) < 200_000
+    assert latest_run_payload["evidence_invariance_report"]["verdict"] == "invariant"
     assert snapshot["pending_execution_plan"]["runtime_candidate_count"] == 64
 
 

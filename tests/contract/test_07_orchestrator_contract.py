@@ -1332,7 +1332,7 @@ def test_run_orchestrator_onboarding_auto_enriches_runtime_product_inputs_withou
     monkeypatch.setattr(
         orchestrator_engine,
         "enrich_market_raw_with_runtime_product_inputs",
-        lambda market_raw, *, as_of, formal_path_required=False: enriched_market_raw,
+        lambda market_raw, *, as_of, formal_path_required=False, execution_policy=None: enriched_market_raw,
     )
 
     monkeypatch.setattr(

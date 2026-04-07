@@ -14,6 +14,7 @@ from goal_solver.types import (
     CashFlowPlan,
     FrontierAnalysis,
     FrontierScenario,
+    ExpectedReturnDecomposition,
     GoalCard,
     GoalSolverInput,
     GoalSolverOutput,
@@ -28,7 +29,11 @@ from goal_solver.types import (
     RiskSummary,
     StrategicAllocation,
     StructureBudget,
+    FormalEstimatedResultSpec,
+    SuccessEventSpec,
     SuccessProbabilityResult,
+    _ESTIMATION_BASES,
+    normalize_product_probability_method,
     infer_ranking_mode,
 )
 
@@ -119,6 +124,10 @@ def _goal_solver_input_from_any(value: GoalSolverInput | dict[str, Any]) -> Goal
                 )
                 for item in payload.get("product_history_profiles", [])
             ],
+            formal_path_preflight=dict(payload.get("formal_path_preflight") or {}),
+            failure_artifact=(
+                None if payload.get("failure_artifact") is None else dict(payload.get("failure_artifact") or {})
+            ),
             product_simulation_input=(
                 None
                 if not isinstance(payload.get("product_simulation_input"), dict)
@@ -265,6 +274,89 @@ def _effective_success_probability(result: SuccessProbabilityResult) -> float:
     if adjusted is not None:
         return float(adjusted)
     return float(result.success_probability)
+
+
+def _build_success_event_spec(inp: GoalSolverInput) -> SuccessEventSpec:
+    target_type = "target_annual_return" if inp.goal.target_annual_return is not None else "goal_amount"
+    target_value = (
+        float(inp.goal.target_annual_return)
+        if inp.goal.target_annual_return is not None
+        else float(inp.goal.goal_amount)
+    )
+    contribution_policy = (
+        "continue_monthly_contribution"
+        if float(inp.cashflow_plan.monthly_contribution or 0.0) > 0.0 or inp.cashflow_plan.cashflow_events
+        else "no_regular_contribution"
+    )
+    rebalancing_policy = "not_explicitly_modeled"
+    return SuccessEventSpec(
+        horizon_months=int(inp.goal.horizon_months),
+        target_type=target_type,
+        target_value=target_value,
+        drawdown_constraint=float(inp.constraints.max_drawdown_tolerance),
+        benchmark_ref=None,
+        contribution_policy=contribution_policy,
+        rebalancing_policy=rebalancing_policy,
+        return_basis=str(inp.goal.goal_amount_basis),
+        fee_basis=str(inp.goal.fee_assumption),
+    )
+
+
+def _build_expected_return_decomposition(
+    *,
+    result: SuccessProbabilityResult,
+    market_state: MarketAssumptions,
+) -> ExpectedReturnDecomposition:
+    component_contributions = {
+        bucket: float(weight) * _bucket_expected_return(bucket, market_state)
+        for bucket, weight in result.weights.items()
+    }
+    expected_return = float(result.expected_annual_return or 0.0)
+    return ExpectedReturnDecomposition(
+        decomposition_basis="weighted_bucket_expected_return",
+        additivity_convention="simple_sum",
+        residual=expected_return - sum(component_contributions.values()),
+        component_contributions=component_contributions,
+    )
+
+
+def _formal_estimated_result_spec_from_result(
+    *,
+    result: SuccessProbabilityResult,
+    product_context: CandidateProductContext | None,
+) -> FormalEstimatedResultSpec | None:
+    normalized_method = normalize_product_probability_method(result.product_probability_method)
+    if normalized_method == "product_independent_path":
+        return None
+
+    preflight = dict((product_context.formal_path_preflight or {}) if product_context is not None else {})
+    estimation_basis = str(preflight.get("estimation_basis") or "").strip().lower()
+    if estimation_basis not in _ESTIMATION_BASES:
+        estimation_basis = {
+            "product_estimated_path": "proxy_path",
+            "product_proxy_path": "proxy_path",
+            "hybrid_independent_estimate": "hybrid_independent_estimate",
+        }.get(normalized_method, "bucket_estimate")
+
+    coverage_summary = dict(result.simulation_coverage_summary or {})
+    minimum_estimated_weight_adjusted_coverage = preflight.get(
+        "minimum_estimated_weight_adjusted_coverage",
+        coverage_summary.get(
+            "weight_adjusted_coverage",
+            coverage_summary.get("independent_weight_adjusted_coverage", 0.0),
+        ),
+    )
+    minimum_explanation_ready_coverage = preflight.get(
+        "minimum_explanation_ready_coverage",
+        coverage_summary.get("explanation_ready_coverage", 0.0),
+    )
+    return FormalEstimatedResultSpec(
+        estimation_basis=estimation_basis,
+        minimum_estimated_weight_adjusted_coverage=float(minimum_estimated_weight_adjusted_coverage or 0.0),
+        minimum_explanation_ready_coverage=float(minimum_explanation_ready_coverage or 0.0),
+        point_estimate_allowed=bool(preflight.get("point_estimate_allowed", False)),
+        required_range_disclosure=bool(preflight.get("required_range_disclosure", True)),
+    )
 
 
 def _solve_implied_required_annual_return(
@@ -801,6 +893,9 @@ def _build_frontier_scenario(
         bucket_expected_return_adjustments=dict(result.bucket_expected_return_adjustments),
         bucket_volatility_multipliers=dict(result.bucket_volatility_multipliers),
         simulation_coverage_summary=dict(result.simulation_coverage_summary),
+        success_event_spec=result.success_event_spec,
+        formal_estimated_result_spec=result.formal_estimated_result_spec,
+        expected_return_decomposition=result.expected_return_decomposition,
         expected_terminal_value=result.expected_terminal_value,
         max_drawdown_90pct=result.risk_summary.max_drawdown_90pct,
         expected_annual_return=expected_annual_return,
@@ -1259,6 +1354,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
     )
     notes: list[str] = []
     ranking_mode = _resolve_ranking_mode(inp, notes)
+    success_event_spec = _build_success_event_spec(inp)
     all_results: list[SuccessProbabilityResult] = []
 
     for allocation in inp.candidate_allocations:
@@ -1283,6 +1379,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
         bucket_expected_return_adjustments: dict[str, float] = {}
         bucket_volatility_multipliers: dict[str, float] = {}
         simulation_coverage_summary: dict[str, Any] = {}
+        decomposition_market_state = params.market_assumptions
         product_context = inp.candidate_product_contexts.get(allocation.name)
         if product_context is not None:
             selected_product_ids = list(product_context.selected_product_ids)
@@ -1306,6 +1403,7 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             effective_extra = adjusted_extra
             effective_risk = adjusted_risk
             product_proxy_adjusted_success_probability = adjusted_probability
+            decomposition_market_state = adjusted_market_assumptions
             simulation_input = product_context.product_simulation_input
             if (
                 simulation_input is not None
@@ -1358,33 +1456,23 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             is_feasible=True,
             infeasibility_reasons=[],
         )
+        interim_result.success_event_spec = success_event_spec
+        interim_result.formal_estimated_result_spec = _formal_estimated_result_spec_from_result(
+            result=interim_result,
+            product_context=product_context,
+        )
+        interim_result.expected_return_decomposition = _build_expected_return_decomposition(
+            result=interim_result,
+            market_state=decomposition_market_state,
+        )
         is_feasible, infeasibility_reasons = _check_allocation_feasibility(
             allocation,
             interim_result,
             inp.constraints,
         )
-        all_results.append(
-            SuccessProbabilityResult(
-                allocation_name=allocation.name,
-                weights=allocation.weights,
-                success_probability=effective_probability,
-                bucket_success_probability=bucket_probability,
-                product_proxy_adjusted_success_probability=product_proxy_adjusted_success_probability,
-                product_independent_success_probability=product_independent_success_probability,
-                product_probability_method=product_probability_method,
-                selected_product_ids=selected_product_ids,
-                selected_proxy_refs=selected_proxy_refs,
-                bucket_expected_return_adjustments=bucket_expected_return_adjustments,
-                bucket_volatility_multipliers=bucket_volatility_multipliers,
-                simulation_coverage_summary=simulation_coverage_summary,
-                implied_required_annual_return=implied_required_annual_return,
-                expected_annual_return=expected_annual_return,
-                expected_terminal_value=effective_extra["expected_terminal_value"],
-                risk_summary=effective_risk,
-                is_feasible=is_feasible,
-                infeasibility_reasons=infeasibility_reasons,
-            )
-        )
+        interim_result.is_feasible = is_feasible
+        interim_result.infeasibility_reasons = infeasibility_reasons
+        all_results.append(interim_result)
 
     if not all_results:
         raise ValueError("goal solver requires candidate allocations")

@@ -28,6 +28,19 @@ def _extract_number(pattern: str, text: str) -> Optional[float]:
         return None
 
 
+def _default_drawdown_tolerance(risk_preference: str) -> float:
+    normalized = str(risk_preference or "").strip().lower()
+    return {
+        "保守": 0.10,
+        "中等": 0.20,
+        "激进": 0.30,
+        "low": 0.10,
+        "moderate": 0.20,
+        "medium": 0.20,
+        "high": 0.30,
+    }.get(normalized, 0.10)
+
+
 def route(text: str) -> Intent:
     t = text.strip().lower()
     if re.search(r"\bsync\s+portfolio\b|\bupdate\s+portfolio\b|\bsync holdings\b", t):
@@ -58,11 +71,17 @@ def parse_onboarding(text: str) -> dict[str, Any]:
     monthly_contribution = _extract_number(r"monthly\s+([0-9,\.]+)", text) or 10000.0
     target_annual_return = _extract_number(r"(?:annual|年化)\s*([0-9,\.]+)%?", text)
     goal_amount = _extract_number(r"goal\s+([0-9,\.]+)", text) or (0.0 if target_annual_return is not None else 1000000.0)
-    goal_horizon_months = int(_extract_number(r"(in|for)\s+([0-9]+)\s+months", text) or _extract_number(r"months?\s+([0-9]+)", text) or 60)
+    goal_horizon_months = int(
+        _extract_first(r"(?:in|for)\s+([0-9]+)\s+months", text)
+        or _extract_first(r"months?\s+([0-9]+)", text)
+        or 60
+    )
     risk_preference = _extract_first(r"risk\s+(low|moderate|medium|high|低|中等|高)", text) or "中等"
     risk_map = {"low": "保守", "moderate": "中等", "medium": "中等", "high": "激进", "低": "保守", "中等": "中等", "高": "激进"}
     risk_preference = risk_map.get(risk_preference.lower(), risk_preference)
-    max_drawdown_tolerance = _extract_number(r"dd\s*=?\s*([0-9,\.]+)", text) or 0.1
+    max_drawdown_tolerance = _extract_number(r"dd\s*=?\s*([0-9,\.]+)", text)
+    if max_drawdown_tolerance is None:
+        max_drawdown_tolerance = _default_drawdown_tolerance(risk_preference)
     current_holdings = _extract_first(r"holdings?\s+([a-zA-Z0-9_\-]+)", text, default="cash")
     restrictions: list[str] = []
     return {

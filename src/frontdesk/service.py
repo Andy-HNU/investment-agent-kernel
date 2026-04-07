@@ -13,6 +13,7 @@ from shared.audit import (
     AuditRecord,
     AuditWindow,
     DataStatus,
+    ExecutionPolicy,
     FormalPathStatus,
     FormalPathVisibility,
     coerce_data_status,
@@ -1416,6 +1417,7 @@ def _frontdesk_summary(
         "evidence_bundle": dict(
             result_payload.get("evidence_bundle") or decision_card.get("evidence_bundle") or {}
         ),
+        "evidence_invariance_report": dict(result_payload.get("evidence_invariance_report") or {}),
         "decision_card": decision_card,
         "key_metrics": decision_card.get("key_metrics", {}),
         "input_provenance": decision_card.get("input_provenance", {}),
@@ -1590,6 +1592,8 @@ def run_frontdesk_onboarding(
             account_profile_id=onboarding.profile.account_profile_id,
         )
     )
+    raw_inputs.setdefault("formal_path_required", True)
+    raw_inputs.setdefault("execution_policy", ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
     run_id = _make_run_id("frontdesk", onboarding.profile.account_profile_id, "onboarding")
     result = run_orchestrator(
         trigger={"workflow_type": "onboarding", "run_id": run_id},
@@ -1791,6 +1795,8 @@ def run_frontdesk_followup(
         account_profile_id=account_profile_id,
     )
     active_profile = _normalize_profile_payload(active_profile)
+    raw_inputs.setdefault("formal_path_required", True)
+    raw_inputs.setdefault("execution_policy", ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
     run_id = _make_run_id("frontdesk", account_profile_id, workflow_type)
     result = run_orchestrator(
         trigger={

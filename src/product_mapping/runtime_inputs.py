@@ -7,7 +7,7 @@ from typing import Any
 
 from product_mapping.catalog import load_builtin_catalog
 from product_mapping.types import ProductCandidate, ProductUniverseItem, ProductUniverseSnapshot
-from shared.audit import AuditWindow, DataStatus
+from shared.audit import AuditWindow, DataStatus, DisclosurePolicy, ExecutionPolicy, FailureArtifact, coerce_execution_policy
 from shared.datasets.cache import DatasetCache
 from shared.datasets.types import DatasetSpec, VersionPin
 from shared.providers.tinyshare import (
@@ -130,6 +130,16 @@ def _probe_window(rows: list[dict[str, Any]]) -> AuditWindow | None:
         observed_days=len(rows),
         inferred_days=0,
     )
+
+
+def _formal_execution_policy(
+    *,
+    formal_path_required: bool,
+    execution_policy: ExecutionPolicy | str | None,
+) -> ExecutionPolicy | None:
+    if not formal_path_required:
+        return None
+    return coerce_execution_policy(execution_policy or ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
 
 
 def _supports_live_probe(candidate: ProductCandidate, provider: str) -> bool:
@@ -259,20 +269,28 @@ def _probe_product_observability(
 def _formal_path_failure_artifact(
     *,
     source_kind: str,
+    execution_policy: ExecutionPolicy | str | None,
     failed_stage: str,
     reason: str,
     blocking_predicates: list[str],
     next_recoverable_actions: list[str],
+    missing_evidence_refs: dict[str, str] | None = None,
+    available_evidence_refs: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    return {
-        "source_kind": source_kind,
-        "failed_stage": failed_stage,
-        "reason": reason,
-        "blocking_predicates": [str(item) for item in blocking_predicates if str(item).strip()],
-        "next_recoverable_actions": [str(item) for item in next_recoverable_actions if str(item).strip()],
-        "trustworthy_partial_diagnostics": False,
-        "formal_path_status": "blocked",
-    }
+    normalized_policy = coerce_execution_policy(execution_policy or ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
+    predicates = [str(item) for item in blocking_predicates if str(item).strip()]
+    return FailureArtifact(
+        request_identity={"component": source_kind},
+        requested_result_category="formal_independent_result",
+        execution_policy=normalized_policy.value,
+        disclosure_policy=DisclosurePolicy.DIAGNOSTIC_ONLY.value,
+        failed_stage=failed_stage,
+        blocking_predicates=predicates or [reason],
+        available_evidence_refs=dict(available_evidence_refs or {}),
+        missing_evidence_refs=dict(missing_evidence_refs or {}),
+        next_recoverable_actions=[str(item) for item in next_recoverable_actions if str(item).strip()],
+        trustworthy_partial_diagnostics=False,
+    ).to_dict()
 
 
 def build_runtime_product_universe_context(
@@ -281,8 +299,13 @@ def build_runtime_product_universe_context(
     as_of: str,
     cache_dir: Path | None = None,
     formal_path_required: bool = False,
+    execution_policy: ExecutionPolicy | str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     market = dict(market_raw or {})
+    formal_policy = _formal_execution_policy(
+        formal_path_required=formal_path_required,
+        execution_policy=execution_policy,
+    )
     existing_result = (
         market.get("product_universe_result")
         or market.get("runtime_product_universe_result")
@@ -294,8 +317,10 @@ def build_runtime_product_universe_context(
             or market.get("runtime_product_universe_inputs")
             or {}
         )
-        if formal_path_required:
+        if formal_policy is not None:
             inputs["formal_path_required"] = True
+            inputs["require_observed_source"] = True
+            inputs["execution_policy"] = formal_policy.value
         result = dict(existing_result or {})
         return inputs, result
 
@@ -309,22 +334,26 @@ def build_runtime_product_universe_context(
             "requested": True,
             "require_observed_source": True,
             "source_kind": "tinyshare_runtime_catalog",
-            "formal_path_required": formal_path_required,
+            "formal_path_required": formal_policy is not None,
+            "execution_policy": None if formal_policy is None else formal_policy.value,
         }, result
 
-    if formal_path_required:
+    if formal_policy is not None:
         return {
             "requested": True,
             "require_observed_source": True,
             "formal_path_required": True,
+            "execution_policy": formal_policy.value,
             "formal_path_status": "blocked",
             "source_kind": "runtime_product_universe_probe",
             "failure_artifact": _formal_path_failure_artifact(
                 source_kind="runtime_product_universe_probe",
+                execution_policy=formal_policy,
                 failed_stage="input_eligibility",
                 reason="observed runtime product universe unavailable; builtin catalog fallback disabled in strict mode",
                 blocking_predicates=["observed_runtime_source_unavailable"],
                 next_recoverable_actions=["provide_observed_runtime_product_universe"],
+                missing_evidence_refs={"product_universe": "observed_runtime_product_universe"},
             ),
         }, None
 
@@ -383,7 +412,8 @@ def build_runtime_product_universe_context(
         "require_observed_source": True,
         "source_kind": "runtime_product_universe_probe",
         "preferred_provider": preferred_provider,
-        "formal_path_required": formal_path_required,
+        "formal_path_required": formal_policy is not None,
+        "execution_policy": None if formal_policy is None else formal_policy.value,
     }
     snapshot = ProductUniverseSnapshot(
         snapshot_id=f"runtime_product_universe_{str(historical_dataset.get('as_of') or _as_of_date(as_of))}",
@@ -438,13 +468,20 @@ def build_runtime_product_valuation_context(
     as_of: str,
     cache_dir: Path | None = None,
     formal_path_required: bool = False,
+    execution_policy: ExecutionPolicy | str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     market = dict(market_raw or {})
+    formal_policy = _formal_execution_policy(
+        formal_path_required=formal_path_required,
+        execution_policy=execution_policy,
+    )
     existing_result = dict(market.get("product_valuation_result") or market.get("valuation_result") or {})
     if existing_result:
         inputs = dict(market.get("product_valuation_inputs") or market.get("valuation_inputs") or {})
-        if formal_path_required:
+        if formal_policy is not None:
             inputs["formal_path_required"] = True
+            inputs["require_observed_source"] = True
+            inputs["execution_policy"] = formal_policy.value
         return inputs, existing_result
 
     observed_inputs = _observed_valuation_inputs(market)
@@ -476,7 +513,8 @@ def build_runtime_product_valuation_context(
             "requested": True,
             "require_observed_source": True,
             "source_kind": "tinyshare_runtime_valuation",
-            "formal_path_required": formal_path_required,
+            "formal_path_required": formal_policy is not None,
+            "execution_policy": None if formal_policy is None else formal_policy.value,
         }, result
 
     universe_result = dict(
@@ -493,20 +531,23 @@ def build_runtime_product_valuation_context(
             except Exception:
                 continue
 
-    if formal_path_required:
+    if formal_policy is not None:
         if not runtime_candidates:
             return {
                 "requested": True,
                 "require_observed_source": True,
                 "formal_path_required": True,
+                "execution_policy": formal_policy.value,
                 "formal_path_status": "blocked",
                 "source_kind": "runtime_bucket_valuation_mapping",
                 "failure_artifact": _formal_path_failure_artifact(
                     source_kind="runtime_bucket_valuation_mapping",
+                    execution_policy=formal_policy,
                     failed_stage="input_eligibility",
                     reason="observed runtime product universe unavailable for valuation mapping in strict mode",
                     blocking_predicates=["observed_runtime_universe_unavailable"],
                     next_recoverable_actions=["provide_observed_runtime_product_universe"],
+                    missing_evidence_refs={"product_universe": "observed_runtime_product_universe"},
                 ),
             }, None
         if not observed_inputs:
@@ -514,14 +555,18 @@ def build_runtime_product_valuation_context(
                 "requested": True,
                 "require_observed_source": True,
                 "formal_path_required": True,
+                "execution_policy": formal_policy.value,
                 "formal_path_status": "blocked",
                 "source_kind": "runtime_bucket_valuation_mapping",
                 "failure_artifact": _formal_path_failure_artifact(
                     source_kind="runtime_bucket_valuation_mapping",
+                    execution_policy=formal_policy,
                     failed_stage="input_eligibility",
                     reason="observed runtime valuation unavailable in strict mode",
                     blocking_predicates=["observed_runtime_valuation_unavailable"],
                     next_recoverable_actions=["provide_observed_runtime_product_valuation"],
+                    available_evidence_refs={"product_universe": "observed_runtime_product_universe"},
+                    missing_evidence_refs={"valuation": "observed_runtime_product_valuation"},
                 ),
             }, None
     if not observed_inputs:
@@ -567,7 +612,8 @@ def build_runtime_product_valuation_context(
         "requested": True,
         "require_observed_source": True,
         "source_kind": "runtime_bucket_valuation_mapping",
-        "formal_path_required": formal_path_required,
+        "formal_path_required": formal_policy is not None,
+        "execution_policy": None if formal_policy is None else formal_policy.value,
     }
     result = {
         "source_status": "observed",
@@ -585,6 +631,7 @@ def enrich_market_raw_with_runtime_product_inputs(
     as_of: str,
     cache_dir: Path | None = None,
     formal_path_required: bool = False,
+    execution_policy: ExecutionPolicy | str | None = None,
 ) -> dict[str, Any]:
     enriched = deepcopy(market_raw or {})
     universe_inputs, universe_result = build_runtime_product_universe_context(
@@ -592,6 +639,7 @@ def enrich_market_raw_with_runtime_product_inputs(
         as_of=as_of,
         cache_dir=cache_dir,
         formal_path_required=formal_path_required,
+        execution_policy=execution_policy,
     )
     if universe_inputs.get("requested") or universe_result:
         enriched.setdefault("product_universe_inputs", universe_inputs)
@@ -605,6 +653,7 @@ def enrich_market_raw_with_runtime_product_inputs(
         as_of=as_of,
         cache_dir=cache_dir,
         formal_path_required=formal_path_required,
+        execution_policy=execution_policy,
     )
     if valuation_inputs.get("requested") or valuation_result:
         enriched.setdefault("product_valuation_inputs", valuation_inputs)

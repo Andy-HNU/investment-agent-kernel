@@ -404,6 +404,17 @@ class RiskBudget:
 
 
 @dataclass
+class ExpectedReturnDecomposition:
+    decomposition_basis: str
+    additivity_convention: str
+    residual: float
+    component_contributions: dict[str, float] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class SuccessEventSpec:
     horizon_months: int
     target_type: str
@@ -463,6 +474,9 @@ class SuccessProbabilityResult:
     simulation_coverage_summary: dict[str, Any] = field(default_factory=dict)
     implied_required_annual_return: float | None = None
     expected_annual_return: float | None = None
+    success_event_spec: SuccessEventSpec | dict[str, Any] | None = None
+    formal_estimated_result_spec: FormalEstimatedResultSpec | dict[str, Any] | None = None
+    expected_return_decomposition: ExpectedReturnDecomposition | dict[str, Any] | None = None
     display_name: str = ""
     summary: str = ""
     complexity_label: str = ""
@@ -471,6 +485,12 @@ class SuccessProbabilityResult:
     def __post_init__(self) -> None:
         if isinstance(self.risk_summary, dict):
             self.risk_summary = RiskSummary(**self.risk_summary)
+        if isinstance(self.success_event_spec, dict):
+            self.success_event_spec = SuccessEventSpec(**self.success_event_spec)
+        if isinstance(self.formal_estimated_result_spec, dict):
+            self.formal_estimated_result_spec = FormalEstimatedResultSpec(**self.formal_estimated_result_spec)
+        if isinstance(self.expected_return_decomposition, dict):
+            self.expected_return_decomposition = ExpectedReturnDecomposition(**self.expected_return_decomposition)
         self.product_probability_method = _coerce_product_probability_method_label(self.product_probability_method)
         self.simulation_coverage_summary = _normalize_coverage_summary(self.simulation_coverage_summary)
 
@@ -499,6 +519,9 @@ class FrontierScenario:
     bucket_expected_return_adjustments: dict[str, float] = field(default_factory=dict)
     bucket_volatility_multipliers: dict[str, float] = field(default_factory=dict)
     simulation_coverage_summary: dict[str, Any] = field(default_factory=dict)
+    success_event_spec: SuccessEventSpec | dict[str, Any] | None = None
+    formal_estimated_result_spec: FormalEstimatedResultSpec | dict[str, Any] | None = None
+    expected_return_decomposition: ExpectedReturnDecomposition | dict[str, Any] | None = None
     expected_annual_return: float | None = None
     meets_success_threshold: bool = False
     drawdown_gap: float = 0.0
@@ -506,6 +529,12 @@ class FrontierScenario:
     rationale: str = ""
 
     def __post_init__(self) -> None:
+        if isinstance(self.success_event_spec, dict):
+            self.success_event_spec = SuccessEventSpec(**self.success_event_spec)
+        if isinstance(self.formal_estimated_result_spec, dict):
+            self.formal_estimated_result_spec = FormalEstimatedResultSpec(**self.formal_estimated_result_spec)
+        if isinstance(self.expected_return_decomposition, dict):
+            self.expected_return_decomposition = ExpectedReturnDecomposition(**self.expected_return_decomposition)
         self.product_probability_method = _coerce_product_probability_method_label(self.product_probability_method)
         self.simulation_coverage_summary = _normalize_coverage_summary(self.simulation_coverage_summary)
 

@@ -107,8 +107,12 @@ def test_build_runtime_product_universe_context_blocks_strict_formal_mode_withou
     assert result is None
     assert inputs["formal_path_required"] is True
     assert inputs["formal_path_status"] == "blocked"
+    assert inputs["failure_artifact"]["request_identity"]["component"] == "runtime_product_universe_probe"
+    assert inputs["failure_artifact"]["requested_result_category"] == "formal_independent_result"
+    assert inputs["failure_artifact"]["execution_policy"] == "formal_estimation_allowed"
     assert inputs["failure_artifact"]["failed_stage"] == "input_eligibility"
     assert inputs["failure_artifact"]["blocking_predicates"] == ["observed_runtime_source_unavailable"]
+    assert inputs["failure_artifact"]["missing_evidence_refs"]["product_universe"] == "observed_runtime_product_universe"
 
 
 @pytest.mark.contract
@@ -136,6 +140,7 @@ def test_build_candidate_product_context_marks_estimated_path_when_strict_produc
         runtime_candidates=runtime_pool,
         historical_dataset=_historical_dataset(),
         formal_path_required=True,
+        execution_policy="formal_estimation_allowed",
     )
 
     assert context["product_probability_method"] == "product_estimated_path"
@@ -143,6 +148,46 @@ def test_build_candidate_product_context_marks_estimated_path_when_strict_produc
     assert context["formal_path_preflight"]["degradation_reasons"] == [
         "product_independent_coverage_incomplete"
     ]
+    assert context["failure_artifact"]["failed_stage"] == "evidence_completeness"
+    assert context["failure_artifact"]["blocking_predicates"] == [
+        "product_independent_coverage_incomplete"
+    ]
+
+
+@pytest.mark.contract
+def test_build_candidate_product_context_blocks_strict_execution_when_product_coverage_is_incomplete(monkeypatch):
+    runtime_pool = _runtime_pool()
+
+    def _fake_fetch_timeseries(spec, *, pin, cache, allow_fallback, return_used_pin):  # type: ignore[no-untyped-def]
+        rows_by_symbol = {
+            "510300.SH": [
+                {"date": "2026-04-01", "close": 1.0},
+                {"date": "2026-04-02", "close": 1.05},
+                {"date": "2026-04-03", "close": 1.07},
+            ],
+        }
+        if spec.symbol not in rows_by_symbol:
+            raise RuntimeError("tinyshare_empty_dataset")
+        return rows_by_symbol[spec.symbol], pin
+
+    monkeypatch.setattr("product_mapping.engine.fetch_timeseries", _fake_fetch_timeseries)
+
+    context = build_candidate_product_context(
+        source_allocation_id="strict_only_context",
+        bucket_targets={"equity_cn": 0.60, "bond_cn": 0.40},
+        restrictions=[],
+        runtime_candidates=runtime_pool,
+        historical_dataset=_historical_dataset(),
+        formal_path_required=True,
+        execution_policy="formal_strict",
+    )
+
+    assert context["product_probability_method"] == "product_estimated_path"
+    assert context["formal_path_preflight"]["run_outcome_status"] == "blocked"
+    assert context["formal_path_preflight"]["blocking_predicates"] == [
+        "product_independent_coverage_incomplete"
+    ]
+    assert context["failure_artifact"]["execution_policy"] == "formal_strict"
     assert context["failure_artifact"]["failed_stage"] == "evidence_completeness"
     assert context["failure_artifact"]["blocking_predicates"] == [
         "product_independent_coverage_incomplete"
@@ -173,4 +218,6 @@ def test_run_orchestrator_blocks_strict_formal_path_without_observed_runtime_inp
     assert result.resolved_result_category is None
     assert any("candidate_product_context" in reason for reason in result.blocking_reasons)
     assert result.evidence_bundle["run_outcome_status"] == "blocked"
+    assert result.evidence_bundle["execution_policy"] == "formal_estimation_allowed"
+    assert result.evidence_bundle["failed_stage"] == "input_eligibility"
     assert result.disclosure_decision["disclosure_level"] == "unavailable"
