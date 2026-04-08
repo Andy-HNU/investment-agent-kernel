@@ -8,6 +8,14 @@
 
 **Tech Stack:** Python 3.10+, dataclasses, pytest contracts/smoke/integration, SQLite-backed frontdesk state, tinyshare/Tushare runtime data.
 
+**Status Correction (2026-04-08):**
+- `Gate 1` / `Gate 2` 已落地
+- `Package 3` / `Package 4` 不得再按“已闭环”汇报
+- 在主求解器仍为 `selected_mode=static_gaussian` 时：
+  - 仅允许本地 test/demo 或 exploratory 路径使用
+  - 不得作为 formal / Claw truth 通过验收
+  - formal / OpenClaw 路径必须降级，而不是继续给 `formal_independent_result`
+
 ---
 
 ## Task 1: Gate 1 Core Contracts
@@ -179,4 +187,5 @@ Success requires:
 - all new contract tests green
 - no legacy alias drift
 - no formal-path fallback remaining in strict execution path
+- no formal / Claw path treating `static_gaussian` as formal truth
 - no dirty worktree

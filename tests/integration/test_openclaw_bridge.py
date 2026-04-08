@@ -82,6 +82,23 @@ def test_bridge_preserves_formal_path_visibility(tmp_path, monkeypatch):
     }
 
 
+def test_bridge_does_not_treat_static_gaussian_as_formal_truth(tmp_path, monkeypatch):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    monkeypatch.setenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", str(_observed_snapshot_source(tmp_path)))
+    result = handle_task(
+        "please onboard user bridge_gaussian_guard_user with current assets 18000, monthly 2500, goal 120000 in 36 months, risk moderate",
+        db_path=str(db),
+    )
+
+    assert result["result"]["run_outcome_status"] == "degraded"
+    assert result["result"]["resolved_result_category"] == "degraded_formal_result"
+    assert result["result"]["disclosure_decision"]["disclosure_level"] == "range_only"
+    assert result["result"]["disclosure_decision"]["confidence_level"] == "low"
+    assert "static_gaussian" in " ".join(result["result"]["evidence_bundle"]["degradation_reasons"])
+
+
 def test_bridge_preserves_probability_explanation_payload(tmp_path, monkeypatch):
     from integration.openclaw.bridge import handle_task
 

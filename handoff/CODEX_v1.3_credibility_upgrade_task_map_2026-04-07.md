@@ -1,5 +1,10 @@
 # CODEX v1.3 Credibility Upgrade Task Map
 
+> Status correction 2026-04-08:
+> `Gate 1` / `Gate 2` 已完成，但 `Package 3` / `Package 4` 仍未闭环。
+> 当前主求解器若仍选择 `static_gaussian`，该路径只允许本地 test/demo 或 exploratory 使用；
+> 不得作为 formal / Claw truth 通过验收。
+
 日期：2026-04-07
 
 读者：开发、审阅、测试、产品 owner、Claw/OpenClaw 验收操作者
@@ -1071,6 +1076,8 @@ class CalibrationSummary:
 - probability output 有 calibration summary
 - 收益率分解带 residual 与 component confidence
 - point/range 展示遵守 disclosure policy
+- `selected_mode=static_gaussian` 不得作为 `FORMAL_STRICT` / `FORMAL_ESTIMATION_ALLOWED` / Claw 验收通过条件
+- `Package 3` 只有在至少一种非高斯 mode 真正进入主求解器 formal 路径时，才可判闭环
 
 ---
 
@@ -1268,6 +1275,8 @@ Claw 的任何结论都必须能追溯到：
 - 性能优化不改变证据语义
 - Claw 能区分 independent ceiling 与 proxy ceiling
 - Claw 能输出固定证据字段
+- Claw / OpenClaw 不得把 `static_gaussian` 路径验成 formal success
+- 若当前 formal 路径仍选到 `static_gaussian`，Claw 结果必须显式降级并指出该 mode 仅 test/demo 允许
 
 ---
 
@@ -1357,10 +1366,13 @@ Claw 的任何结论都必须能追溯到：
    - 推荐方案满足 formal independent 要求
    - success probability 有 calibration summary
    - 收益率/成功率披露遵守 policy
+   - 至少一种非高斯 mode 进入 formal / Claw 主路径
+   - `static_gaussian` 不再是 formal / Claw 默认可接受 mode
 
 4. `Package 4` 达标
    - 性能优化不改变证据语义
    - Claw 能复验路径与类别，不再只验文本
+   - Claw 能稳定拦截 `static_gaussian` formal path，不再把它当成 formal truth
 
 ---
 

@@ -5,7 +5,8 @@
 目的：
 
 - 固化 `v1.3` 的 Claw 验收方式，避免重复命中错误测试路径
-- 明确 `formal success / degraded formal / runtime auto path` 三类场景的最小 prompt 与预期结果
+- 明确当前版本下 `static_gaussian` 不能作为 formal / Claw truth
+- 明确 `snapshot-backed degraded / degraded formal / runtime auto path` 三类场景的最小 prompt 与预期结果
 - 强制区分：
   - 完整 formal snapshot
   - 不完整 external snapshot
@@ -28,17 +29,26 @@
    - `market_raw.historical_dataset.product_simulation_input`
    - `product_simulation_input.products[*].data_status=observed`
 
-4. 若测试目标是 `formal_independent_result`，不得接受：
-   - runtime tinyshare 作为主证据链
-   - `degraded_formal_result`
-   - `product_estimated_path`
+4. 当前版本下，若 `selected_mode=static_gaussian`，不得把它验成：
+   - `formal_independent_result`
+   - `point_and_range`
+   - `confidence_level=high`
 
-## 场景 A：Formal Success Path
+## 当前状态修正
+
+- `Gate 1` / `Gate 2` 已落地
+- `Package 3` / `Package 4` 仍未闭环
+- 当前主求解器若 `selected_mode=static_gaussian`：
+  - 仅允许本地 test/demo 或 exploratory 使用
+  - 不得作为 Claw formal success 通过标准
+  - Claw / OpenClaw 路径必须显式降级
+
+## 场景 A：Snapshot-Backed Formal Guard
 
 目标：
 
-- 验证完整 external formal snapshot 能直接命中 `formal_independent_result`
-- 验证 snapshot 作为主证据链，不再被 runtime 自动抓取覆盖
+- 验证完整 external formal snapshot 不再被 runtime 自动抓取覆盖
+- 验证当主求解器仍选到 `static_gaussian` 时，formal / Claw 路径会显式降级，而不是冒充 formal success
 
 ### Prompt
 
@@ -86,14 +96,14 @@ worktree=/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/v1-2-layer3
 ### 通过标准
 
 - `status=completed`
-- `run_outcome_status=completed`
-- `resolved_result_category=formal_independent_result`
-- `disclosure_level=point_and_range`
-- `confidence_level=high`
-- `formal_path_visibility_status=completed`
-- `product_probability_method=product_independent_path`
+- `run_outcome_status=degraded`
+- `resolved_result_category=degraded_formal_result`
+- `disclosure_level=range_only`
+- `confidence_level=low`
+- `formal_path_visibility_status=degraded`
 - `used_runtime_as_primary=false`
 - `reproduced_formal_independent_with_degraded_visibility=false`
+- `evidence_bundle.degradation_reasons` 含 `static_gaussian`
 
 ## 场景 B：Degraded Formal Path
 
@@ -189,6 +199,7 @@ worktree=/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/v1-2-layer3
 - `snapshot-primary formal path` 已修好
 - `degraded formal` 语义已修好
 - runtime 自动路径未被误伤
+- `static_gaussian` 已被挡在 formal / Claw truth 之外
 
 ### A 不通过，但 B/C 通过
 
@@ -218,8 +229,9 @@ worktree=/root/AndyFtp/investment_system_codex_ready_repo/.worktrees/v1-2-layer3
 
 ## 当前已验证结论
 
-截至 `8ac673d`：
+截至当前版本：
 
-- `formal success path` 可通过 helper 生成的完整 snapshot 稳定命中 `formal_independent_result`
+- helper 生成的完整 snapshot 不再被 runtime 自动路径污染
 - `degraded formal path` 稳定落成 `degraded_formal_result`
 - runtime 自动路径未被误判成 snapshot-primary
+- `static_gaussian` 不再允许被 Claw 验成 formal success

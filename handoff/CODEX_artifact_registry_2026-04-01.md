@@ -76,11 +76,15 @@
     - `Package 3`：蒙塔卡洛 / 校准 / 收益率与成功率可信度升级
     - `Package 4`：性能优化、状态复用与 Claw 闭环
   - 当前作为 `v1.3` 直接执行文档
+  - 当前状态修正：
+    - `Gate 1` / `Gate 2` 已落地
+    - `Package 3` / `Package 4` 尚未闭环
+    - `static_gaussian` 仅允许 test/demo 或 exploratory；不得作为 formal / Claw truth
 
 - `handoff/CODEX_v1.3_claw_acceptance_prompts_2026-04-08.md`
   - `v1.3` 的 Claw 验收 prompt 固化文档
   - 明确：
-    - `formal success path`
+    - `snapshot-backed formal guard`
     - `degraded formal path`
     - `runtime auto path`
     的最小 prompt、通过标准与结果解释

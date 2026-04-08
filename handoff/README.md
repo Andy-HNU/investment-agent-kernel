@@ -28,11 +28,15 @@
      - `Gate 2`：正式计算路径删除 fallback 与结构化失败
      - `Package 3`：蒙塔卡洛 / 概率 / 收益率可信度升级
      - `Package 4`：性能优化与 Claw 闭环
+   - 当前状态修正：
+     - `Gate 1` / `Gate 2` 已落地
+     - `Package 3` / `Package 4` 仍未闭环
+     - `static_gaussian` 仅允许本地 test/demo 或 exploratory，不能作为 formal / Claw truth
 
 7. [`CODEX_v1.3_claw_acceptance_prompts_2026-04-08.md`](/root/AndyFtp/investment_system_codex_ready_repo/handoff/CODEX_v1.3_claw_acceptance_prompts_2026-04-08.md)
    - `v1.3` 的 Claw 验收 prompt 固化文档
    - 明确：
-     - `formal success path`
+     - `snapshot-backed formal guard`
      - `degraded formal path`
      - `runtime auto path`
      三类场景的最小 prompt 与通过标准

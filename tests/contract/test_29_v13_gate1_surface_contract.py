@@ -104,7 +104,9 @@ def test_frontdesk_summary_storage_and_cli_surface_gate1_contract_fields(tmp_pat
     assert "disclosure_level=" in output
 
 
-def test_frontdesk_onboarding_with_complete_formal_snapshot_keeps_formal_independent_gate1_surface(tmp_path):
+def test_frontdesk_onboarding_with_complete_formal_snapshot_degrades_when_formal_path_uses_static_gaussian(
+    tmp_path,
+):
     profile = _profile(account_profile_id="gate1_surface_formal_snapshot")
     db_path = tmp_path / "gate1_surface_formal_snapshot.sqlite"
 
@@ -114,11 +116,12 @@ def test_frontdesk_onboarding_with_complete_formal_snapshot_keeps_formal_indepen
         external_snapshot_source=write_formal_snapshot_source(tmp_path, profile),
     )
 
-    assert summary["run_outcome_status"] == "completed"
-    assert summary["resolved_result_category"] == "formal_independent_result"
-    assert summary["disclosure_decision"]["disclosure_level"] == "point_and_range"
-    assert summary["disclosure_decision"]["confidence_level"] == "high"
-    assert summary["formal_path_visibility"]["status"] == "completed"
+    assert summary["run_outcome_status"] == "degraded"
+    assert summary["resolved_result_category"] == "degraded_formal_result"
+    assert summary["disclosure_decision"]["disclosure_level"] == "range_only"
+    assert summary["disclosure_decision"]["confidence_level"] == "low"
+    assert summary["formal_path_visibility"]["status"] == "degraded"
+    assert "static_gaussian" in " ".join(summary["evidence_bundle"]["degradation_reasons"])
 
 
 def test_frontdesk_onboarding_external_snapshot_primary_does_not_bootstrap_runtime_market_inputs(

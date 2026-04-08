@@ -55,6 +55,10 @@ _GOAL_SOLVER_CONSTRAINT_FIELDS = (
 
 _SAFE_ACTION_TYPES = ("freeze", "observe")
 _FORMAL_PATH_REQUIRED_FIELDS = {"market_raw", "account_raw", "behavior_raw", "live_portfolio"}
+_FORMAL_EXECUTION_POLICIES = {
+    ExecutionPolicy.FORMAL_STRICT,
+    ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED,
+}
 _GATE1_SOURCE_PRIORITY = {
     "externally_fetched": 5,
     "user_provided": 4,
@@ -997,6 +1001,27 @@ def _gate1_formal_evidence_degradation_reasons(
         if reason not in deduped:
             deduped.append(reason)
     return deduped
+
+
+def _gate1_simulation_mode_degradation_reasons(
+    *,
+    calibration_result: Any,
+    execution_policy: ExecutionPolicy,
+) -> list[str]:
+    if execution_policy not in _FORMAL_EXECUTION_POLICIES:
+        return []
+    calibration_data = _as_dict(calibration_result)
+    distribution_state = _as_dict(calibration_data.get("distribution_model_state"))
+    selected_mode = (
+        _text(distribution_state.get("selected_mode"))
+        or _text(distribution_state.get("simulation_mode"))
+        or _text(calibration_data.get("selected_mode"))
+        or _text(calibration_data.get("simulation_mode"))
+        or ""
+    ).lower()
+    if selected_mode == "static_gaussian":
+        return ["simulation_mode static_gaussian is demo_only_for_formal_and_claw_paths"]
+    return []
 
 
 def _whole_number_text(value: Any) -> str:
@@ -2730,13 +2755,20 @@ def run_orchestrator(
         snapshot_bundle=snapshot_bundle,
         market_raw=envelope.get("market_raw"),
     )
+    gate1_simulation_mode_degradation_reasons = _gate1_simulation_mode_degradation_reasons(
+        calibration_result=calibration_result,
+        execution_policy=execution_policy,
+    )
     gate1_degraded_notes = _unique_items(degraded_notes + gate1_formal_evidence_degradation_reasons)
+    gate1_degraded_notes = _unique_items(gate1_degraded_notes + gate1_simulation_mode_degradation_reasons)
     gate1_run_outcome_status = _gate1_run_outcome_status(
         status=status,
         blocking_reasons=blocking_reasons,
         degraded_notes=degraded_notes,
         escalation_reasons=escalation_reasons,
-        formal_evidence_degradation_reasons=gate1_formal_evidence_degradation_reasons,
+        formal_evidence_degradation_reasons=(
+            gate1_formal_evidence_degradation_reasons + gate1_simulation_mode_degradation_reasons
+        ),
     )
     gate1_coverage_summary = _gate1_coverage_summary(goal_solver_output)
     candidate_context_failure_artifacts = _collect_failure_artifacts(
@@ -2776,7 +2808,9 @@ def run_orchestrator(
         calibration_result=calibration_result,
         degraded_notes=gate1_degraded_notes,
         blocking_reasons=blocking_reasons,
-        formal_evidence_degradation_reasons=gate1_formal_evidence_degradation_reasons,
+        formal_evidence_degradation_reasons=(
+            gate1_formal_evidence_degradation_reasons + gate1_simulation_mode_degradation_reasons
+        ),
     )
     gate1_evidence_bundle = _gate1_evidence_bundle(
         run_id=run_id,
