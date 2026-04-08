@@ -77,6 +77,14 @@
     - `Package 4`：性能优化、状态复用与 Claw 闭环
   - 当前作为 `v1.3` 直接执行文档
 
+- `handoff/CODEX_v1.3_claw_acceptance_prompts_2026-04-08.md`
+  - `v1.3` 的 Claw 验收 prompt 固化文档
+  - 明确：
+    - `formal success path`
+    - `degraded formal path`
+    - `runtime auto path`
+    的最小 prompt、通过标准与结果解释
+
 - `handoff/CODEX_v1.2_three_layer_acceptance_summary_2026-04-06.md`
   - `v1.2` 三层总验收汇总
   - 汇总：
