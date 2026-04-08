@@ -34,6 +34,31 @@ def _build_onboarding_result():
     return profile, bundle, result
 
 
+def _build_onboarding_result_with_observed_valuation():
+    profile = _build_profile()
+    bundle = build_user_onboarding_inputs(profile, as_of="2026-03-30T00:00:00Z")
+    bundle.raw_inputs["market_raw"]["product_valuation_inputs"] = {
+        "requested": True,
+        "require_observed_source": True,
+    }
+    bundle.raw_inputs["market_raw"]["product_valuation_result"] = {
+        "source_status": "observed",
+        "source_name": "akshare_dynamic_valuation",
+        "source_ref": "akshare:valuation:2026-03-30",
+        "as_of": "2026-03-30",
+        "products": {
+            "510880": {"status": "observed", "pe_ratio": 18.0, "percentile": 0.22},
+            "510300": {"status": "observed", "pe_ratio": 45.0, "percentile": 0.18},
+            "012390": {"status": "observed", "pe_ratio": 20.0, "percentile": 0.42},
+        },
+    }
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "frontdesk_plan_persistence_val"},
+        raw_inputs=bundle.raw_inputs,
+    )
+    return profile, bundle, result
+
+
 @pytest.mark.contract
 def test_frontdesk_sqlite_persists_execution_plan_as_first_class_record(tmp_path):
     from frontdesk.store import FrontdeskStore
@@ -151,3 +176,27 @@ def test_execution_plan_storage_supports_version_history_per_plan_id(tmp_path):
         ("plan_hist", 1, "draft", None, None),
         ("plan_hist", 2, "approved", "2026-03-31T00:00:00Z", None),
     ]
+
+
+@pytest.mark.contract
+def test_frontdesk_sqlite_persists_execution_plan_valuation_audit_summary(tmp_path):
+    from frontdesk.store import FrontdeskStore
+
+    profile, bundle, result = _build_onboarding_result_with_observed_valuation()
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    store = FrontdeskStore(db_path)
+    store.initialize()
+    store.save_onboarding_result(
+        account_profile=profile.to_dict(),
+        onboarding_result=result.to_dict(),
+        input_provenance=bundle.input_provenance,
+    )
+
+    snapshot = store.get_frontdesk_snapshot(profile.account_profile_id)
+
+    assert snapshot is not None
+    pending_plan = snapshot["pending_execution_plan"]
+    assert pending_plan is not None
+    assert pending_plan["valuation_audit_summary"]["source_status"] == "observed"
+    assert pending_plan["valuation_audit_summary"]["passed_candidate_count"] >= 1

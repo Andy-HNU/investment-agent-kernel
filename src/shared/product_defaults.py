@@ -110,6 +110,7 @@ def _apply_profile_dimensions_to_boundaries(
     risk_headroom = _risk_headroom(dimensions)
     liquidity_need_level = str(model_inputs.get("liquidity_need_level") or "").lower()
     contribution_confidence = float(model_inputs.get("contribution_commitment_confidence", 0.82))
+    target_return_pressure = str(model_inputs.get("target_return_pressure") or "").lower()
 
     if risk_headroom <= 0.35:
         adjusted["equity_cn"] = (adjusted["equity_cn"][0], min(adjusted["equity_cn"][1], 0.45))
@@ -130,6 +131,16 @@ def _apply_profile_dimensions_to_boundaries(
     if contribution_confidence < 0.70:
         adjusted["bond_cn"] = (max(adjusted["bond_cn"][0], 0.20), adjusted["bond_cn"][1])
 
+    if target_return_pressure in {"high", "very_high"} and risk_headroom >= 0.45 and liquidity_need_level != "high":
+        adjusted["equity_cn"] = (
+            adjusted["equity_cn"][0],
+            max(adjusted["equity_cn"][1], 0.70 if target_return_pressure == "high" else 0.75),
+        )
+        adjusted["satellite"] = (
+            adjusted["satellite"][0],
+            max(adjusted["satellite"][1], 0.12 if target_return_pressure == "high" else 0.15),
+        )
+
     return adjusted
 
 
@@ -148,11 +159,14 @@ def default_goal_solver_constraints(
     bond_allowed = boundaries["bond_cn"][1] > 0
     model_inputs = dict((profile_dimensions or {}).get("model_inputs") or {})
     risk_headroom = _risk_headroom(profile_dimensions)
+    target_return_pressure = str(model_inputs.get("target_return_pressure") or "").lower()
     satellite_cap = min(boundaries["satellite"][1], 0.15)
     if risk_headroom <= 0.35:
         satellite_cap = min(satellite_cap, 0.05)
     elif risk_headroom <= 0.55:
         satellite_cap = min(satellite_cap, 0.08)
+    if target_return_pressure in {"high", "very_high"} and risk_headroom >= 0.45:
+        satellite_cap = max(satellite_cap, 0.12 if target_return_pressure == "high" else 0.15)
     liquidity_reserve_min = 0.05 if bond_allowed else 0.0
     if str(model_inputs.get("liquidity_need_level") or "").lower() == "high":
         liquidity_reserve_min = max(liquidity_reserve_min, 0.10)
@@ -163,7 +177,15 @@ def default_goal_solver_constraints(
         "ips_bucket_boundaries": boundaries,
         "satellite_cap": satellite_cap,
         "theme_caps": {},
-        "qdii_cap": 0.0 if qdii_allowed is False else 0.20,
+        "qdii_cap": (
+            0.0
+            if qdii_allowed is False
+            else 0.25
+            if target_return_pressure == "high" and risk_headroom >= 0.45
+            else 0.30
+            if target_return_pressure == "very_high" and risk_headroom >= 0.45
+            else 0.20
+        ),
         "liquidity_reserve_min": liquidity_reserve_min,
     }
 
@@ -268,6 +290,10 @@ def build_product_allocation_input(
     preferred_themes: list[str] | None = None,
     forbidden_themes: list[str] | None = None,
     qdii_allowed: bool = True,
+    allowed_wrappers: list[str] | None = None,
+    forbidden_wrappers: list[str] | None = None,
+    allowed_regions: list[str] | None = None,
+    forbidden_regions: list[str] | None = None,
 ) -> dict[str, Any]:
     parsed_profile = parsed_profile or {}
     profile_dimensions = profile_dimensions or {}
@@ -276,6 +302,10 @@ def build_product_allocation_input(
     forbidden_buckets = list(parsed_profile.get("forbidden_buckets") or forbidden_buckets or [])
     preferred_themes = list(parsed_profile.get("preferred_themes") or preferred_themes or [])
     forbidden_themes = list(parsed_profile.get("forbidden_themes") or forbidden_themes or [])
+    allowed_wrappers = list(parsed_profile.get("allowed_wrappers") or allowed_wrappers or [])
+    forbidden_wrappers = list(parsed_profile.get("forbidden_wrappers") or forbidden_wrappers or [])
+    allowed_regions = list(parsed_profile.get("allowed_regions") or allowed_regions or [])
+    forbidden_regions = list(parsed_profile.get("forbidden_regions") or forbidden_regions or [])
     qdii_value = parsed_profile.get("qdii_allowed")
     if qdii_value is None:
         qdii_value = qdii_allowed
@@ -292,6 +322,10 @@ def build_product_allocation_input(
             "complexity_tolerance": complexity_tolerance,
             "allowed_buckets": allowed_buckets,
             "forbidden_buckets": forbidden_buckets,
+            "allowed_wrappers": allowed_wrappers,
+            "forbidden_wrappers": forbidden_wrappers,
+            "allowed_regions": allowed_regions,
+            "forbidden_regions": forbidden_regions,
             "preferred_themes": preferred_themes,
             "forbidden_themes": forbidden_themes,
             "qdii_allowed": bool(qdii_value),

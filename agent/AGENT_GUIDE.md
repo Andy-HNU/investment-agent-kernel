@@ -44,6 +44,7 @@
 - 若存在 `active_execution_plan` 与 `pending_execution_plan` 的差异，必须解释是否应替换
 - 若外部数据 degraded/stale，必须披露 freshness/fallback
 - 政策/新闻只能作为结构化信号 sidecar，不直接改写 solver 数学
+- 用户若表达“目标年化收益率”，应传 `target_annual_return`，不要自行把它简化成只基于当前资产的期末目标金额
 
 ## Integration Rule
 

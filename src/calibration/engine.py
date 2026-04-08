@@ -9,14 +9,19 @@ from calibration.types import (
     BehaviorState,
     CalibrationResult,
     ConstraintState,
+    CalibrationSummary,
     EVParams,
+    DistributionModelState,
     MarketState,
     ParamVersionMeta,
+    ModeResolutionDecision,
+    SimulationModeEligibility,
     RuntimeOptimizerParams,
 )
 from goal_solver.types import GoalSolverParams, MarketAssumptions, RankingMode
 from snapshot_ingestion.historical import build_historical_dataset_snapshot, summarize_historical_dataset
 from snapshot_ingestion.types import CompletenessLevel, SnapshotBundle
+from snapshot_ingestion.valuation import build_valuation_percentile_results
 
 
 def _obj(value: Any) -> Any:
@@ -165,13 +170,22 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
 
     liquidity_scores = market_raw.get("liquidity_scores", {}) or {}
     valuation_z_scores = market_raw.get("valuation_z_scores", {}) or {}
+    observed_valuation_inputs = market_raw.get("observed_valuation_inputs") or {}
     liquidity_status: dict[str, str] = {}
-    valuation_positions: dict[str, str] = {}
     quality_flags: list[str] = []
     policy_summary = _policy_signal_summary(bundle_data) or {}
     historical_metadata = _obj(
         bundle_data.get("historical_dataset_metadata") or _obj(market_raw.get("historical_dataset")) or {}
     )
+    valuation_percentile_results = build_valuation_percentile_results(
+        buckets=buckets,
+        observed_inputs=observed_valuation_inputs,
+        valuation_z_scores=valuation_z_scores,
+        as_of=created_at.isoformat().replace("+00:00", "Z"),
+    )
+    valuation_positions: dict[str, str] = {
+        bucket: valuation_percentile_results[bucket].valuation_position for bucket in buckets
+    }
 
     for bucket in buckets:
         liq = liquidity_scores.get(bucket)
@@ -186,22 +200,12 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
         else:
             liquidity_status[bucket] = "normal"
 
-        valuation = valuation_z_scores.get(bucket)
-        if valuation is None:
-            valuation_positions[bucket] = "fair"
-            if "market_valuation_z_scores_missing" not in quality_flags:
-                quality_flags.append("market_valuation_z_scores_missing")
-        elif valuation > 2.5:
-            valuation_positions[bucket] = "extreme"
-        elif valuation > 1.5:
-            valuation_positions[bucket] = "rich"
-        elif valuation < -1.5:
-            valuation_positions[bucket] = "cheap"
-        else:
-            valuation_positions[bucket] = "fair"
-
     if not raw_volatility:
         quality_flags.append("market_volatility_missing")
+    if not observed_valuation_inputs:
+        quality_flags.append("market_observed_valuation_inputs_missing")
+    if not valuation_z_scores:
+        quality_flags.append("market_valuation_z_scores_missing")
     if bool(policy_summary.get("manual_review_required")):
         quality_flags.append("policy_signal_manual_review_required")
     if str(policy_summary.get("macro_uncertainty") or "").lower() == "high":
@@ -231,10 +235,8 @@ def interpret_market_state(bundle: SnapshotBundle | dict[str, Any]) -> MarketSta
         ),
         quality_flags=quality_flags,
         is_degraded=not raw_volatility,
-        valuation_percentile={
-            bucket: 0.5 if valuation_positions[bucket] == "fair" else 0.8
-            for bucket in buckets
-        },
+        valuation_percentile={bucket: valuation_percentile_results[bucket].percentile for bucket in buckets},
+        valuation_percentile_results=valuation_percentile_results,
         liquidity_flag={
             bucket: liquidity_status[bucket] != "normal"
             for bucket in buckets
@@ -722,6 +724,60 @@ def _coerce_ev_params(params: Any | None) -> EVParams:
     )
 
 
+def _build_calibration_summary(bundle_id: str, calibration_quality: str) -> CalibrationSummary:
+    return CalibrationSummary(
+        sample_count=0,
+        brier_score=None,
+        reliability_buckets=[],
+        regime_breakdown=[],
+        calibration_quality="insufficient_sample" if calibration_quality != "full" else "acceptable",
+        source_ref=f"{bundle_id or 'unknown'}::static_gaussian",
+    )
+
+
+def _build_distribution_model_state(
+    *,
+    bundle_id: str,
+    created_at: Any,
+    calibration_summary: CalibrationSummary,
+) -> DistributionModelState:
+    eligibility = SimulationModeEligibility(
+        simulation_mode="static_gaussian",
+        minimum_sample_months=0,
+        minimum_weight_adjusted_coverage=0.0,
+        requires_regime_stability=False,
+        requires_jump_calibration=False,
+        allowed_result_categories=[
+            "formal_independent_result",
+            "formal_estimated_result",
+            "degraded_formal_result",
+        ],
+        downgrade_target=None,
+        ineligibility_action="mark_unavailable",
+    )
+    mode_resolution = ModeResolutionDecision(
+        requested_mode="static_gaussian",
+        selected_mode="static_gaussian",
+        eligible_modes_in_order=["static_gaussian"],
+        ineligibility_action="mark_unavailable",
+        downgraded=False,
+        downgrade_reason=None,
+    )
+    return DistributionModelState(
+        simulation_mode="static_gaussian",
+        selected_mode="static_gaussian",
+        tail_model=None,
+        regime_sensitive=False,
+        jump_overlay_enabled=False,
+        eligibility_decision=eligibility,
+        mode_resolution_decision=mode_resolution,
+        calibration_summary=calibration_summary,
+        source_ref=f"{bundle_id or 'unknown'}::static_gaussian",
+        as_of=_utc(created_at).isoformat().replace("+00:00", "Z"),
+        data_status="observed",
+    )
+
+
 def run_calibration(
     bundle: SnapshotBundle | dict[str, Any],
     prior_calibration: CalibrationResult | dict[str, Any] | None,
@@ -826,6 +882,13 @@ def run_calibration(
             f"lookback_months={market_assumptions.lookback_months or 0}"
         )
 
+    calibration_summary = _build_calibration_summary(bundle_id, calibration_quality)
+    distribution_model_state = _build_distribution_model_state(
+        bundle_id=bundle_id,
+        created_at=created_at,
+        calibration_summary=calibration_summary,
+    )
+
     reason = _derive_updated_reason(
         calibration_quality,
         updated_reason=updated_reason,
@@ -861,6 +924,8 @@ def run_calibration(
         goal_solver_params=goal_solver_params,
         runtime_optimizer_params=runtime_optimizer_params,
         ev_params=ev_params,
+        distribution_model_state=distribution_model_state,
+        calibration_summary=calibration_summary,
         calibration_quality=calibration_quality,
         degraded_domains=degraded_domains,
         notes=notes,

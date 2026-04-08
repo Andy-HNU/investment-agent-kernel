@@ -55,6 +55,32 @@ def _normalize_drawdown(value: float) -> float:
     return numeric
 
 
+def _normalize_target_annual_return(value: float | None) -> float | None:
+    if value is None:
+        return None
+    numeric = float(value)
+    if numeric > 1.0:
+        numeric /= 100.0
+    if numeric <= -1.0:
+        raise ValueError("target_annual_return must be greater than -1.0")
+    return numeric
+
+
+def _project_goal_amount_from_target_annual_return(
+    *,
+    current_total_assets: float,
+    monthly_contribution: float,
+    goal_horizon_months: int,
+    target_annual_return: float,
+) -> float:
+    monthly_rate = (1.0 + float(target_annual_return)) ** (1.0 / 12.0) - 1.0
+    value = float(current_total_assets)
+    contribution = float(monthly_contribution)
+    for _ in range(max(int(goal_horizon_months), 0)):
+        value = value * (1.0 + monthly_rate) + contribution
+    return float(value)
+
+
 def _source_item(field: str, label: str, value: Any, note: str | None = None) -> dict[str, Any]:
     item = {
         "field": field,
@@ -97,13 +123,19 @@ class UserOnboardingProfile:
     goal_horizon_months: int
     risk_preference: str
     max_drawdown_tolerance: float
+    target_annual_return: float | None = None
     current_holdings: str = "cash"
     restrictions: list[str] = field(default_factory=list)
     current_weights: dict[str, float] | None = None
     allowed_buckets: list[str] = field(default_factory=list)
     forbidden_buckets: list[str] = field(default_factory=list)
+    allowed_wrappers: list[str] = field(default_factory=list)
+    forbidden_wrappers: list[str] = field(default_factory=list)
+    allowed_regions: list[str] = field(default_factory=list)
+    forbidden_regions: list[str] = field(default_factory=list)
     preferred_themes: list[str] = field(default_factory=list)
     forbidden_themes: list[str] = field(default_factory=list)
+    forbidden_risk_labels: list[str] = field(default_factory=list)
     qdii_allowed: bool | None = None
     profile_parse_notes: list[str] = field(default_factory=list)
     profile_parse_warnings: list[str] = field(default_factory=list)
@@ -174,18 +206,34 @@ def build_user_onboarding_inputs(
     as_of: str | None = None,
 ) -> OnboardingBuildResult:
     as_of = as_of or _iso_now()
+    target_annual_return = _normalize_target_annual_return(profile.target_annual_return)
+    effective_goal_amount = float(profile.goal_amount)
+    if target_annual_return is not None:
+        effective_goal_amount = _project_goal_amount_from_target_annual_return(
+            current_total_assets=float(profile.current_total_assets),
+            monthly_contribution=float(profile.monthly_contribution),
+            goal_horizon_months=int(profile.goal_horizon_months),
+            target_annual_return=target_annual_return,
+        )
+    effective_profile = UserOnboardingProfile(
+        **{
+            **profile.to_dict(),
+            "goal_amount": effective_goal_amount,
+            "target_annual_return": target_annual_return,
+        }
+    )
     risk_preference = _normalize_risk_preference(profile.risk_preference)
     max_drawdown_tolerance = _normalize_drawdown(profile.max_drawdown_tolerance)
     explicit_current_weights = _effective_explicit_current_weights(profile)
     parsed_profile = parse_profile_semantics(
-        current_holdings=profile.current_holdings,
-        restrictions=profile.restrictions,
+        current_holdings=effective_profile.current_holdings,
+        restrictions=effective_profile.restrictions,
         explicit_current_weights=explicit_current_weights,
     )
-    goal_semantics_obj = build_goal_semantics(profile, explicit_semantics=profile.goal_semantics)
+    goal_semantics_obj = build_goal_semantics(effective_profile, explicit_semantics=effective_profile.goal_semantics)
     goal_semantics = goal_semantics_obj.to_dict()
     profile_dimensions_obj = build_profile_dimensions(
-        profile,
+        effective_profile,
         parsed_profile=parsed_profile.to_dict(),
         goal_semantics=goal_semantics,
     )
@@ -200,13 +248,18 @@ def build_user_onboarding_inputs(
     )
     normalized_profile = UserOnboardingProfile(
         **{
-            **profile.to_dict(),
+            **effective_profile.to_dict(),
             "current_weights": persisted_current_weights,
-            "allowed_buckets": sorted(set(profile.allowed_buckets or parsed_profile.allowed_buckets)),
-            "forbidden_buckets": sorted(set(profile.forbidden_buckets or parsed_profile.forbidden_buckets)),
-            "preferred_themes": sorted(set(profile.preferred_themes or parsed_profile.preferred_themes)),
-            "forbidden_themes": sorted(set(profile.forbidden_themes or parsed_profile.forbidden_themes)),
-            "qdii_allowed": profile.qdii_allowed if profile.qdii_allowed is not None else parsed_profile.qdii_allowed,
+            "allowed_buckets": sorted(set(effective_profile.allowed_buckets or parsed_profile.allowed_buckets)),
+            "forbidden_buckets": sorted(set(effective_profile.forbidden_buckets or parsed_profile.forbidden_buckets)),
+            "allowed_wrappers": sorted(set(effective_profile.allowed_wrappers or parsed_profile.allowed_wrappers)),
+            "forbidden_wrappers": sorted(set(effective_profile.forbidden_wrappers or parsed_profile.forbidden_wrappers)),
+            "allowed_regions": sorted(set(effective_profile.allowed_regions or parsed_profile.allowed_regions)),
+            "forbidden_regions": sorted(set(effective_profile.forbidden_regions or parsed_profile.forbidden_regions)),
+            "preferred_themes": sorted(set(effective_profile.preferred_themes or parsed_profile.preferred_themes)),
+            "forbidden_themes": sorted(set(effective_profile.forbidden_themes or parsed_profile.forbidden_themes)),
+            "forbidden_risk_labels": sorted(set(effective_profile.forbidden_risk_labels or parsed_profile.forbidden_risk_labels)),
+            "qdii_allowed": effective_profile.qdii_allowed if effective_profile.qdii_allowed is not None else parsed_profile.qdii_allowed,
             "profile_parse_notes": list(parsed_profile.notes),
             "profile_parse_warnings": list(parsed_profile.warnings),
             "requires_confirmation": bool(parsed_profile.requires_confirmation),
@@ -221,37 +274,42 @@ def build_user_onboarding_inputs(
             "risk_capacity_score": profile_dimensions["risk_profile"]["risk_capacity_score"],
             "loss_limit": profile_dimensions["risk_profile"]["loss_limit"],
             "liquidity_need_level": profile_dimensions["risk_profile"]["liquidity_need_level"],
-            "account_type": str(profile.account_type or profile_dimensions["account"]["account_type"]),
-            "review_frequency": str(profile.review_frequency or profile_dimensions["behavior"]["review_frequency"]),
+            "account_type": str(effective_profile.account_type or profile_dimensions["account"]["account_type"]),
+            "review_frequency": str(effective_profile.review_frequency or profile_dimensions["behavior"]["review_frequency"]),
             "manual_confirmation_threshold": str(
-                profile.manual_confirmation_threshold or profile_dimensions["behavior"]["manual_confirmation_threshold"]
+                effective_profile.manual_confirmation_threshold or profile_dimensions["behavior"]["manual_confirmation_threshold"]
             ),
             "goal_semantics": goal_semantics,
             "profile_dimensions": profile_dimensions,
         }
     )
     current_weights = _current_weights(profile)
-    current_total_assets = float(profile.current_total_assets)
-    monthly_contribution = float(profile.monthly_contribution)
-    goal_amount = float(profile.goal_amount)
-    goal_horizon_months = int(profile.goal_horizon_months)
+    current_total_assets = float(effective_profile.current_total_assets)
+    monthly_contribution = float(effective_profile.monthly_contribution)
+    goal_amount = float(effective_profile.goal_amount)
+    goal_horizon_months = int(effective_profile.goal_horizon_months)
 
     goal_solver_input = {
-        "snapshot_id": f"{profile.account_profile_id}_{as_of.replace(':', '').replace('-', '')}",
-        "account_profile_id": profile.account_profile_id,
+        "snapshot_id": f"{effective_profile.account_profile_id}_{as_of.replace(':', '').replace('-', '')}",
+        "account_profile_id": effective_profile.account_profile_id,
         "goal": {
             "goal_amount": goal_amount,
             "horizon_months": goal_horizon_months,
-            "goal_description": f"{goal_horizon_months // 12 or goal_horizon_months}年内目标期末总资产达到{int(goal_amount)}",
+            "goal_description": (
+                f"{goal_horizon_months // 12 or goal_horizon_months}年内按目标年化{target_annual_return:.2%}推导期末总资产达到{int(goal_amount)}"
+                if target_annual_return is not None
+                else f"{goal_horizon_months // 12 or goal_horizon_months}年内目标期末总资产达到{int(goal_amount)}"
+            ),
             "success_prob_threshold": success_prob_threshold,
             "priority": goal_priority,
             "risk_preference": risk_preference,
-            "goal_type": profile.goal_type,
+            "goal_type": effective_profile.goal_type,
             "goal_amount_basis": goal_semantics["goal_amount_basis"],
             "goal_amount_scope": goal_semantics["goal_amount_scope"],
             "tax_assumption": goal_semantics["tax_assumption"],
             "fee_assumption": goal_semantics["fee_assumption"],
             "contribution_commitment_confidence": goal_semantics["contribution_commitment_confidence"],
+            "target_annual_return": target_annual_return,
         },
         "cashflow_plan": {
             "monthly_contribution": monthly_contribution,
@@ -299,7 +357,19 @@ def build_user_onboarding_inputs(
     input_provenance = _finalize_input_provenance({
         "user_provided": [
             _source_item("account_profile.display_name", "账户名", profile.display_name),
-            _source_item("goal.goal_amount", "目标期末总资产", goal_amount, "这是总资产目标，不是收益目标"),
+            _source_item(
+                "goal.goal_amount",
+                "目标期末总资产",
+                goal_amount,
+                "这是总资产目标，不是收益目标"
+                if target_annual_return is None
+                else "这是由目标年化收益率折算的期末总资产目标",
+            ),
+            *(
+                [_source_item("goal.target_annual_return", "目标年化收益率", target_annual_return)]
+                if target_annual_return is not None
+                else []
+            ),
             _source_item("goal.horizon_months", "目标期限（月）", goal_horizon_months),
             _source_item("goal.risk_preference", "风险偏好", risk_preference),
             _source_item("goal.priority", "目标优先级", goal_priority_from_dimensions(profile_dimensions)),

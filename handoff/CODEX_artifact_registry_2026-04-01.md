@@ -60,6 +60,38 @@
     - demo/test-only 内容必须与正式路径隔离
     - 正式路径判定与数据状态标签必须可审计
 
+- `handoff/CODEX_v1.2_patch_product_simulation_universe_explanation_2026-04-06.md`
+  - `v1.2` 后续核心补丁任务地图
+  - 覆盖：
+    - 逐产品独立模拟
+    - 全市场产品宇宙
+    - 估值链 / 政策新闻链入 kernel
+    - 成功率解释重构
+
+- `handoff/CODEX_v1.3_credibility_upgrade_task_map_2026-04-07.md`
+  - `v1.3` 主任务地图
+  - 覆盖：
+    - `Gate 1`：结果类别、证据等级、披露判定与 Evidence Bundle
+    - `Gate 2`：正式计算路径删除 fallback 与结构化失败
+    - `Package 3`：蒙塔卡洛 / 校准 / 收益率与成功率可信度升级
+    - `Package 4`：性能优化、状态复用与 Claw 闭环
+  - 当前作为 `v1.3` 直接执行文档
+
+- `handoff/CODEX_v1.3_claw_acceptance_prompts_2026-04-08.md`
+  - `v1.3` 的 Claw 验收 prompt 固化文档
+  - 明确：
+    - `formal success path`
+    - `degraded formal path`
+    - `runtime auto path`
+    的最小 prompt、通过标准与结果解释
+
+- `handoff/CODEX_v1.2_three_layer_acceptance_summary_2026-04-06.md`
+  - `v1.2` 三层总验收汇总
+  - 汇总：
+    - Layer 1 / Layer 2 / Layer 3 的通过结论
+    - 当前残余边界
+    - 合主干前判定
+
 - `handoff/CODEX_v1.1_task_map_2026-04-02.md`
   - `v1.1` 阶段正式执行地图
   - 当前保留作上一版本历史执行参考
@@ -188,6 +220,7 @@
 - 看当前开发顺序：先看 `CODEX_v1.2_task_map_2026-04-03.md`
 - 看 `v1.2` 动态数据修复补丁：看 `CODEX_v1.2_patch_dynamic_data_remediation_2026-04-04.md`
 - 看动态数据硬边界：看 `CODEX_dynamic_data_hardline_audit_2026-04-04.md`
+- 看 `v1.3` 可信度升级主线：看 `CODEX_v1.3_credibility_upgrade_task_map_2026-04-07.md`
 - 看上一版本执行地图：再看 `CODEX_v1.1_task_map_2026-04-02.md`
 - 看 `v1` 历史路线：再看 `CODEX_kernel_first_roadmap_2026-04-01.md`
 - 看 v1 阶段结论：看 `CODEX_v1_phase_reports_2026-04-02.md`

@@ -13,9 +13,12 @@ class DatasetCache:
         self.base_dir = Path(base_dir)
 
     # Layout: <base>/<kind>/<dataset_id>/<provider>/<symbol>/<version_id>/
-    def _dir_for(self, spec: DatasetSpec, pin: VersionPin) -> Path:
+    def _spec_dir(self, spec: DatasetSpec) -> Path:
         parts = [spec.kind, spec.dataset_id, spec.provider, spec.symbol or "_"]
-        return self.base_dir.joinpath(*parts).joinpath(pin.version_id)
+        return self.base_dir.joinpath(*parts)
+
+    def _dir_for(self, spec: DatasetSpec, pin: VersionPin) -> Path:
+        return self._spec_dir(spec).joinpath(pin.version_id)
 
     def _manifest_path(self, spec: DatasetSpec) -> Path:
         parts = [spec.kind, spec.dataset_id, spec.provider, spec.symbol or "_"]
@@ -26,6 +29,7 @@ class DatasetCache:
         target_dir.mkdir(parents=True, exist_ok=True)
         data_path = target_dir / "data.json"
         data_path.write_text(json.dumps(rows, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        (target_dir / "pin.json").write_text(json.dumps(pin.to_dict(), ensure_ascii=False, sort_keys=True), encoding="utf-8")
         manifest_path = self._manifest_path(spec)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(
@@ -67,6 +71,26 @@ class DatasetCache:
             return None
         return VersionPin(version_id=str(manifest.get("version_id")), source_ref=str(manifest.get("source_ref")))
 
+    def cached_pins(self, spec: DatasetSpec) -> list[VersionPin]:
+        spec_dir = self._spec_dir(spec)
+        if not spec_dir.exists():
+            return []
+        pins: list[VersionPin] = []
+        for child in sorted(spec_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            pin_path = child / "pin.json"
+            if pin_path.exists():
+                payload = json.loads(pin_path.read_text(encoding="utf-8"))
+                pins.append(
+                    VersionPin(
+                        version_id=str(payload.get("version_id") or child.name),
+                        source_ref=payload.get("source_ref"),
+                    )
+                )
+            else:
+                pins.append(VersionPin(version_id=child.name, source_ref=None))
+        return pins
+
 
 __all__ = ["DatasetCache"]
-

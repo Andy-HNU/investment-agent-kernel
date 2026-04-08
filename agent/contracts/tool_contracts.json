@@ -10,6 +10,7 @@
         "current_total_assets",
         "monthly_contribution",
         "goal_amount",
+        "target_annual_return",
         "goal_horizon_months",
         "risk_preference",
         "max_drawdown_tolerance",
@@ -44,4 +45,3 @@
     }
   ]
 }
-

@@ -20,6 +20,12 @@ from .provider_matrix import (
     provider_capability_matrix_dicts,
 )
 from .types import CompletenessLevel, PolicyNewsSignal, QualityFlag, SnapshotBundle
+from .valuation import (
+    ValuationObservation,
+    ValuationPercentileResult,
+    build_valuation_percentile_results,
+    coerce_valuation_observations,
+)
 
 __all__ = [
     "CompletenessLevel",
@@ -29,8 +35,12 @@ __all__ = [
     "ProviderCoverageRecord",
     "QualityFlag",
     "SnapshotBundle",
+    "ValuationObservation",
+    "ValuationPercentileResult",
     "build_historical_dataset_snapshot",
     "build_snapshot_bundle",
+    "build_valuation_percentile_results",
+    "coerce_valuation_observations",
     "find_provider_coverage",
     "load_provider_capability_matrix",
     "provider_capability_matrix_dicts",

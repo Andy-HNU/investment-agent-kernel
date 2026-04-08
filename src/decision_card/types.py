@@ -29,6 +29,25 @@ def _serialize(value: Any) -> Any:
 
 
 @dataclass
+class SecondaryCompanionArtifact:
+    source_failure_ref: str
+    companion_kind: str
+    exploratory_summary: dict[str, Any] = field(default_factory=dict)
+    disclosure_level: str = "diagnostic_only"
+    trustworthy_for_formal_decision: bool = False
+
+    def __post_init__(self) -> None:
+        self.source_failure_ref = str(self.source_failure_ref).strip()
+        self.companion_kind = str(self.companion_kind).strip().lower()
+        self.exploratory_summary = dict(self.exploratory_summary or {})
+        self.disclosure_level = str(self.disclosure_level or "diagnostic_only").strip().lower()
+        self.trustworthy_for_formal_decision = bool(self.trustworthy_for_formal_decision)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass
 class DecisionCardBuildInput:
     card_type: DecisionCardType
     workflow_type: str
@@ -42,6 +61,10 @@ class DecisionCardBuildInput:
     workflow_decision: Any | None = None
     runtime_restriction: Any | None = None
     audit_record: Any | None = None
+    run_outcome_status: str | None = None
+    resolved_result_category: str | None = None
+    disclosure_decision: dict[str, Any] = field(default_factory=dict)
+    evidence_bundle: dict[str, Any] = field(default_factory=dict)
     input_provenance: dict[str, Any] = field(default_factory=dict)
     execution_plan_summary: dict[str, Any] = field(default_factory=dict)
     blocking_reasons: list[str] = field(default_factory=list)
@@ -70,6 +93,10 @@ class DecisionCardBuildInput:
             workflow_decision=data.get("workflow_decision"),
             runtime_restriction=data.get("runtime_restriction"),
             audit_record=data.get("audit_record"),
+            run_outcome_status=data.get("run_outcome_status"),
+            resolved_result_category=data.get("resolved_result_category"),
+            disclosure_decision=dict(data.get("disclosure_decision", {})),
+            evidence_bundle=dict(data.get("evidence_bundle", {})),
             input_provenance=dict(data.get("input_provenance", {})),
             execution_plan_summary=dict(data.get("execution_plan_summary", {})),
             blocking_reasons=list(data.get("blocking_reasons", [])),
@@ -133,11 +160,20 @@ class DecisionCard:
     input_provenance: dict[str, Any] = field(default_factory=dict)
     input_source_summary: list[str] = field(default_factory=list)
     input_source_sections: list[dict[str, Any]] = field(default_factory=list)
+    audit_records: list[dict[str, Any]] = field(default_factory=list)
+    run_outcome_status: str | None = None
+    resolved_result_category: str | None = None
+    disclosure_decision: dict[str, Any] = field(default_factory=dict)
+    evidence_bundle: dict[str, Any] = field(default_factory=dict)
+    formal_path_visibility: dict[str, Any] = field(default_factory=dict)
     candidate_options: list[dict[str, Any]] = field(default_factory=list)
     goal_alternatives: list[dict[str, Any]] = field(default_factory=list)
     goal_semantics: dict[str, Any] = field(default_factory=dict)
     profile_dimensions: dict[str, Any] = field(default_factory=dict)
     execution_plan_summary: dict[str, Any] = field(default_factory=dict)
+    probability_explanation: dict[str, Any] = field(default_factory=dict)
+    frontier_analysis: dict[str, Any] = field(default_factory=dict)
+    product_evidence_panel: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))

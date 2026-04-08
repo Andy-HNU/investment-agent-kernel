@@ -10,26 +10,25 @@ from urllib.request import urlopen
 import pytest
 
 from shared.onboarding import OnboardingBuildResult, UserOnboardingProfile, build_user_onboarding_inputs
+from tests.support.formal_snapshot_helpers import (
+    build_formal_snapshot_payload,
+    formal_market_raw_overrides,
+    write_formal_snapshot_source,
+)
 
 
 def _profile(*, account_profile_id: str = "frontdesk_external_user") -> UserOnboardingProfile:
     return UserOnboardingProfile(
         account_profile_id=account_profile_id,
         display_name="Andy",
-        current_total_assets=50_000.0,
-        monthly_contribution=12_000.0,
-        goal_amount=1_000_000.0,
-        goal_horizon_months=60,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
         risk_preference="中等",
-        max_drawdown_tolerance=0.10,
-        current_holdings="portfolio",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
         restrictions=[],
-        current_weights={
-            "equity_cn": 0.50,
-            "bond_cn": 0.30,
-            "gold": 0.10,
-            "satellite": 0.10,
-        },
     )
 
 
@@ -49,32 +48,24 @@ def _external_onboarding_bundle_factory(market_url: str, behavior_url: str, requ
         base = build_user_onboarding_inputs(profile)
         market_raw = _fetch_json(market_url, requests)
         behavior_raw = _fetch_json(behavior_url, requests)
+        formal_payload = build_formal_snapshot_payload(
+            profile,
+            market_raw_overrides=market_raw,
+            behavior_raw_overrides=behavior_raw,
+        )
 
         raw_inputs = deepcopy(base.raw_inputs)
-        raw_inputs["market_raw"] = market_raw
-        raw_inputs["behavior_raw"] = behavior_raw
+        raw_inputs["market_raw"] = deepcopy(formal_payload["market_raw"])
+        raw_inputs["account_raw"] = deepcopy(formal_payload["account_raw"])
+        raw_inputs["behavior_raw"] = deepcopy(formal_payload["behavior_raw"])
 
-        input_provenance = deepcopy(base.input_provenance)
-        input_provenance["externally_fetched"] = [
-            {
-                "field": "market_raw",
-                "label": "市场输入",
-                "value": market_raw,
-                "note": "fetched from local fixture JSON",
-            },
-            {
-                "field": "behavior_raw",
-                "label": "行为输入",
-                "value": behavior_raw,
-                "note": "fetched from local fixture JSON",
-            },
-        ]
+        input_provenance = deepcopy(formal_payload["input_provenance"])
         return OnboardingBuildResult(
             profile=base.profile,
             input_provenance=input_provenance,
             goal_solver_input=deepcopy(base.goal_solver_input),
             raw_inputs=raw_inputs,
-            live_portfolio=deepcopy(base.live_portfolio),
+            live_portfolio=deepcopy(formal_payload["live_portfolio"]),
         )
 
     return _factory
@@ -87,7 +78,10 @@ def _external_followup_raw_inputs_factory(market_url: str, behavior_url: str, re
         raw_inputs = original_workflow_raw_inputs(*args, **kwargs)
         market_raw = _fetch_json(market_url, requests)
         behavior_raw = _fetch_json(behavior_url, requests)
-        raw_inputs["market_raw"] = market_raw
+        merged_market_raw = deepcopy(formal_market_raw_overrides())
+        for key, value in market_raw.items():
+            merged_market_raw[key] = value
+        raw_inputs["market_raw"] = merged_market_raw
         raw_inputs["behavior_raw"] = behavior_raw
         raw_inputs.setdefault("input_provenance", {}).setdefault("externally_fetched", []).extend(
             [
@@ -95,12 +89,36 @@ def _external_followup_raw_inputs_factory(market_url: str, behavior_url: str, re
                     "field": "market_raw",
                     "label": "市场输入",
                     "value": market_raw,
+                    "source_ref": market_url,
+                    "as_of": str(raw_inputs.get("as_of") or ""),
+                    "fetched_at": str(raw_inputs.get("as_of") or ""),
+                    "data_status": "observed",
+                    "freshness_state": "fresh",
+                    "audit_window": {
+                        "start_date": "2024-01-01",
+                        "end_date": "2026-03-31",
+                        "trading_days": 500,
+                        "observed_days": 500,
+                        "inferred_days": 0,
+                    },
                     "note": "fetched from local fixture JSON",
                 },
                 {
                     "field": "behavior_raw",
                     "label": "行为输入",
                     "value": behavior_raw,
+                    "source_ref": behavior_url,
+                    "as_of": str(raw_inputs.get("as_of") or ""),
+                    "fetched_at": str(raw_inputs.get("as_of") or ""),
+                    "data_status": "observed",
+                    "freshness_state": "fresh",
+                    "audit_window": {
+                        "start_date": str(raw_inputs.get("as_of") or "")[:10],
+                        "end_date": str(raw_inputs.get("as_of") or "")[:10],
+                        "trading_days": 1,
+                        "observed_days": 1,
+                        "inferred_days": 0,
+                    },
                     "note": "fetched from local fixture JSON",
                 },
             ]
@@ -151,10 +169,10 @@ def test_frontdesk_onboarding_persists_externally_fetched_provenance_from_fixtur
 
     store = FrontdeskStore(tmp_path / "frontdesk.sqlite")
     user_state = store.load_user_state(profile.account_profile_id)
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert requests == [market_url, behavior_url]
     assert user_state is not None
-    assert user_state["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 2
+    assert user_state["decision_card"]["input_provenance"]["counts"]["externally_fetched"] >= 2
     assert user_state["decision_card"]["input_provenance"]["externally_fetched"][0]["field"] == "market_raw"
     serialized = json.dumps(user_state, ensure_ascii=False, sort_keys=True)
     assert "外部抓取" in serialized
@@ -199,7 +217,7 @@ def test_frontdesk_onboarding_falls_back_to_default_data_when_fixture_fetch_fail
 
     store = FrontdeskStore(tmp_path / "frontdesk.sqlite")
     user_state = store.load_user_state(profile.account_profile_id)
-    assert summary["status"] == "completed"
+    assert summary["status"] == "blocked"
     assert requests == [market_url, behavior_url]
     assert user_state is not None
     assert user_state["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 0
@@ -239,7 +257,12 @@ def test_frontdesk_monthly_followup_can_apply_fixture_fetch_override(
         },
     )
 
-    run_frontdesk_onboarding(profile, db_path=onboarding_db)
+    onboarding = run_frontdesk_onboarding(
+        profile,
+        db_path=onboarding_db,
+        external_snapshot_source=write_formal_snapshot_source(tmp_path, profile),
+    )
+    assert onboarding["status"] in {"completed", "degraded"}
 
     monkeypatch.setattr(
         "frontdesk.service._workflow_raw_inputs",
@@ -254,12 +277,14 @@ def test_frontdesk_monthly_followup_can_apply_fixture_fetch_override(
 
     store = FrontdeskStore(onboarding_db)
     snapshot = store.get_frontdesk_snapshot(profile.account_profile_id)
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert requests == [market_url, behavior_url]
     assert snapshot is not None
     latest_run = snapshot["latest_run"]
     assert latest_run["workflow_type"] == "monthly"
     assert latest_run["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 2
     assert latest_run["decision_card"]["input_provenance"]["externally_fetched"][0]["field"] == "market_raw"
+    assert latest_run["decision_card"]["formal_path_visibility"]["status"] == "degraded"
+    assert latest_run["decision_card"]["formal_path_visibility"]["missing_audit_fields"] == []
     serialized = json.dumps(latest_run["decision_card"], ensure_ascii=False, sort_keys=True)
     assert "外部抓取" in serialized

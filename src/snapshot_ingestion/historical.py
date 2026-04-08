@@ -7,6 +7,8 @@ from math import sqrt
 from pathlib import Path
 from typing import Any
 
+from shared.audit import AuditWindow
+
 
 @dataclass(frozen=True)
 class HistoricalDatasetSnapshot:
@@ -17,12 +19,16 @@ class HistoricalDatasetSnapshot:
     source_ref: str
     lookback_months: int
     return_series: dict[str, list[float]]
+    frequency: str = "monthly"
     coverage_status: str = "verified"
     cached_at: str | None = None
+    audit_window: AuditWindow | None = None
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["audit_window"] = None if self.audit_window is None else self.audit_window.to_dict()
+        return payload
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "HistoricalDatasetSnapshot":
@@ -33,12 +39,14 @@ class HistoricalDatasetSnapshot:
             source_name=str(payload.get("source_name") or "unknown_source"),
             source_ref=str(payload.get("source_ref") or payload.get("source_name") or "unknown_source"),
             lookback_months=int(payload.get("lookback_months") or 0),
+            frequency=str(payload.get("frequency") or "monthly"),
             return_series={
                 str(bucket): [float(value) for value in list(series or [])]
                 for bucket, series in dict(payload.get("return_series") or {}).items()
             },
             coverage_status=str(payload.get("coverage_status") or "verified"),
             cached_at=payload.get("cached_at"),
+            audit_window=AuditWindow.from_any(payload.get("audit_window")),
             notes=[str(item) for item in list(payload.get("notes") or []) if str(item).strip()],
         )
 
@@ -96,11 +104,18 @@ def summarize_historical_dataset(
     expected_returns: dict[str, float] = {}
     volatility: dict[str, float] = {}
     mean_map: dict[str, float] = {}
+    annualization = {
+        "daily": 252.0,
+        "weekly": 52.0,
+        "monthly": 12.0,
+        "quarterly": 4.0,
+    }.get(str(dataset.frequency or "monthly").lower(), 12.0)
+    volatility_scale = sqrt(annualization)
     for bucket, series in series_map.items():
         mean_value = _mean(series)
         mean_map[bucket] = mean_value
-        expected_returns[bucket] = float(mean_value * 12.0)
-        volatility[bucket] = float(max(sqrt(_variance(series, mean_value)) * sqrt(12.0), 0.03))
+        expected_returns[bucket] = float(mean_value * annualization)
+        volatility[bucket] = float(max(sqrt(_variance(series, mean_value)) * volatility_scale, 0.03))
 
     ordered = sorted(series_map)
     min_len = min(len(series_map[bucket]) for bucket in ordered)

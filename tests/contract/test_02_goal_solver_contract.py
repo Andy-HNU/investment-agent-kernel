@@ -104,13 +104,8 @@ def test_run_goal_solver_emits_no_feasible_fallback_notes(goal_solver_input_base
         },
     ]
 
-    result = run_goal_solver(data)
-
-    assert result.recommended_allocation.name == "less_bad"
-    assert result.recommended_result.is_feasible is False
-    assert any(note == "warning=no_feasible_allocation" for note in result.solver_notes)
-    assert any(note.startswith("fallback=closest_feasible_candidate") for note in result.solver_notes)
-    assert all(not item.is_feasible for item in result.all_results)
+    with pytest.raises(ValueError, match="goal solver produced no feasible allocations"):
+        run_goal_solver(data)
 
 
 @pytest.mark.contract
@@ -189,6 +184,212 @@ def test_run_goal_solver_emits_context_and_threshold_gap_notes(goal_solver_input
         note == "warning=success_probability_below_threshold threshold=0.7200 recommended=0.6400"
         for note in result.solver_notes
     )
+
+
+@pytest.mark.contract
+def test_run_goal_solver_threshold_warning_uses_effective_success_probability(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["goal"]["success_prob_threshold"] = 0.60
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "steady",
+            "weights": {"equity_cn": 0.55, "bond_cn": 0.30, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.12,
+            "description": "steady candidate",
+        }
+    ]
+
+    def _fake_run_monte_carlo(*_args, **_kwargs):
+        return (
+            0.64,
+            {"expected_terminal_value": 2_150_000.0},
+            RiskSummary(
+                max_drawdown_90pct=0.11,
+                terminal_value_tail_mean_95=1_600_000.0,
+                shortfall_probability=0.36,
+                terminal_shortfall_p5_vs_initial=0.07,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+    monkeypatch.setattr(goal_solver_engine, "_effective_success_probability", lambda _result: 0.58)
+
+    result = run_goal_solver(solver_input)
+
+    assert any(
+        note == "success_threshold threshold=0.6000 recommended=0.5800 gap=0.0200 met=false"
+        for note in result.solver_notes
+    )
+    assert any(
+        note == "warning=success_probability_below_threshold threshold=0.6000 recommended=0.5800"
+        for note in result.solver_notes
+    )
+
+
+@pytest.mark.contract
+def test_run_goal_solver_emits_dual_probability_and_frontier_diagnostics(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["goal"]["goal_amount"] = 2_500_000.0
+    solver_input["goal"]["success_prob_threshold"] = 0.80
+    solver_input["constraints"]["max_drawdown_tolerance"] = 0.10
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "defensive",
+            "weights": {"equity_cn": 0.35, "bond_cn": 0.45, "gold": 0.15, "satellite": 0.05},
+            "complexity_score": 0.08,
+            "description": "defensive candidate",
+        },
+        {
+            "name": "balanced",
+            "weights": {"equity_cn": 0.60, "bond_cn": 0.25, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.12,
+            "description": "balanced candidate",
+        },
+    ]
+
+    def _fake_run_monte_carlo(
+        weights: dict[str, float],
+        *_args,
+        **_kwargs,
+    ):
+        if weights["equity_cn"] <= 0.40:
+            probability, terminal, drawdown = 0.42, 780_000.0, 0.09
+        else:
+            probability, terminal, drawdown = 0.48, 860_000.0, 0.12
+        return (
+            probability,
+            {"expected_terminal_value": terminal},
+            RiskSummary(
+                max_drawdown_90pct=drawdown,
+                terminal_value_tail_mean_95=terminal * 0.82,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.18,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert result.recommended_result.bucket_success_probability == pytest.approx(
+        result.recommended_result.success_probability
+    )
+    assert result.recommended_result.product_proxy_adjusted_success_probability is None
+    assert result.recommended_result.product_probability_method == "product_estimated_path"
+    assert result.recommended_result.is_feasible is True
+    assert result.recommended_result.implied_required_annual_return is not None
+    assert result.recommended_result.expected_annual_return is not None
+    assert result.frontier_analysis is not None
+    assert result.frontier_diagnostics["raw_candidate_count"] == 2
+    assert result.frontier_diagnostics["feasible_candidate_count"] == 1
+    assert result.frontier_diagnostics["frontier_max_expected_annual_return"] is not None
+    assert "expected_return_shrinkage_applied" in result.frontier_diagnostics["structural_limitations"]
+    assert result.frontier_diagnostics["candidate_families"] == ["balanced", "defensive"]
+    assert result.frontier_diagnostics["binding_constraints"]
+
+
+@pytest.mark.contract
+def test_run_goal_solver_uses_generic_growth_tilt_limitation_label(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["goal"]["priority"] = "important"
+    solver_input["goal"]["risk_preference"] = "moderate"
+    solver_input["goal"]["horizon_months"] = 36
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "balanced__moderate__01",
+            "weights": {"equity_cn": 0.50, "bond_cn": 0.35, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.12,
+            "description": "balanced candidate",
+        }
+    ]
+
+    def _fake_run_monte_carlo(*_args, **_kwargs):
+        return (
+            0.52,
+            {"expected_terminal_value": 1_250_000.0},
+            RiskSummary(
+                max_drawdown_90pct=0.13,
+                terminal_value_tail_mean_95=1_000_000.0,
+                shortfall_probability=0.48,
+                terminal_shortfall_p5_vs_initial=0.11,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert "return_seeking_families_not_generated_under_current_solver_inputs" in result.frontier_diagnostics[
+        "structural_limitations"
+    ]
+    assert "growth_tilt_template_gated_by_horizon_lt_60_for_moderate" not in result.frontier_diagnostics[
+        "structural_limitations"
+    ]
+
+
+@pytest.mark.contract
+def test_run_goal_solver_applies_product_proxy_adjustments_when_context_present(goal_solver_input_base, monkeypatch):
+    solver_input = deepcopy(goal_solver_input_base)
+    solver_input["candidate_allocations"] = [
+        {
+            "name": "balanced",
+            "weights": {"equity_cn": 0.55, "bond_cn": 0.30, "gold": 0.10, "satellite": 0.05},
+            "complexity_score": 0.12,
+            "description": "balanced candidate",
+        }
+    ]
+    solver_input["candidate_product_contexts"] = {
+        "balanced": {
+            "allocation_name": "balanced",
+            "product_probability_method": "product_proxy_adjustment_estimate",
+            "bucket_expected_return_adjustments": {"equity_cn": 0.02, "satellite": 0.01},
+            "bucket_volatility_multipliers": {"equity_cn": 1.10, "satellite": 1.15},
+            "selected_product_ids": ["510300", "511010", "518880", "159915"],
+            "selected_proxy_refs": ["yfinance:510300.SS", "yfinance:159915.SZ"],
+        }
+    }
+
+    observed_expected_returns: list[dict[str, float]] = []
+
+    def _fake_run_monte_carlo(
+        _weights: dict[str, float],
+        _cashflow_schedule: list[float],
+        _initial_value: float,
+        _goal_amount: float,
+        market_state,
+        _n_paths: int,
+        _seed: int,
+    ):
+        observed_expected_returns.append(dict(market_state.expected_returns))
+        if market_state.expected_returns["equity_cn"] > 0.09:
+            probability, terminal, drawdown = 0.63, 2_350_000.0, 0.17
+        else:
+            probability, terminal, drawdown = 0.51, 2_110_000.0, 0.13
+        return (
+            probability,
+            {"expected_terminal_value": terminal},
+            RiskSummary(
+                max_drawdown_90pct=drawdown,
+                terminal_value_tail_mean_95=terminal * 0.80,
+                shortfall_probability=1.0 - probability,
+                terminal_shortfall_p5_vs_initial=0.09,
+            ),
+        )
+
+    monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
+
+    result = run_goal_solver(solver_input)
+
+    assert len(observed_expected_returns) == 2
+    assert observed_expected_returns[0]["equity_cn"] == pytest.approx(0.08)
+    assert observed_expected_returns[1]["equity_cn"] == pytest.approx(0.10)
+    assert result.recommended_result.bucket_success_probability == pytest.approx(0.51)
+    assert result.recommended_result.product_proxy_adjusted_success_probability == pytest.approx(0.63)
+    assert result.recommended_result.product_probability_method == "product_estimated_path"
+    assert result.recommended_result.success_probability == pytest.approx(0.63)
+    assert result.recommended_result.expected_terminal_value == pytest.approx(2_350_000.0)
+    assert result.recommended_result.expected_annual_return is not None
+    assert result.recommended_result.risk_summary.max_drawdown_90pct == pytest.approx(0.17)
 
 
 @pytest.mark.contract

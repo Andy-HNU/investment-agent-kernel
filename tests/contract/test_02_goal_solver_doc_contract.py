@@ -155,12 +155,8 @@ def test_run_goal_solver_handles_no_feasible_allocation_with_solver_notes(
 
     monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
 
-    result = run_goal_solver(solver_input)
-
-    assert result.recommended_result.is_feasible is False
-    assert any("warning=no_feasible_allocation" in note for note in result.solver_notes)
-    assert any("action_required=" in note for note in result.solver_notes)
-    assert result.recommended_result.infeasibility_reasons
+    with pytest.raises(ValueError, match="goal solver produced no feasible allocations"):
+        run_goal_solver(solver_input)
 
 
 @pytest.mark.contract
@@ -199,16 +195,8 @@ def test_run_goal_solver_summarizes_no_feasible_pressure(goal_solver_input_base,
 
     monkeypatch.setattr(goal_solver_engine, "_run_monte_carlo", _fake_run_monte_carlo)
 
-    result = run_goal_solver(solver_input)
-
-    assert any(note == "warning=no_feasible_allocation" for note in result.solver_notes)
-    assert any(note.startswith("fallback_dominant_constraints ") for note in result.solver_notes)
-    assert any(note.startswith("fallback_pressure_score allocation=too_risky_b") for note in result.solver_notes)
-    assert any(
-        note
-        == "fallback_selected_context allocation=too_risky_b reasons=drawdown_violation,liquidity_violation score_inputs=drawdown_tolerance,liquidity_reserve_min"
-        for note in result.solver_notes
-    )
+    with pytest.raises(ValueError, match="goal solver produced no feasible allocations"):
+        run_goal_solver(solver_input)
 
 
 @pytest.mark.contract

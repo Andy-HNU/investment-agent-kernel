@@ -9,6 +9,15 @@ from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from orchestrator.engine import run_orchestrator
+from shared.audit import (
+    AuditRecord,
+    AuditWindow,
+    DataStatus,
+    ExecutionPolicy,
+    FormalPathStatus,
+    FormalPathVisibility,
+    coerce_data_status,
+)
 from shared.goal_semantics import build_goal_semantics
 from shared.profile_dimensions import build_profile_dimensions, goal_priority_from_dimensions
 from shared.product_defaults import (
@@ -21,6 +30,7 @@ from shared.product_defaults import (
 )
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 from shared.profile_parser import parse_profile_semantics
+from shared.providers.tinyshare import has_token as tinyshare_has_token
 
 from frontdesk.adapter import FrontdeskExternalSnapshotAdapter
 from frontdesk.external_data import (
@@ -30,6 +40,7 @@ from frontdesk.external_data import (
     merge_external_input_provenance,
     profile_patch_from_external_snapshot,
 )
+from frontdesk.reconciliation import reconcile_observed_portfolio
 from frontdesk.storage import FrontdeskStore
 
 
@@ -62,14 +73,51 @@ _MONTHLY_EVENT_PROFILE_FIELDS = {
     "manual_confirmation_threshold",
     "allowed_buckets",
     "forbidden_buckets",
+    "allowed_wrappers",
+    "forbidden_wrappers",
+    "allowed_regions",
+    "forbidden_regions",
     "preferred_themes",
     "forbidden_themes",
+    "forbidden_risk_labels",
     "qdii_allowed",
     "profile_parse_notes",
     "profile_parse_warnings",
     "requires_confirmation",
     "goal_semantics",
     "profile_dimensions",
+}
+
+_AUTO_RUNTIME_MARKET_HISTORY_CONFIG = {
+    "adapter": "market_history",
+    "provider_name": "runtime_market_history",
+    "provider": "tinyshare",
+    "fallback_provider": "yfinance",
+    "coverage_asset_class": "etf",
+    "lookback_months": 36,
+    "fail_open": True,
+}
+_FORMAL_PATH_REQUIRED_FIELDS = {"market_raw", "account_raw", "behavior_raw", "live_portfolio"}
+_FORMAL_PATH_SOURCE_STATUS = {
+    "user_provided": DataStatus.OBSERVED,
+    "system_inferred": DataStatus.INFERRED,
+    "default_assumed": DataStatus.PRIOR_DEFAULT,
+    "externally_fetched": DataStatus.OBSERVED,
+}
+_AUDIT_SOURCE_PRIORITY = {
+    "externally_fetched": 5,
+    "user_provided": 4,
+    "system_inferred": 3,
+    "default_assumed": 2,
+    "synthetic_demo": 1,
+}
+_AUDIT_DATA_STATUS_PRIORITY = {
+    DataStatus.OBSERVED: 5,
+    DataStatus.COMPUTED_FROM_OBSERVED: 4,
+    DataStatus.INFERRED: 3,
+    DataStatus.PRIOR_DEFAULT: 2,
+    DataStatus.MANUAL_ANNOTATION: 1,
+    DataStatus.SYNTHETIC_DEMO: 0,
 }
 
 
@@ -201,7 +249,17 @@ def _external_snapshot_items(external_payload: dict[str, Any]) -> list[dict[str,
                 "source_type": "externally_fetched",
                 "source_label": "外部抓取",
             }
-            for key in ("detail", "as_of", "fetched_at", "freshness", "freshness_status"):
+            for key in (
+                "detail",
+                "source_ref",
+                "as_of",
+                "fetched_at",
+                "freshness",
+                "freshness_status",
+                "freshness_state",
+                "data_status",
+                "audit_window",
+            ):
                 if payload.get(key) is not None:
                     rendered[key] = deepcopy(payload.get(key))
             items.append(rendered)
@@ -221,12 +279,18 @@ def _external_snapshot_items(external_payload: dict[str, Any]) -> list[dict[str,
             if isinstance(domain_meta, dict):
                 if domain_meta.get("detail") is not None:
                     rendered["detail"] = deepcopy(domain_meta.get("detail"))
+                if domain_meta.get("source_ref") is not None:
+                    rendered["source_ref"] = deepcopy(domain_meta.get("source_ref"))
                 if domain_meta.get("as_of") is not None:
                     rendered["as_of"] = deepcopy(domain_meta.get("as_of"))
                 if domain_meta.get("fetched_at") is not None:
                     rendered["fetched_at"] = deepcopy(domain_meta.get("fetched_at"))
                 if domain_meta.get("status") is not None:
                     rendered["freshness_status"] = deepcopy(domain_meta.get("status"))
+                if domain_meta.get("audit_window") is not None:
+                    rendered["audit_window"] = deepcopy(domain_meta.get("audit_window"))
+                if domain_meta.get("data_status") is not None:
+                    rendered["data_status"] = deepcopy(domain_meta.get("data_status"))
             items.append(rendered)
     deduped: dict[str, dict[str, Any]] = {}
     for item in items:
@@ -272,6 +336,233 @@ def _freshness_state(
     if age_seconds <= 24 * 3600:
         return "aging"
     return "stale"
+
+
+def _unique_strings(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        rendered = str(item).strip()
+        if not rendered or rendered in seen:
+            continue
+        seen.add(rendered)
+        ordered.append(rendered)
+    return ordered
+
+
+def _coerce_audit_window(value: Any) -> AuditWindow | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        if "audit_window" in value and isinstance(value.get("audit_window"), dict):
+            return AuditWindow.from_any(value.get("audit_window"))
+        return AuditWindow.from_any(value)
+    return AuditWindow.from_any(value)
+
+
+def _normalize_audit_records(
+    input_provenance: dict[str, Any] | None,
+    refresh_summary: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    provenance = input_provenance or {}
+    refresh = refresh_summary or {}
+    domain_lookup = {
+        str(item.get("domain") or ""): dict(item)
+        for item in list(refresh.get("domain_details") or [])
+        if str(item.get("domain") or "").strip()
+    }
+    items = list(provenance.get("items") or [])
+    if not items:
+        for source_type in ("user_provided", "system_inferred", "default_assumed", "externally_fetched"):
+            for item in list(provenance.get(source_type) or []):
+                rendered = dict(item)
+                rendered.setdefault("source_type", source_type)
+                items.append(rendered)
+
+    records: list[dict[str, Any]] = []
+    for item in items:
+        payload = dict(item)
+        source_type = str(payload.get("source_type") or "default_assumed")
+        field = str(payload.get("field") or "unknown")
+        domain_meta = domain_lookup.get(field, {})
+        source_ref = str(
+            payload.get("source_ref")
+            or (payload.get("value") if isinstance(payload.get("value"), str) else "")
+            or domain_meta.get("source_ref")
+            or (refresh.get("source_ref") if source_type == "externally_fetched" else "")
+            or ""
+        )
+        as_of = str(payload.get("as_of") or domain_meta.get("as_of") or refresh.get("as_of") or "")
+        record = AuditRecord.from_any(
+            {
+                "field": field,
+                "label": payload.get("label"),
+                "source_type": source_type,
+                "source_label": payload.get("source_label"),
+                "source_ref": source_ref,
+                "as_of": as_of,
+                "detail": payload.get("detail") or payload.get("note") or domain_meta.get("detail"),
+                "fetched_at": payload.get("fetched_at") or domain_meta.get("fetched_at") or refresh.get("fetched_at"),
+                "freshness_state": payload.get("freshness_state")
+                or payload.get("freshness_status")
+                or domain_meta.get("freshness_state"),
+                "data_status": payload.get("data_status") or _FORMAL_PATH_SOURCE_STATUS.get(source_type, DataStatus.INFERRED),
+                "audit_window": _coerce_audit_window(payload.get("audit_window"))
+                or _coerce_audit_window(domain_meta.get("audit_window")),
+            }
+        )
+        records.append(record.to_dict())
+    preferred_by_field: dict[str, dict[str, Any]] = {}
+    for record in records:
+        field = str(record.get("field") or "").strip()
+        if not field:
+            continue
+        current = preferred_by_field.get(field)
+        if current is None or _audit_record_priority(record) > _audit_record_priority(current):
+            preferred_by_field[field] = record
+    ordered_fields: list[str] = []
+    for record in records:
+        field = str(record.get("field") or "").strip()
+        if field and field not in ordered_fields:
+            ordered_fields.append(field)
+    return [preferred_by_field[field] for field in ordered_fields if field in preferred_by_field]
+
+
+def _audit_record_priority(record: dict[str, Any]) -> tuple[int, int, int, int]:
+    data_status = coerce_data_status(record.get("data_status"))
+    audit_window = _coerce_audit_window(record.get("audit_window"))
+    return (
+        _AUDIT_SOURCE_PRIORITY.get(str(record.get("source_type") or "").strip(), 0),
+        _AUDIT_DATA_STATUS_PRIORITY.get(data_status, 0),
+        1 if str(record.get("source_ref") or "").strip() else 0,
+        1 if audit_window is not None and audit_window.has_required_window() else 0,
+    )
+
+
+def _classify_formal_path_visibility(
+    decision_card: dict[str, Any] | None,
+    refresh_summary: dict[str, Any] | None,
+    audit_records: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    card = decision_card or {}
+    refresh = refresh_summary or {}
+    records = [AuditRecord.from_any(item) for item in list(audit_records or [])]
+    degraded_scope: list[str] = []
+    fallback_scope: list[str] = []
+    reasons: list[str] = []
+    missing_audit_fields: list[str] = []
+
+    for item in list(card.get("guardrails") or []) + list(card.get("execution_notes") or []):
+        text = str(item).strip()
+        if text.startswith("bundle_quality="):
+            degraded_scope.append("bundle")
+        elif text.startswith("calibration_quality="):
+            degraded_scope.append("calibration")
+        elif text.startswith("candidate_poverty="):
+            degraded_scope.append("runtime_candidates")
+        elif text.startswith("cooldown_active=") or text.startswith("high_risk_request="):
+            degraded_scope.append("runtime_controls")
+
+    if str(card.get("status_badge") or "").strip().lower() == "degraded" or bool(card.get("low_confidence")):
+        degraded_scope.append("decision_card")
+        reasons.append("decision_card flagged degraded/low_confidence")
+
+    refresh_state = str(refresh.get("freshness_state") or "").strip().lower()
+    external_status = str(refresh.get("external_status") or "").strip().lower()
+    if refresh_state in {"fallback", "degraded", "stale"} or external_status == "fallback":
+        fallback_scope.append("external_snapshot")
+        reasons.append("external snapshot refresh is fallback/degraded")
+
+    for detail in list(refresh.get("domain_details") or []):
+        domain = str((detail or {}).get("domain") or "").strip()
+        state = str((detail or {}).get("freshness_state") or "").strip().lower()
+        if not domain:
+            continue
+        if state in {"fallback", "degraded", "stale"}:
+            degraded_scope.append(domain)
+            if state == "fallback":
+                fallback_scope.append(domain)
+
+    combined_text = " ".join(
+        [
+            str(card.get("summary") or "").strip(),
+            *[str(item).strip() for item in card.get("recommendation_reason") or []],
+        ]
+    )
+    if "synthetic_fallback_used" in combined_text or any(
+        marker in combined_text for marker in ("临时参考", "候选方案不足", "不存在满足")
+    ):
+        fallback_scope.append("goal_solver")
+        reasons.append("goal solver emitted fallback-style candidate output")
+
+    for record in records:
+        if record.field in _FORMAL_PATH_REQUIRED_FIELDS:
+            if record.source_type == "externally_fetched":
+                if not record.source_ref:
+                    missing_audit_fields.append(f"{record.field}.source_ref")
+                if not record.as_of:
+                    missing_audit_fields.append(f"{record.field}.as_of")
+                if record.audit_window is None or not record.audit_window.has_required_window():
+                    missing_audit_fields.append(f"{record.field}.audit_window")
+            if record.data_status in {DataStatus.PRIOR_DEFAULT, DataStatus.SYNTHETIC_DEMO, DataStatus.MANUAL_ANNOTATION}:
+                degraded_scope.append(record.field)
+                reasons.append(f"{record.field} is backed by non-formal data_status={record.data_status.value}")
+
+    degraded_scope = _unique_strings(degraded_scope)
+    fallback_scope = _unique_strings(fallback_scope)
+    reasons = _unique_strings(reasons)
+    missing_audit_fields = _unique_strings(missing_audit_fields)
+
+    if str(card.get("card_type") or "") == "blocked":
+        status = FormalPathStatus.BLOCKED
+    elif fallback_scope:
+        status = FormalPathStatus.DEGRADED
+    elif degraded_scope or missing_audit_fields:
+        status = FormalPathStatus.DEGRADED
+    else:
+        status = FormalPathStatus.COMPLETED
+
+    recommended_action = str(card.get("recommended_action") or "").strip()
+    execution_eligible = True
+    execution_reason = "eligible"
+    if status is not FormalPathStatus.COMPLETED:
+        execution_eligible = False
+        execution_reason = status.value
+    elif any(item == "manual_review_required" for item in card.get("execution_notes") or []):
+        execution_eligible = False
+        execution_reason = "manual_review_required"
+    elif recommended_action in {"", "blocked", "review", "observe", "freeze"}:
+        execution_eligible = False
+        execution_reason = "non_executable_recommendation"
+
+    return FormalPathVisibility(
+        status=status,
+        execution_eligible=execution_eligible,
+        execution_eligibility_reason=execution_reason,
+        degraded_scope=degraded_scope,
+        fallback_used=bool(fallback_scope),
+        fallback_scope=fallback_scope,
+        reasons=reasons,
+        missing_audit_fields=missing_audit_fields,
+    ).to_dict()
+
+
+def _apply_formal_path_metadata(
+    payload: dict[str, Any],
+    *,
+    input_provenance: dict[str, Any] | None,
+    refresh_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    enriched = dict(payload)
+    decision_card = dict(enriched.get("decision_card") or {})
+    audit_records = _normalize_audit_records(input_provenance, refresh_summary)
+    visibility = _classify_formal_path_visibility(decision_card, refresh_summary, audit_records)
+    decision_card["audit_records"] = audit_records
+    decision_card["formal_path_visibility"] = visibility
+    enriched["decision_card"] = decision_card
+    enriched["audit_records"] = audit_records
+    enriched["formal_path_visibility"] = visibility
+    return enriched
 
 
 def _build_input_source_summary(input_provenance: dict[str, Any]) -> dict[str, Any]:
@@ -361,6 +652,7 @@ def _build_refresh_summary(
     }
     domain_details: list[dict[str, Any]] = []
     externally_fetched_items = list((input_provenance or {}).get("externally_fetched", []))
+    historical_dataset_meta = _as_dict(_as_dict(raw_inputs.get("market_raw")).get("historical_dataset"))
     for key in ("market_raw", "account_raw", "behavior_raw", "live_portfolio"):
         domain_meta = _as_dict((meta.get("domains") or {}).get(key))
         domain_source = "externally_fetched" if any(str(item.get("field")) == key for item in externally_fetched_items) else None
@@ -374,19 +666,35 @@ def _build_refresh_summary(
             domain_state = "default_assumed" if domain_source == "default_assumed" else "fresh"
         if fallback_active and domain_source != "externally_fetched":
             domain_state = "fallback"
-        domain_details.append(
-            {
-                "domain": key,
-                "label": _EXT_SOURCE_LABELS.get(key, key),
-                "source_type": domain_source,
-                "source_label": (input_provenance or {}).get("source_labels", {}).get(domain_source or "", domain_source),
-                "freshness_state": domain_state,
-                "freshness_label": freshness_label_map.get(domain_state, domain_state),
-                "fetched_at": domain_meta.get("fetched_at") or (fetched_at if domain_source == "externally_fetched" else None),
-                "as_of": domain_meta.get("as_of") or meta.get("as_of") or as_of or None,
-                "detail": domain_meta.get("detail"),
+        detail = {
+            "domain": key,
+            "label": _EXT_SOURCE_LABELS.get(key, key),
+            "source_type": domain_source,
+            "source_label": (input_provenance or {}).get("source_labels", {}).get(domain_source or "", domain_source),
+            "source_ref": domain_meta.get("source_ref") or (source_ref if domain_source == "externally_fetched" else None),
+            "data_status": domain_meta.get("data_status")
+            or (_FORMAL_PATH_SOURCE_STATUS.get(domain_source or "", DataStatus.INFERRED).value if domain_source else None),
+            "freshness_state": domain_state,
+            "freshness_label": freshness_label_map.get(domain_state, domain_state),
+            "fetched_at": domain_meta.get("fetched_at") or (fetched_at if domain_source == "externally_fetched" else None),
+            "as_of": domain_meta.get("as_of") or meta.get("as_of") or as_of or None,
+            "audit_window": _coerce_audit_window(domain_meta).to_dict() if _coerce_audit_window(domain_meta) else None,
+            "detail": domain_meta.get("detail"),
+        }
+        if key == "market_raw" and historical_dataset_meta:
+            detail["historical_dataset"] = {
+                "dataset_id": historical_dataset_meta.get("dataset_id"),
+                "version_id": historical_dataset_meta.get("version_id"),
+                "source_name": historical_dataset_meta.get("source_name"),
+                "source_ref": historical_dataset_meta.get("source_ref"),
+                "coverage_status": historical_dataset_meta.get("coverage_status"),
+                "frequency": historical_dataset_meta.get("frequency"),
+                "notes": list(historical_dataset_meta.get("notes") or []),
+                "audit_window": _coerce_audit_window(historical_dataset_meta).to_dict()
+                if _coerce_audit_window(historical_dataset_meta)
+                else None,
             }
-        )
+        domain_details.append(detail)
     return {
         "workflow_type": workflow_type,
         "as_of": as_of or None,
@@ -488,6 +796,9 @@ def _apply_external_snapshot(
     external_items = _external_snapshot_items(external_payload)
     merged_provenance = _merge_external_provenance(input_provenance, external_items)
     merged_raw_inputs["input_provenance"] = merged_provenance
+    for key in ("external_snapshot_meta", "external_metadata"):
+        if external_payload.get(key) is not None:
+            merged_raw_inputs[key] = deepcopy(external_payload[key])
     return merged_raw_inputs, merged_provenance, external_items
 
 
@@ -520,6 +831,14 @@ def _apply_external_provider_config(
     external_payload = None
     if fetched_snapshot is not None:
         external_payload = deepcopy(fetched_snapshot.raw_overrides)
+        external_payload["external_snapshot_meta"] = {
+            "source": fetched_snapshot.source_ref,
+            "provider_name": fetched_snapshot.provider_name,
+            "source_kind": "provider_config",
+            "as_of": fetched_snapshot.freshness.get("as_of"),
+            "fetched_at": fetched_snapshot.fetched_at,
+            "domains": dict(fetched_snapshot.freshness.get("domains") or {}),
+        }
         external_payload["external_metadata"] = {
             "provider_name": fetched_snapshot.provider_name,
             "fetched_at": fetched_snapshot.fetched_at,
@@ -535,6 +854,121 @@ def _apply_external_provider_config(
         status,
         warnings,
     )
+
+
+def _maybe_apply_runtime_market_history(
+    *,
+    raw_inputs: dict[str, Any],
+    input_provenance: dict[str, Any],
+    workflow_type: str,
+    account_profile_id: str,
+    as_of: str,
+    external_snapshot_source: str | None,
+    external_data_config: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, str | None, str | None, str | None]:
+    if external_snapshot_source is not None or external_data_config is not None:
+        return raw_inputs, input_provenance, None, None, None, None
+    historical_dataset = _as_dict(_as_dict(raw_inputs.get("market_raw")).get("historical_dataset"))
+    if historical_dataset or not tinyshare_has_token():
+        return raw_inputs, input_provenance, None, None, None, None
+    return _apply_external_provider_config(
+        raw_inputs=raw_inputs,
+        input_provenance=input_provenance,
+        external_data_config=dict(_AUTO_RUNTIME_MARKET_HISTORY_CONFIG),
+        workflow_type=workflow_type,
+        account_profile_id=account_profile_id,
+        as_of=as_of,
+    )
+
+
+def _mark_snapshot_primary_formal_path(
+    raw_inputs: dict[str, Any],
+    *,
+    external_source_ref: str | None,
+    external_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not external_source_ref and not external_payload:
+        return raw_inputs
+    enriched = deepcopy(raw_inputs)
+    enriched["snapshot_primary_formal_path"] = True
+    if external_source_ref:
+        enriched["snapshot_primary_formal_source"] = external_source_ref
+    for key in ("external_snapshot_meta", "external_metadata"):
+        if external_payload is not None and external_payload.get(key) is not None:
+            enriched[key] = deepcopy(external_payload[key])
+    return enriched
+
+
+def _normalize_observed_portfolio_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(payload or {})
+    merged_portfolio = normalized.pop("merged_portfolio", None)
+    observed_portfolio = normalized.pop("observed_portfolio", None)
+    if isinstance(merged_portfolio, dict):
+        normalized = _deep_merge(merged_portfolio, normalized)
+        nested_observed = merged_portfolio.get("observed_portfolio")
+        if isinstance(nested_observed, dict):
+            normalized = _deep_merge(normalized, nested_observed)
+    elif isinstance(observed_portfolio, dict):
+        normalized = _deep_merge(normalized, observed_portfolio)
+
+    if not isinstance(normalized.get("weights"), dict):
+        normalized["weights"] = {}
+    if not isinstance(normalized.get("holdings"), list):
+        normalized["holdings"] = []
+    if not isinstance(normalized.get("missing_fields"), list):
+        normalized["missing_fields"] = list(normalized.get("missing_fields") or [])
+    if normalized.get("snapshot_id") is None:
+        normalized["snapshot_id"] = str(
+            normalized.get("observed_snapshot_id")
+            or normalized.get("snapshot_ref")
+            or normalized.get("source_ref")
+            or ""
+        ).strip()
+    if not str(normalized.get("source_kind") or "").strip():
+        normalized["source_kind"] = "ocr_snapshot" if isinstance(merged_portfolio, dict) else "manual_json"
+    if normalized.get("data_status") is None:
+        normalized["data_status"] = "observed"
+    if normalized.get("completeness_status") is None:
+        normalized["completeness_status"] = "partial" if normalized["missing_fields"] else "complete"
+    if normalized.get("as_of") is None and normalized.get("as_of_date") is not None:
+        normalized["as_of"] = str(normalized["as_of_date"])
+    if normalized.get("total_value") is not None:
+        normalized["total_value"] = float(normalized["total_value"])
+    if normalized.get("available_cash") is not None:
+        normalized["available_cash"] = float(normalized["available_cash"])
+    if normalized.get("snapshot_id"):
+        normalized["snapshot_id"] = str(normalized["snapshot_id"])
+    normalized["source_kind"] = str(normalized.get("source_kind") or "manual_json")
+    normalized["data_status"] = str(normalized.get("data_status") or "observed")
+    normalized["completeness_status"] = str(normalized.get("completeness_status") or "partial")
+    normalized["missing_fields"] = [str(item) for item in normalized.get("missing_fields") or [] if str(item).strip()]
+    normalized["holdings"] = [dict(item) for item in normalized.get("holdings") or [] if isinstance(item, dict)]
+    normalized["weights"] = {
+        str(bucket): float(weight)
+        for bucket, weight in dict(normalized.get("weights") or {}).items()
+        if str(bucket).strip() and weight is not None
+    }
+    if not normalized["weights"] and normalized["holdings"]:
+        derived_weights: dict[str, float] = {}
+        for holding in normalized["holdings"]:
+            bucket = str(holding.get("asset_bucket") or "").strip()
+            weight = holding.get("weight")
+            if bucket and weight is not None:
+                try:
+                    derived_weights[bucket] = float(weight)
+                except (TypeError, ValueError):
+                    continue
+        normalized["weights"] = derived_weights
+    if not normalized["snapshot_id"]:
+        normalized["snapshot_id"] = f"observed_{uuid4().hex[:12]}"
+    if normalized.get("source_ref") is not None:
+        normalized["source_ref"] = str(normalized["source_ref"])
+    audit_window = normalized.get("audit_window")
+    if isinstance(audit_window, dict):
+        normalized["audit_window"] = deepcopy(audit_window)
+    else:
+        normalized["audit_window"] = None
+    return normalized
 
 
 def _merge_profile_override(
@@ -604,8 +1038,13 @@ def _normalize_profile_payload(profile: dict[str, Any]) -> dict[str, Any]:
         normalized["current_weights"] = None
     normalized["allowed_buckets"] = list(parsed.allowed_buckets)
     normalized["forbidden_buckets"] = list(parsed.forbidden_buckets)
+    normalized["allowed_wrappers"] = list(parsed.allowed_wrappers)
+    normalized["forbidden_wrappers"] = list(parsed.forbidden_wrappers)
+    normalized["allowed_regions"] = list(parsed.allowed_regions)
+    normalized["forbidden_regions"] = list(parsed.forbidden_regions)
     normalized["preferred_themes"] = list(parsed.preferred_themes)
     normalized["forbidden_themes"] = list(parsed.forbidden_themes)
+    normalized["forbidden_risk_labels"] = list(parsed.forbidden_risk_labels)
     if normalized.get("qdii_allowed") is None and parsed.qdii_allowed is not None:
         normalized["qdii_allowed"] = parsed.qdii_allowed
     elif parsed.qdii_allowed is None:
@@ -975,6 +1414,19 @@ def _frontdesk_summary(
         result_payload.get("input_source_summary")
         or _build_input_source_summary(decision_card.get("input_provenance", {}) or {})
     )
+    formal_path_visibility = dict(
+        result_payload.get("formal_path_visibility")
+        or _classify_formal_path_visibility(
+            decision_card,
+            refresh_summary,
+            list(result_payload.get("audit_records") or decision_card.get("audit_records") or []),
+        )
+    )
+    audit_records = list(
+        result_payload.get("audit_records")
+        or decision_card.get("audit_records")
+        or _normalize_audit_records(decision_card.get("input_provenance", {}) or {}, refresh_summary)
+    )
     profile_payload = _as_dict(user_state.get("profile"))
     if isinstance(profile_payload.get("profile"), dict):
         profile_payload = _as_dict(profile_payload.get("profile"))
@@ -985,12 +1437,24 @@ def _frontdesk_summary(
         "run_id": result_payload.get("run_id"),
         "workflow_type": result_payload.get("workflow_type"),
         "status": result_payload.get("status"),
+        "run_outcome_status": result_payload.get("run_outcome_status") or decision_card.get("run_outcome_status"),
+        "resolved_result_category": result_payload.get("resolved_result_category")
+        or decision_card.get("resolved_result_category"),
+        "disclosure_decision": dict(
+            result_payload.get("disclosure_decision") or decision_card.get("disclosure_decision") or {}
+        ),
+        "evidence_bundle": dict(
+            result_payload.get("evidence_bundle") or decision_card.get("evidence_bundle") or {}
+        ),
+        "evidence_invariance_report": dict(result_payload.get("evidence_invariance_report") or {}),
         "decision_card": decision_card,
         "key_metrics": decision_card.get("key_metrics", {}),
         "input_provenance": decision_card.get("input_provenance", {}),
         "input_source_summary": input_source_summary,
         "candidate_options": decision_card.get("candidate_options", []),
         "goal_alternatives": decision_card.get("goal_alternatives", []),
+        "audit_records": audit_records,
+        "formal_path_visibility": formal_path_visibility,
         "refresh_summary": refresh_summary,
         "active_execution_plan": user_state.get("active_execution_plan"),
         "pending_execution_plan": user_state.get("pending_execution_plan"),
@@ -1133,6 +1597,23 @@ def run_frontdesk_onboarding(
             account_profile_id=profile.account_profile_id,
             as_of=str(raw_inputs.get("as_of") or _now_iso()),
         )
+    else:
+        (
+            raw_inputs,
+            input_provenance,
+            external_payload,
+            external_source_ref,
+            external_status,
+            external_error,
+        ) = _maybe_apply_runtime_market_history(
+            raw_inputs=raw_inputs,
+            input_provenance=input_provenance,
+            workflow_type="onboarding",
+            account_profile_id=profile.account_profile_id,
+            as_of=str(raw_inputs.get("as_of") or _now_iso()),
+            external_snapshot_source=external_source_ref,
+            external_data_config=None,
+        )
     account_profile = _normalize_profile_payload(
         _merge_profile_override(
             _profile_to_dict(onboarding.profile),
@@ -1140,6 +1621,19 @@ def run_frontdesk_onboarding(
             account_profile_id=onboarding.profile.account_profile_id,
         )
     )
+    if (
+        (external_snapshot_source is not None or external_data_config is not None)
+        and external_status == "fetched"
+        and isinstance(external_payload, dict)
+        and bool(external_payload)
+    ):
+        raw_inputs = _mark_snapshot_primary_formal_path(
+            raw_inputs,
+            external_source_ref=external_source_ref,
+            external_payload=external_payload,
+        )
+    raw_inputs.setdefault("formal_path_required", True)
+    raw_inputs.setdefault("execution_policy", ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
     run_id = _make_run_id("frontdesk", onboarding.profile.account_profile_id, "onboarding")
     result = run_orchestrator(
         trigger={"workflow_type": "onboarding", "run_id": run_id},
@@ -1160,6 +1654,11 @@ def run_frontdesk_onboarding(
         external_snapshot_error=external_error,
         external_payload=external_payload,
         external_snapshot_config=_stringify_external_snapshot_config(external_data_config),
+    )
+    payload = _apply_formal_path_metadata(
+        payload,
+        input_provenance=input_provenance,
+        refresh_summary=payload.get("refresh_summary"),
     )
     created_at = _now_iso()
     store.save_onboarding_result(
@@ -1187,6 +1686,8 @@ def run_frontdesk_onboarding(
     )
     summary["workflow"] = "onboard"
     summary["user_state"] = user_state
+    if summary.get("formal_path_visibility") is not None and isinstance(summary["user_state"], dict):
+        summary["user_state"]["formal_path_visibility"] = summary["formal_path_visibility"]
     return summary
 
 
@@ -1311,12 +1812,42 @@ def run_frontdesk_followup(
             )
         except ExternalSnapshotAdapterError:
             raise
+    else:
+        (
+            raw_inputs,
+            input_provenance,
+            external_payload,
+            external_source_ref,
+            external_status,
+            external_error,
+        ) = _maybe_apply_runtime_market_history(
+            raw_inputs=raw_inputs,
+            input_provenance=input_provenance,
+            workflow_type=workflow_type,
+            account_profile_id=account_profile_id,
+            as_of=str(raw_inputs.get("as_of") or as_of),
+            external_snapshot_source=external_source_ref,
+            external_data_config=None,
+        )
     active_profile = _merge_profile_override(
         active_profile,
         profile_patch_from_external_snapshot(raw_inputs, external_payload=external_payload),
         account_profile_id=account_profile_id,
     )
     active_profile = _normalize_profile_payload(active_profile)
+    if (
+        (external_snapshot_source is not None or external_data_config is not None)
+        and external_status == "fetched"
+        and isinstance(external_payload, dict)
+        and bool(external_payload)
+    ):
+        raw_inputs = _mark_snapshot_primary_formal_path(
+            raw_inputs,
+            external_source_ref=external_source_ref,
+            external_payload=external_payload,
+        )
+    raw_inputs.setdefault("formal_path_required", True)
+    raw_inputs.setdefault("execution_policy", ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
     run_id = _make_run_id("frontdesk", account_profile_id, workflow_type)
     result = run_orchestrator(
         trigger={
@@ -1345,6 +1876,11 @@ def run_frontdesk_followup(
         external_snapshot_error=external_error,
         external_payload=external_payload,
         external_snapshot_config=_stringify_external_snapshot_config(external_data_config),
+    )
+    payload = _apply_formal_path_metadata(
+        payload,
+        input_provenance=input_provenance,
+        refresh_summary=payload.get("refresh_summary"),
     )
     created_at = _now_iso()
     normalized_provenance = store.save_run_artifacts(
@@ -1382,7 +1918,7 @@ def run_frontdesk_followup(
             created_at=created_at,
         )
     user_state = store.load_user_state(account_profile_id)
-    return _frontdesk_summary(
+    summary = _frontdesk_summary(
         account_profile_id=account_profile_id,
         display_name=str(active_profile.get("display_name", snapshot["profile"]["display_name"])),
         result_payload=payload,
@@ -1395,6 +1931,96 @@ def run_frontdesk_followup(
         external_payload=external_payload,
         user_state=user_state,
     )
+    if summary.get("formal_path_visibility") is not None and isinstance(user_state, dict):
+        user_state["formal_path_visibility"] = summary["formal_path_visibility"]
+        summary["user_state"] = user_state
+    return summary
+
+
+def sync_observed_portfolio(
+    *,
+    account_profile_id: str,
+    observed_portfolio: str | Path | dict[str, Any],
+    db_path: str | Path = DEFAULT_DB_PATH,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    db_path = Path(db_path)
+    store = FrontdeskStore(db_path)
+    store.init_schema()
+
+    snapshot = store.get_frontdesk_snapshot(account_profile_id)
+    if snapshot is None or snapshot.get("profile") is None:
+        raise ValueError(f"no saved frontdesk state for {account_profile_id}")
+    if observed_portfolio is None:
+        raise ValueError("observed_portfolio payload is required")
+
+    source_payload = _mapping_from_source(observed_portfolio, option_name="observed-portfolio-json")
+    if source_payload is None or not source_payload:
+        raise ValueError("observed_portfolio payload is required")
+    normalized = _normalize_observed_portfolio_payload(source_payload)
+    timestamp = created_at or _now_iso()
+    reconciliation_state = reconcile_observed_portfolio(
+        account_profile_id=account_profile_id,
+        observed_portfolio=dict(normalized),
+        active_execution_plan=_as_dict(snapshot.get("active_execution_plan")),
+        pending_execution_plan=_as_dict(snapshot.get("pending_execution_plan")),
+    ).to_dict()
+    observed_record = store.save_observed_portfolio_record(
+        account_profile_id=account_profile_id,
+        snapshot_id=str(normalized["snapshot_id"]),
+        source_kind=str(normalized["source_kind"]),
+        data_status=str(normalized["data_status"]),
+        completeness_status=str(normalized["completeness_status"]),
+        as_of=normalized.get("as_of"),
+        total_value=normalized.get("total_value"),
+        available_cash=normalized.get("available_cash"),
+        weights=dict(normalized.get("weights") or {}),
+        holdings=[dict(item) for item in normalized.get("holdings") or []],
+        missing_fields=[str(item) for item in normalized.get("missing_fields") or []],
+        audit_window=normalized.get("audit_window"),
+        source_ref=normalized.get("source_ref"),
+        payload=normalized,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    reconciliation_state["snapshot_id"] = observed_record.snapshot_id
+    reconciliation_state["observed_snapshot_id"] = observed_record.snapshot_id
+    reconciliation_state["observed_source_kind"] = normalized.get("source_kind")
+    reconciliation_state["observed_completeness_status"] = normalized.get("completeness_status")
+    reconciliation_state["observed_as_of"] = normalized.get("as_of")
+    reconciliation_state["observed_total_value"] = normalized.get("total_value")
+    reconciliation_state["observed_available_cash"] = normalized.get("available_cash")
+    reconciliation_state["observed_weights"] = dict(normalized.get("weights") or {})
+    reconciliation_state["summary"] = (
+        f"plan coverage against {reconciliation_state.get('compared_against')} plan; "
+        f"status={reconciliation_state.get('status')}; snapshot={observed_record.snapshot_id}"
+    )
+    reconciliation_state["created_at"] = timestamp
+    reconciliation_state["updated_at"] = timestamp
+    reconciliation_record = store.save_reconciliation_state_record(
+        account_profile_id=account_profile_id,
+        snapshot_id=observed_record.snapshot_id,
+        status=str(reconciliation_state["status"]),
+        compared_against=str(reconciliation_state["compared_against"]),
+        observed_snapshot_id=observed_record.snapshot_id,
+        payload=reconciliation_state,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    user_state = load_user_state(account_profile_id, db_path=db_path)
+    snapshot_after_sync = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
+    return {
+        "workflow": "sync_portfolio",
+        "workflow_type": "sync_portfolio",
+        "status": "synced",
+        "account_profile_id": account_profile_id,
+        "display_name": str((snapshot or {}).get("profile", {}).get("display_name") or account_profile_id),
+        "db_path": str(db_path),
+        "observed_portfolio": (snapshot_after_sync or {}).get("observed_portfolio") or _observed_portfolio_record_summary(observed_record),
+        "reconciliation_state": (snapshot_after_sync or {}).get("reconciliation_state") or dict(reconciliation_record.payload or {}),
+        "refresh_summary": (snapshot_after_sync or {}).get("refresh_summary"),
+        "user_state": user_state,
+    }
 
 
 def load_frontdesk_snapshot(
@@ -1427,6 +2053,25 @@ def load_frontdesk_snapshot(
         result_payload.get("input_source_summary")
         or _build_input_source_summary(decision_card.get("input_provenance", {}) or {})
     )
+    snapshot["formal_path_visibility"] = dict(
+        result_payload.get("formal_path_visibility")
+        or decision_card.get("formal_path_visibility")
+        or _classify_formal_path_visibility(
+            decision_card,
+            snapshot.get("refresh_summary"),
+            list(result_payload.get("audit_records") or decision_card.get("audit_records") or []),
+        )
+    )
+    snapshot["audit_records"] = list(
+        result_payload.get("audit_records")
+        or decision_card.get("audit_records")
+        or _normalize_audit_records(decision_card.get("input_provenance", {}) or {}, snapshot.get("refresh_summary"))
+    )
+    if decision_card:
+        decision_card["formal_path_visibility"] = snapshot["formal_path_visibility"]
+        decision_card["audit_records"] = snapshot["audit_records"]
+        latest_run["decision_card"] = decision_card
+        snapshot["latest_run"] = latest_run
     return snapshot
 
 
@@ -1444,7 +2089,95 @@ def load_user_state(
     if snapshot is not None:
         user_state["refresh_summary"] = snapshot.get("refresh_summary")
         user_state["input_source_summary"] = snapshot.get("input_source_summary")
+        user_state["formal_path_visibility"] = snapshot.get("formal_path_visibility")
+        user_state["audit_records"] = snapshot.get("audit_records")
     return user_state
+
+
+def explain_frontdesk_probability(
+    *,
+    account_profile_id: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    snapshot = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
+    user_state = load_user_state(account_profile_id, db_path=db_path)
+    if snapshot is None or user_state is None:
+        raise ValueError(f"no saved frontdesk state for {account_profile_id}")
+    decision_card = dict(user_state.get("decision_card") or {})
+    return {
+        "workflow": "explain_probability",
+        "status": "explained",
+        "account_profile_id": account_profile_id,
+        "probability_explanation": dict(decision_card.get("probability_explanation") or {}),
+        "frontier_analysis": dict(decision_card.get("frontier_analysis") or {}),
+        "key_metrics": dict(decision_card.get("key_metrics") or {}),
+        "formal_path_visibility": snapshot.get("formal_path_visibility"),
+        "refresh_summary": snapshot.get("refresh_summary"),
+        "user_state": user_state,
+    }
+
+
+def explain_frontdesk_plan_change(
+    *,
+    account_profile_id: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    snapshot = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
+    user_state = load_user_state(account_profile_id, db_path=db_path)
+    if snapshot is None or user_state is None:
+        raise ValueError(f"no saved frontdesk state for {account_profile_id}")
+    decision_card = dict(user_state.get("decision_card") or {})
+    return {
+        "workflow": "explain_plan_change",
+        "status": "explained",
+        "account_profile_id": account_profile_id,
+        "active_execution_plan": snapshot.get("active_execution_plan"),
+        "pending_execution_plan": snapshot.get("pending_execution_plan"),
+        "execution_plan_comparison": snapshot.get("execution_plan_comparison"),
+        "execution_plan_guidance": dict(decision_card.get("execution_plan_guidance") or {}),
+        "formal_path_visibility": snapshot.get("formal_path_visibility"),
+        "refresh_summary": snapshot.get("refresh_summary"),
+        "user_state": user_state,
+    }
+
+
+def run_frontdesk_daily_monitor(
+    *,
+    account_profile_id: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    snapshot = load_frontdesk_snapshot(account_profile_id, db_path=db_path)
+    user_state = load_user_state(account_profile_id, db_path=db_path)
+    if snapshot is None or user_state is None:
+        raise ValueError(f"no saved frontdesk state for {account_profile_id}")
+    plan = snapshot.get("pending_execution_plan") or snapshot.get("active_execution_plan") or {}
+    maintenance_policy = dict(plan.get("maintenance_policy_summary") or {})
+    monitoring_actions: list[dict[str, Any]] = []
+    for item in list(plan.get("items") or []):
+        payload = dict(item or {})
+        monitoring_actions.append(
+            {
+                "asset_bucket": payload.get("asset_bucket"),
+                "primary_product_id": payload.get("primary_product_id"),
+                "trade_direction": payload.get("trade_direction"),
+                "initial_trade_amount": payload.get("initial_trade_amount"),
+                "deferred_trade_amount": payload.get("deferred_trade_amount"),
+                "trigger_conditions": list(payload.get("trigger_conditions") or []),
+            }
+        )
+    monitoring_status = "monitoring_ready" if monitoring_actions else "no_monitorable_actions"
+    return {
+        "workflow": "daily_monitor",
+        "status": monitoring_status,
+        "account_profile_id": account_profile_id,
+        "monitoring_actions": monitoring_actions,
+        "maintenance_policy_summary": maintenance_policy,
+        "observed_portfolio": snapshot.get("observed_portfolio"),
+        "reconciliation_state": snapshot.get("reconciliation_state"),
+        "formal_path_visibility": snapshot.get("formal_path_visibility"),
+        "refresh_summary": snapshot.get("refresh_summary"),
+        "user_state": user_state,
+    }
 
 
 def record_frontdesk_execution_feedback(

@@ -51,3 +51,24 @@ def test_validate_ev_state_inputs_uses_snapshot_id_date_not_runtime_clock(
         solver_baseline_inp=goal_solver_input_base,
         optimizer_params=runtime_optimizer_params_base,
     )
+
+
+@pytest.mark.contract
+def test_validate_ev_state_inputs_accepts_partial_weights_when_available_cash_closes_account(
+    goal_solver_output_base,
+    goal_solver_input_base,
+    live_portfolio_base,
+    constraint_state_base,
+    runtime_optimizer_params_base,
+):
+    live_portfolio_base["weights"] = {"gold": 0.30}
+    live_portfolio_base["total_value"] = 10_000.0
+    live_portfolio_base["available_cash"] = 7_000.0
+
+    validate_ev_state_inputs(
+        live_portfolio=live_portfolio_base,
+        constraint_state=constraint_state_base,
+        solver_output=goal_solver_output_base,
+        solver_baseline_inp=goal_solver_input_base,
+        optimizer_params=runtime_optimizer_params_base,
+    )

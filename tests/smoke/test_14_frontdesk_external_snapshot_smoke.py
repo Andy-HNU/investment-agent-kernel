@@ -6,6 +6,10 @@ import pytest
 
 from frontdesk.service import load_user_state
 from shared.onboarding import UserOnboardingProfile
+from tests.support.formal_snapshot_helpers import (
+    build_formal_snapshot_payload,
+    write_formal_snapshot_source,
+)
 from tests.support.http_snapshot_server import serve_json_routes
 
 
@@ -13,69 +17,36 @@ def _profile(*, account_profile_id: str = "frontdesk_external_user") -> UserOnbo
     return UserOnboardingProfile(
         account_profile_id=account_profile_id,
         display_name="Andy",
-        current_total_assets=50_000.0,
-        monthly_contribution=12_000.0,
-        goal_amount=1_000_000.0,
-        goal_horizon_months=60,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
         risk_preference="中等",
-        max_drawdown_tolerance=0.10,
-        current_holdings="cash",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
         restrictions=[],
     )
 
 
 def _external_snapshot(*, total_value: float) -> dict[str, object]:
+    profile = _profile(account_profile_id="frontdesk_external_snapshot_profile")
     weights = {"equity_cn": 0.55, "bond_cn": 0.25, "gold": 0.15, "satellite": 0.05}
-    return {
-        "market_raw": {
-            "raw_volatility": {
-                "equity_cn": 0.20,
-                "bond_cn": 0.05,
-                "gold": 0.11,
-                "satellite": 0.24,
-            },
-            "liquidity_scores": {
-                "equity_cn": 0.91,
-                "bond_cn": 0.96,
-                "gold": 0.82,
-                "satellite": 0.58,
-            },
-            "valuation_z_scores": {
-                "equity_cn": -0.2,
-                "bond_cn": 0.1,
-                "gold": -0.1,
-                "satellite": 1.1,
-            },
-            "expected_returns": {
-                "equity_cn": 0.09,
-                "bond_cn": 0.03,
-                "gold": 0.04,
-                "satellite": 0.11,
-            },
-        },
-        "account_raw": {
+    return build_formal_snapshot_payload(
+        profile,
+        account_raw_overrides={
             "weights": weights,
             "total_value": total_value,
             "available_cash": 1_000.0,
-            "remaining_horizon_months": 60,
+            "remaining_horizon_months": 36,
         },
-        "behavior_raw": {
-            "recent_chase_risk": "low",
-            "recent_panic_risk": "none",
-            "trade_frequency_30d": 0.0,
-            "override_count_90d": 0,
-            "cooldown_active": False,
-            "cooldown_until": None,
-            "behavior_penalty_coeff": 0.2,
-        },
-        "live_portfolio": {
+        live_portfolio_overrides={
             "weights": weights,
             "total_value": total_value,
             "available_cash": 1_000.0,
-            "remaining_horizon_months": 60,
+            "remaining_horizon_months": 36,
             "current_drawdown": 0.03,
         },
-    }
+    )
 
 
 @pytest.mark.smoke
@@ -138,7 +109,7 @@ def test_frontdesk_cli_onboarding_fetch_failure_falls_back(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert payload["status"] == "completed"
+    assert payload["status"] == "blocked"
     assert payload["external_snapshot_status"] == "fallback"
     assert payload["external_snapshot_error"]
     assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 0
@@ -153,6 +124,7 @@ def test_frontdesk_cli_monthly_can_use_external_snapshot_updates(tmp_path, capsy
     profile = _profile(account_profile_id=account_profile_id)
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    baseline_snapshot_path = write_formal_snapshot_source(tmp_path, profile)
 
     onboarding_exit_code = main(
         [
@@ -161,6 +133,8 @@ def test_frontdesk_cli_monthly_can_use_external_snapshot_updates(tmp_path, capsy
             str(db_path),
             "--profile-json",
             str(profile_path),
+            "--external-snapshot-source",
+            str(baseline_snapshot_path),
             "--non-interactive",
             "--json",
         ]

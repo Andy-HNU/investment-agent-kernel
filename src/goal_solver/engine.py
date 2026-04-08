@@ -9,8 +9,12 @@ import numpy as np
 
 from goal_solver.types import (
     AccountConstraints,
+    CandidateProductContext,
     CashFlowEvent,
     CashFlowPlan,
+    FrontierAnalysis,
+    FrontierScenario,
+    ExpectedReturnDecomposition,
     GoalCard,
     GoalSolverInput,
     GoalSolverOutput,
@@ -19,10 +23,17 @@ from goal_solver.types import (
     RANKING_MODE_MATRIX,
     RankingMode,
     RiskBudget,
+    ProductHistoryProfile,
+    ProductSimulationInput,
+    ProductSimulationSeries,
     RiskSummary,
     StrategicAllocation,
     StructureBudget,
+    FormalEstimatedResultSpec,
+    SuccessEventSpec,
     SuccessProbabilityResult,
+    _ESTIMATION_BASES,
+    normalize_product_probability_method,
     infer_ranking_mode,
 )
 
@@ -78,6 +89,102 @@ def _goal_solver_input_from_any(value: GoalSolverInput | dict[str, Any]) -> Goal
         StrategicAllocation(**dict(item))
         for item in data.get("candidate_allocations", [])
     ]
+    candidate_product_contexts = {
+        str(name): CandidateProductContext(
+            allocation_name=str(payload.get("allocation_name") or name),
+            product_probability_method=str(
+                payload.get("product_probability_method") or "product_proxy_adjustment_estimate"
+            ),
+            bucket_expected_return_adjustments={
+                str(bucket): float(delta)
+                for bucket, delta in dict(payload.get("bucket_expected_return_adjustments") or {}).items()
+            },
+            bucket_volatility_multipliers={
+                str(bucket): float(multiplier)
+                for bucket, multiplier in dict(payload.get("bucket_volatility_multipliers") or {}).items()
+            },
+            selected_product_ids=[str(item) for item in payload.get("selected_product_ids", [])],
+            selected_proxy_refs=[str(item) for item in payload.get("selected_proxy_refs", [])],
+            product_history_profiles=[
+                ProductHistoryProfile(
+                    product_id=str(item.get("product_id")),
+                    source_ref=str(item.get("source_ref")) if item.get("source_ref") is not None else None,
+                    observed_history_days=(
+                        None
+                        if item.get("observed_history_days") is None
+                        else int(item.get("observed_history_days"))
+                    ),
+                    inferred_history_days=(
+                        None
+                        if item.get("inferred_history_days") is None
+                        else int(item.get("inferred_history_days"))
+                    ),
+                    inference_weight=float(item.get("inference_weight", 1.0)),
+                    data_status=str(item.get("data_status") or "manual_annotation"),
+                )
+                for item in payload.get("product_history_profiles", [])
+            ],
+            formal_path_preflight=dict(payload.get("formal_path_preflight") or {}),
+            failure_artifact=(
+                None if payload.get("failure_artifact") is None else dict(payload.get("failure_artifact") or {})
+            ),
+            product_simulation_input=(
+                None
+                if not isinstance(payload.get("product_simulation_input"), dict)
+                else ProductSimulationInput(
+                    products=[
+                        ProductSimulationSeries(
+                            product_id=str(item.get("product_id")),
+                            asset_bucket=str(item.get("asset_bucket") or ""),
+                            target_weight=float(item.get("target_weight", 0.0)),
+                            return_series=[float(value) for value in list(item.get("return_series") or [])],
+                            observation_dates=[
+                                str(value)
+                                for value in list(item.get("observation_dates") or [])
+                                if str(value).strip()
+                            ],
+                            source_ref=(
+                                str(item.get("source_ref"))
+                                if item.get("source_ref") is not None
+                                else None
+                            ),
+                            data_status=str(item.get("data_status") or "manual_annotation"),
+                            frequency=str(item.get("frequency") or "daily"),
+                            observed_start_date=(
+                                str(item.get("observed_start_date"))
+                                if item.get("observed_start_date") is not None
+                                else None
+                            ),
+                            observed_end_date=(
+                                str(item.get("observed_end_date"))
+                                if item.get("observed_end_date") is not None
+                                else None
+                            ),
+                            observed_points=int(item.get("observed_points") or 0),
+                            inferred_points=int(item.get("inferred_points") or 0),
+                        )
+                        for item in list(payload.get("product_simulation_input", {}).get("products") or [])
+                        if isinstance(item, dict)
+                    ],
+                    frequency=str(payload.get("product_simulation_input", {}).get("frequency") or "daily"),
+                    simulation_method=str(
+                        payload.get("product_simulation_input", {}).get("simulation_method")
+                        or "product_independent_path"
+                    ),
+                    audit_window=(
+                        None
+                        if payload.get("product_simulation_input", {}).get("audit_window") is None
+                        else dict(payload.get("product_simulation_input", {}).get("audit_window") or {})
+                    ),
+                    coverage_summary=dict(
+                        payload.get("product_simulation_input", {}).get("coverage_summary") or {}
+                    ),
+                )
+            ),
+            notes=[str(item) for item in payload.get("notes", [])],
+        )
+        for name, payload in dict(data.get("candidate_product_contexts") or {}).items()
+    }
     override_raw = data.get("ranking_mode_override")
     ranking_mode_override = None
     if override_raw is not None:
@@ -89,6 +196,7 @@ def _goal_solver_input_from_any(value: GoalSolverInput | dict[str, Any]) -> Goal
         cashflow_plan=cashflow_plan,
         current_portfolio_value=float(data["current_portfolio_value"]),
         candidate_allocations=candidate_allocations,
+        candidate_product_contexts=candidate_product_contexts,
         constraints=constraints,
         solver_params=solver_params,
         ranking_mode_override=ranking_mode_override,
@@ -144,8 +252,209 @@ def _build_cashflow_schedule(plan: CashFlowPlan, horizon_months: int) -> list[fl
     return schedule
 
 
+def _project_terminal_value(
+    *,
+    initial_value: float,
+    cashflow_schedule: list[float],
+    monthly_rate: float,
+) -> float:
+    value = float(initial_value)
+    horizon = max(len(cashflow_schedule), 1)
+    for month in range(horizon):
+        month_cf = float(cashflow_schedule[month] if month < len(cashflow_schedule) else 0.0)
+        value = value * (1.0 + monthly_rate) + month_cf
+    return float(value)
+
+
+def _effective_success_probability(result: SuccessProbabilityResult) -> float:
+    independent = result.product_independent_success_probability
+    if independent is not None:
+        return float(independent)
+    adjusted = result.product_proxy_adjusted_success_probability
+    if adjusted is not None:
+        return float(adjusted)
+    return float(result.success_probability)
+
+
+def _build_success_event_spec(inp: GoalSolverInput) -> SuccessEventSpec:
+    target_type = "target_annual_return" if inp.goal.target_annual_return is not None else "goal_amount"
+    target_value = (
+        float(inp.goal.target_annual_return)
+        if inp.goal.target_annual_return is not None
+        else float(inp.goal.goal_amount)
+    )
+    contribution_policy = (
+        "continue_monthly_contribution"
+        if float(inp.cashflow_plan.monthly_contribution or 0.0) > 0.0 or inp.cashflow_plan.cashflow_events
+        else "no_regular_contribution"
+    )
+    rebalancing_policy = "not_explicitly_modeled"
+    return SuccessEventSpec(
+        horizon_months=int(inp.goal.horizon_months),
+        target_type=target_type,
+        target_value=target_value,
+        drawdown_constraint=float(inp.constraints.max_drawdown_tolerance),
+        benchmark_ref=None,
+        contribution_policy=contribution_policy,
+        rebalancing_policy=rebalancing_policy,
+        return_basis=str(inp.goal.goal_amount_basis),
+        fee_basis=str(inp.goal.fee_assumption),
+    )
+
+
+def _build_expected_return_decomposition(
+    *,
+    result: SuccessProbabilityResult,
+    market_state: MarketAssumptions,
+) -> ExpectedReturnDecomposition:
+    component_contributions = {
+        bucket: float(weight) * _bucket_expected_return(bucket, market_state)
+        for bucket, weight in result.weights.items()
+    }
+    expected_return = float(result.expected_annual_return or 0.0)
+    return ExpectedReturnDecomposition(
+        decomposition_basis="weighted_bucket_expected_return",
+        additivity_convention="simple_sum",
+        residual=expected_return - sum(component_contributions.values()),
+        component_contributions=component_contributions,
+    )
+
+
+def _formal_estimated_result_spec_from_result(
+    *,
+    result: SuccessProbabilityResult,
+    product_context: CandidateProductContext | None,
+) -> FormalEstimatedResultSpec | None:
+    normalized_method = normalize_product_probability_method(result.product_probability_method)
+    if normalized_method == "product_independent_path":
+        return None
+
+    preflight = dict((product_context.formal_path_preflight or {}) if product_context is not None else {})
+    estimation_basis = str(preflight.get("estimation_basis") or "").strip().lower()
+    if estimation_basis not in _ESTIMATION_BASES:
+        estimation_basis = {
+            "product_estimated_path": "proxy_path",
+            "product_proxy_path": "proxy_path",
+            "hybrid_independent_estimate": "hybrid_independent_estimate",
+        }.get(normalized_method, "bucket_estimate")
+
+    coverage_summary = dict(result.simulation_coverage_summary or {})
+    minimum_estimated_weight_adjusted_coverage = preflight.get(
+        "minimum_estimated_weight_adjusted_coverage",
+        coverage_summary.get(
+            "weight_adjusted_coverage",
+            coverage_summary.get("independent_weight_adjusted_coverage", 0.0),
+        ),
+    )
+    minimum_explanation_ready_coverage = preflight.get(
+        "minimum_explanation_ready_coverage",
+        coverage_summary.get("explanation_ready_coverage", 0.0),
+    )
+    return FormalEstimatedResultSpec(
+        estimation_basis=estimation_basis,
+        minimum_estimated_weight_adjusted_coverage=float(minimum_estimated_weight_adjusted_coverage or 0.0),
+        minimum_explanation_ready_coverage=float(minimum_explanation_ready_coverage or 0.0),
+        point_estimate_allowed=bool(preflight.get("point_estimate_allowed", False)),
+        required_range_disclosure=bool(preflight.get("required_range_disclosure", True)),
+    )
+
+
+def _solve_implied_required_annual_return(
+    *,
+    initial_value: float,
+    cashflow_schedule: list[float],
+    goal_amount: float,
+) -> float | None:
+    target = float(goal_amount)
+    if target <= 0.0:
+        return None
+
+    lower = -0.999
+    upper = 0.02
+    lower_value = _project_terminal_value(
+        initial_value=float(initial_value),
+        cashflow_schedule=cashflow_schedule,
+        monthly_rate=lower,
+    )
+    upper_value = _project_terminal_value(
+        initial_value=float(initial_value),
+        cashflow_schedule=cashflow_schedule,
+        monthly_rate=upper,
+    )
+    while upper_value < target and upper < 5.0:
+        upper = upper * 2.0 + 0.01
+        upper_value = _project_terminal_value(
+            initial_value=float(initial_value),
+            cashflow_schedule=cashflow_schedule,
+            monthly_rate=upper,
+        )
+
+    if lower_value > target:
+        return (1.0 + lower) ** 12 - 1.0
+    if upper_value < target:
+        return None
+
+    for _ in range(100):
+        mid = (lower + upper) / 2.0
+        mid_value = _project_terminal_value(
+            initial_value=float(initial_value),
+            cashflow_schedule=cashflow_schedule,
+            monthly_rate=mid,
+        )
+        if mid_value >= target:
+            upper = mid
+        else:
+            lower = mid
+    return (1.0 + upper) ** 12 - 1.0
+
+
+def _scenario_expected_annual_return(
+    *,
+    initial_value: float,
+    cashflow_schedule: list[float],
+    expected_terminal_value: float,
+) -> float | None:
+    return _solve_implied_required_annual_return(
+        initial_value=initial_value,
+        cashflow_schedule=cashflow_schedule,
+        goal_amount=expected_terminal_value,
+    )
+
+
 def _is_equity_like(bucket: str) -> bool:
     return bucket.startswith("equity") or bucket in {"satellite", "technology", "growth"}
+
+
+def _apply_candidate_product_context(
+    market_assumptions: MarketAssumptions,
+    product_context: CandidateProductContext | None,
+) -> tuple[MarketAssumptions, str]:
+    if product_context is None:
+        return market_assumptions, "bucket_only_no_product_proxy_adjustment"
+
+    adjusted_returns = dict(market_assumptions.expected_returns)
+    for bucket, delta in product_context.bucket_expected_return_adjustments.items():
+        if bucket in adjusted_returns:
+            adjusted_returns[bucket] = float(adjusted_returns[bucket]) + float(delta)
+
+    adjusted_volatility = dict(market_assumptions.volatility)
+    for bucket, multiplier in product_context.bucket_volatility_multipliers.items():
+        if bucket in adjusted_volatility:
+            adjusted_volatility[bucket] = float(adjusted_volatility[bucket]) * max(float(multiplier), 0.0)
+
+    adjusted_market = MarketAssumptions(
+        expected_returns=adjusted_returns,
+        volatility=adjusted_volatility,
+        correlation_matrix={
+            bucket: dict(row)
+            for bucket, row in market_assumptions.correlation_matrix.items()
+        },
+        source_name=market_assumptions.source_name,
+        dataset_version=market_assumptions.dataset_version,
+        lookback_months=market_assumptions.lookback_months,
+        historical_backtest_used=market_assumptions.historical_backtest_used,
+    )
+    return adjusted_market, product_context.product_probability_method or "product_proxy_adjustment_estimate"
 
 
 def _bucket_expected_return(bucket: str, market_state: MarketAssumptions) -> float:
@@ -340,6 +649,98 @@ def _run_monte_carlo(
     return probability, extra, risk
 
 
+def _normalize_simulation_frequency(value: str | None) -> tuple[str, float]:
+    rendered = str(value or "daily").strip().lower()
+    annualization = {
+        "daily": 252.0,
+        "weekly": 52.0,
+        "monthly": 12.0,
+        "quarterly": 4.0,
+    }.get(rendered, 252.0)
+    return rendered, annualization
+
+
+def _portfolio_return_series_from_products(
+    simulation_input: ProductSimulationInput,
+) -> tuple[list[float], str]:
+    series_entries = [item for item in simulation_input.products if item.return_series and item.target_weight > 0.0]
+    if not series_entries:
+        return [], simulation_input.frequency or "daily"
+    total_weight = sum(float(item.target_weight) for item in series_entries)
+    if total_weight <= 0.0:
+        return [], simulation_input.frequency or "daily"
+    dated_entries = [
+        item
+        for item in series_entries
+        if item.observation_dates and len(item.observation_dates) == len(item.return_series)
+    ]
+    if len(dated_entries) == len(series_entries):
+        common_dates = set(dated_entries[0].observation_dates)
+        for item in dated_entries[1:]:
+            common_dates &= set(item.observation_dates)
+        ordered_dates = [date for date in dated_entries[0].observation_dates if date in common_dates]
+        if ordered_dates:
+            aligned_by_product = [
+                {date: float(ret) for date, ret in zip(item.observation_dates, item.return_series)}
+                for item in dated_entries
+            ]
+            portfolio_returns: list[float] = []
+            for date in ordered_dates:
+                period_return = 0.0
+                for item, aligned in zip(dated_entries, aligned_by_product):
+                    period_return += float(item.target_weight) * aligned[date]
+                portfolio_returns.append(period_return / total_weight)
+            if len(portfolio_returns) > 1:
+                return portfolio_returns, simulation_input.frequency or "daily"
+    min_len = min(len(item.return_series) for item in series_entries)
+    if min_len <= 1:
+        return [], simulation_input.frequency or "daily"
+    portfolio_returns: list[float] = []
+    for idx in range(-min_len, 0):
+        period_return = 0.0
+        for item in series_entries:
+            period_return += float(item.target_weight) * float(item.return_series[idx])
+        portfolio_returns.append(period_return / total_weight)
+    return portfolio_returns, simulation_input.frequency or "daily"
+
+
+def _run_product_independent_monte_carlo(
+    *,
+    simulation_input: ProductSimulationInput,
+    cashflow_schedule: list[float],
+    initial_value: float,
+    goal_amount: float,
+    n_paths: int,
+    seed: int,
+) -> tuple[float, dict[str, float], RiskSummary]:
+    portfolio_returns, frequency = _portfolio_return_series_from_products(simulation_input)
+    if not portfolio_returns:
+        raise ValueError("product_independent_path requires aligned observed return series")
+    _, annualization = _normalize_simulation_frequency(frequency)
+    mean_period = float(np.mean(portfolio_returns))
+    std_period = float(np.std(portfolio_returns))
+    mu_annual = mean_period * annualization
+    sigma_annual = std_period * math.sqrt(annualization)
+    synthetic_market = MarketAssumptions(
+        expected_returns={"portfolio": mu_annual},
+        volatility={"portfolio": max(sigma_annual, 0.0)},
+        correlation_matrix={"portfolio": {"portfolio": 1.0}},
+        source_name="product_independent_simulation",
+        dataset_version=None,
+        lookback_months=None,
+        historical_backtest_used=True,
+    )
+    return _run_monte_carlo(
+        {"portfolio": 1.0},
+        cashflow_schedule,
+        initial_value,
+        goal_amount,
+        synthetic_market,
+        n_paths,
+        seed,
+    )
+
+
 def _check_allocation_feasibility(
     allocation: StrategicAllocation,
     result: SuccessProbabilityResult,
@@ -387,7 +788,7 @@ def _ranking_score(
     threshold: float,
     mode: RankingMode,
 ) -> tuple[float | bool, ...]:
-    success_probability = result.success_probability
+    success_probability = _effective_success_probability(result)
     max_drawdown = result.risk_summary.max_drawdown_90pct
     complexity = -allocation.complexity_score
 
@@ -409,68 +810,403 @@ def _find_allocation(candidates: list[StrategicAllocation], name: str) -> Strate
     raise ValueError(f"allocation_not_found name={name}")
 
 
-def _infeasibility_score(
+def _frontier_gap_score(
+    *,
+    scenario_expected_annual_return: float | None,
+    effective_success_probability: float,
+    required_annual_return: float | None,
+    max_drawdown_90pct: float,
+    drawdown_tolerance: float,
+) -> tuple[float, float, float]:
+    target_return_gap = 0.0
+    if required_annual_return is not None and scenario_expected_annual_return is not None:
+        target_return_gap = max(required_annual_return - scenario_expected_annual_return, 0.0)
+    drawdown_gap = max(max_drawdown_90pct - drawdown_tolerance, 0.0)
+    success_gap = max(1.0 - effective_success_probability, 0.0)
+    return target_return_gap, drawdown_gap, success_gap
+
+
+def _build_unavailable_frontier_scenario(
+    *,
+    scenario_id: str,
+    rationale: str,
+) -> FrontierScenario:
+    return FrontierScenario(
+        scenario_id=scenario_id,
+        allocation_name="",
+        weights={},
+        success_probability=0.0,
+        expected_terminal_value=0.0,
+        max_drawdown_90pct=0.0,
+        product_proxy_adjusted_success_probability=None,
+        product_probability_method="bucket_only_no_product_proxy_adjustment",
+        selected_product_ids=[],
+        bucket_expected_return_adjustments={},
+        bucket_volatility_multipliers={},
+        simulation_coverage_summary={},
+        expected_annual_return=None,
+        meets_success_threshold=False,
+        drawdown_gap=0.0,
+        target_return_gap=0.0,
+        rationale=rationale,
+    )
+
+
+def _build_frontier_scenario(
+    *,
+    scenario_id: str,
     result: SuccessProbabilityResult,
     allocation: StrategicAllocation,
-    constraints: AccountConstraints,
-) -> float:
-    weights = allocation.weights
-    score = 0.0
+    scenario_expected_annual_return: float | None,
+    required_annual_return: float | None,
+    success_probability_threshold: float,
+    max_drawdown_tolerance: float,
+) -> FrontierScenario:
+    expected_annual_return = scenario_expected_annual_return
+    effective_success_probability = _effective_success_probability(result)
+    target_return_gap, drawdown_gap, _success_gap = _frontier_gap_score(
+        scenario_expected_annual_return=expected_annual_return,
+        effective_success_probability=effective_success_probability,
+        required_annual_return=required_annual_return,
+        max_drawdown_90pct=result.risk_summary.max_drawdown_90pct,
+        drawdown_tolerance=max_drawdown_tolerance,
+    )
+    if scenario_id == "recommended":
+        rationale = "当前推荐方案，同时权衡达成率、回撤和执行复杂度。"
+    elif scenario_id == "highest_probability":
+        rationale = "当前候选里，这个方案的产品修正后达成率最高。"
+    elif scenario_id == "target_return_priority":
+        rationale = "如果优先贴近目标收益，这个方案最接近隐含所需年化。"
+    elif scenario_id == "drawdown_priority":
+        rationale = "如果优先守住回撤约束，这个方案更稳。"
+    else:
+        rationale = "这个方案在达成率与回撤之间更均衡。"
+    return FrontierScenario(
+        scenario_id=scenario_id,
+        allocation_name=allocation.name,
+        weights=dict(result.weights),
+        success_probability=result.success_probability,
+        product_proxy_adjusted_success_probability=result.product_proxy_adjusted_success_probability,
+        product_independent_success_probability=result.product_independent_success_probability,
+        product_probability_method=result.product_probability_method,
+        selected_product_ids=list(result.selected_product_ids),
+        bucket_expected_return_adjustments=dict(result.bucket_expected_return_adjustments),
+        bucket_volatility_multipliers=dict(result.bucket_volatility_multipliers),
+        simulation_coverage_summary=dict(result.simulation_coverage_summary),
+        success_event_spec=result.success_event_spec,
+        formal_estimated_result_spec=result.formal_estimated_result_spec,
+        expected_return_decomposition=result.expected_return_decomposition,
+        expected_terminal_value=result.expected_terminal_value,
+        max_drawdown_90pct=result.risk_summary.max_drawdown_90pct,
+        expected_annual_return=expected_annual_return,
+        meets_success_threshold=effective_success_probability >= success_probability_threshold,
+        drawdown_gap=drawdown_gap,
+        target_return_gap=target_return_gap,
+        rationale=rationale,
+    )
 
-    drawdown = result.risk_summary.max_drawdown_90pct
-    if drawdown > constraints.max_drawdown_tolerance:
-        score += 2.0 * (drawdown - constraints.max_drawdown_tolerance) / max(
-            constraints.max_drawdown_tolerance,
-            1e-6,
+
+def _build_frontier_analysis(
+    *,
+    inp: GoalSolverInput,
+    recommended_result: SuccessProbabilityResult,
+    all_results: list[SuccessProbabilityResult],
+    cashflow_schedule: list[float],
+) -> FrontierAnalysis | None:
+    if not all_results:
+        return None
+
+    allocation_map = {allocation.name: allocation for allocation in inp.candidate_allocations}
+    required_annual_return = _solve_implied_required_annual_return(
+        initial_value=inp.current_portfolio_value,
+        cashflow_schedule=cashflow_schedule,
+        goal_amount=inp.goal.goal_amount,
+    )
+    scenario_expected_returns = {
+        result.allocation_name: _scenario_expected_annual_return(
+            initial_value=inp.current_portfolio_value,
+            cashflow_schedule=cashflow_schedule,
+            expected_terminal_value=result.expected_terminal_value,
+        )
+        for result in all_results
+    }
+
+    target_return_eligible = [
+        item
+        for item in all_results
+        if required_annual_return is None
+        or (
+            scenario_expected_returns.get(item.allocation_name) is not None
+            and (scenario_expected_returns.get(item.allocation_name) or 0.0) >= required_annual_return
+        )
+    ]
+    drawdown_eligible = [
+        item
+        for item in all_results
+        if item.risk_summary.max_drawdown_90pct <= inp.constraints.max_drawdown_tolerance
+    ]
+
+    highest_probability = max(
+        all_results,
+        key=lambda item: (
+            _effective_success_probability(item),
+            -item.risk_summary.max_drawdown_90pct,
+            item.expected_terminal_value,
+        ),
+    )
+    target_return_priority = (
+        min(
+            target_return_eligible,
+            key=lambda item: (
+                max(
+                    (required_annual_return or 0.0)
+                    - (scenario_expected_returns.get(item.allocation_name) or -999.0),
+                    0.0,
+                ),
+                item.risk_summary.max_drawdown_90pct,
+                -_effective_success_probability(item),
+            ),
+        )
+        if target_return_eligible
+        else None
+    )
+    drawdown_priority = (
+        min(
+            drawdown_eligible,
+            key=lambda item: (
+                max(item.risk_summary.max_drawdown_90pct - inp.constraints.max_drawdown_tolerance, 0.0),
+                item.risk_summary.max_drawdown_90pct,
+                -_effective_success_probability(item),
+            ),
+        )
+        if drawdown_eligible
+        else None
+    )
+
+    success_values = [_effective_success_probability(item) for item in all_results]
+    return_gaps = [
+        max((required_annual_return or 0.0) - ((scenario_expected_returns.get(item.allocation_name) or -999.0)), 0.0)
+        for item in all_results
+    ]
+    drawdown_gaps = [
+        max(item.risk_summary.max_drawdown_90pct - inp.constraints.max_drawdown_tolerance, 0.0)
+        for item in all_results
+    ]
+    success_span = max(max(success_values) - min(success_values), 1e-6)
+    return_span = max(max(return_gaps) - min(return_gaps), 1e-6)
+    drawdown_span = max(max(drawdown_gaps) - min(drawdown_gaps), 1e-6)
+
+    balanced_tradeoff = min(
+        all_results,
+        key=lambda item: (
+            (
+                (max(success_values) - _effective_success_probability(item)) / success_span
+                + (
+                    max((required_annual_return or 0.0) - ((scenario_expected_returns.get(item.allocation_name) or -999.0)), 0.0)
+                    - min(return_gaps)
+                )
+                / return_span
+                + (
+                    max(item.risk_summary.max_drawdown_90pct - inp.constraints.max_drawdown_tolerance, 0.0)
+                    - min(drawdown_gaps)
+                )
+                / drawdown_span
+            ),
+            item.risk_summary.max_drawdown_90pct,
+            -_effective_success_probability(item),
+        ),
+    )
+
+    scenario_status = {
+        "recommended": {
+            "available": True,
+            "constraint_met": _effective_success_probability(recommended_result) >= inp.goal.success_prob_threshold,
+            "reason": "selected_by_goal_solver_ranking",
+        },
+        "highest_probability": {
+            "available": True,
+            "constraint_met": _effective_success_probability(highest_probability) >= inp.goal.success_prob_threshold,
+            "reason": "selected_by_max_effective_success_probability",
+        },
+        "target_return_priority": {
+            "available": bool(target_return_eligible),
+            "constraint_met": bool(target_return_eligible),
+            "reason": (
+                "selected_by_required_annual_return"
+                if target_return_eligible
+                else "no_candidate_meets_required_annual_return"
+            ),
+        },
+        "drawdown_priority": {
+            "available": bool(drawdown_eligible),
+            "constraint_met": bool(drawdown_eligible),
+            "reason": (
+                "selected_by_max_drawdown_tolerance"
+                if drawdown_eligible
+                else "no_candidate_meets_max_drawdown_tolerance"
+            ),
+        },
+        "balanced_tradeoff": {
+            "available": True,
+            "constraint_met": _effective_success_probability(balanced_tradeoff) >= inp.goal.success_prob_threshold,
+            "reason": "selected_by_balanced_frontier_score",
+        },
+    }
+
+    def _allocation_for(result: SuccessProbabilityResult) -> StrategicAllocation:
+        return allocation_map.get(
+            result.allocation_name,
+            StrategicAllocation(
+                name=result.allocation_name,
+                weights=dict(result.weights),
+                complexity_score=0.0,
+                description="derived frontier allocation",
+            ),
         )
 
-    for bucket, (lower, upper) in constraints.ips_bucket_boundaries.items():
-        bucket_weight = weights.get(bucket, 0.0)
-        if bucket_weight > upper:
-            score += 1.5 * (bucket_weight - upper) / max(upper, 1e-6)
-        elif bucket_weight < lower and lower > 0.0:
-            score += 1.5 * (lower - bucket_weight) / lower
+    return FrontierAnalysis(
+        implied_required_annual_return=required_annual_return,
+        success_probability_threshold=inp.goal.success_prob_threshold,
+        max_drawdown_tolerance=inp.constraints.max_drawdown_tolerance,
+        recommended=_build_frontier_scenario(
+            scenario_id="recommended",
+            result=recommended_result,
+            allocation=_allocation_for(recommended_result),
+            scenario_expected_annual_return=scenario_expected_returns.get(recommended_result.allocation_name),
+            required_annual_return=required_annual_return,
+            success_probability_threshold=inp.goal.success_prob_threshold,
+            max_drawdown_tolerance=inp.constraints.max_drawdown_tolerance,
+        ),
+        highest_probability=_build_frontier_scenario(
+            scenario_id="highest_probability",
+            result=highest_probability,
+            allocation=_allocation_for(highest_probability),
+            scenario_expected_annual_return=scenario_expected_returns.get(highest_probability.allocation_name),
+            required_annual_return=required_annual_return,
+            success_probability_threshold=inp.goal.success_prob_threshold,
+            max_drawdown_tolerance=inp.constraints.max_drawdown_tolerance,
+        ),
+        target_return_priority=(
+            _build_frontier_scenario(
+                scenario_id="target_return_priority",
+                result=target_return_priority,
+                allocation=_allocation_for(target_return_priority),
+                scenario_expected_annual_return=scenario_expected_returns.get(target_return_priority.allocation_name),
+                required_annual_return=required_annual_return,
+                success_probability_threshold=inp.goal.success_prob_threshold,
+                max_drawdown_tolerance=inp.constraints.max_drawdown_tolerance,
+            )
+            if target_return_priority is not None
+            else _build_unavailable_frontier_scenario(
+                scenario_id="target_return_priority",
+                rationale="当前候选里没有方案满足目标收益约束。",
+            )
+        ),
+        drawdown_priority=(
+            _build_frontier_scenario(
+                scenario_id="drawdown_priority",
+                result=drawdown_priority,
+                allocation=_allocation_for(drawdown_priority),
+                scenario_expected_annual_return=scenario_expected_returns.get(drawdown_priority.allocation_name),
+                required_annual_return=required_annual_return,
+                success_probability_threshold=inp.goal.success_prob_threshold,
+                max_drawdown_tolerance=inp.constraints.max_drawdown_tolerance,
+            )
+            if drawdown_priority is not None
+            else _build_unavailable_frontier_scenario(
+                scenario_id="drawdown_priority",
+                rationale="当前候选里没有方案满足最大回撤约束。",
+            )
+        ),
+        balanced_tradeoff=_build_frontier_scenario(
+            scenario_id="balanced_tradeoff",
+            result=balanced_tradeoff,
+            allocation=_allocation_for(balanced_tradeoff),
+            scenario_expected_annual_return=scenario_expected_returns.get(balanced_tradeoff.allocation_name),
+            required_annual_return=required_annual_return,
+            success_probability_threshold=inp.goal.success_prob_threshold,
+            max_drawdown_tolerance=inp.constraints.max_drawdown_tolerance,
+        ),
+        scenario_status=scenario_status,
+    )
 
-    sat_weight = _satellite_weight(weights, constraints)
-    if sat_weight > constraints.satellite_cap:
-        score += (sat_weight - constraints.satellite_cap) / max(constraints.satellite_cap, 1e-6)
 
-    for theme, cap in constraints.theme_caps.items():
-        theme_used = _theme_weight(weights, theme, constraints)
-        if theme_used > cap:
-            score += (theme_used - cap) / max(cap, 1e-6)
-
-    liquid_weight = _liquid_weight(weights)
-    if liquid_weight < constraints.liquidity_reserve_min and constraints.liquidity_reserve_min > 0.0:
-        score += 0.5 * (constraints.liquidity_reserve_min - liquid_weight) / constraints.liquidity_reserve_min
-
-    return score
-
-
-def _handle_no_feasible_allocation(
+def _build_frontier_diagnostics(
+    *,
+    inp: GoalSolverInput,
     all_results: list[SuccessProbabilityResult],
-    candidates: list[StrategicAllocation],
-    constraints: AccountConstraints,
-) -> tuple[StrategicAllocation, SuccessProbabilityResult, list[str]]:
-    scored = [
-        (
-            result,
-            _find_allocation(candidates, result.allocation_name),
-            _infeasibility_score(result, _find_allocation(candidates, result.allocation_name), constraints),
+    frontier_analysis: FrontierAnalysis | None,
+    cashflow_schedule: list[float],
+) -> dict[str, Any]:
+    expected_returns = [
+        _scenario_expected_annual_return(
+            initial_value=inp.current_portfolio_value,
+            cashflow_schedule=cashflow_schedule,
+            expected_terminal_value=result.expected_terminal_value,
         )
         for result in all_results
     ]
-    best_result, best_allocation, best_score = min(scored, key=lambda item: item[2])
-    dominant_reasons = _summarize_infeasibility_reasons(all_results)
-    notes = [
-        "warning=no_feasible_allocation",
-        f"fallback=closest_feasible_candidate allocation={best_allocation.name}",
-        f"fallback_pressure_score allocation={best_allocation.name} score={best_score:.4f}",
-        f"fallback_dominant_constraints reasons={dominant_reasons}",
-        _selected_fallback_context_note(best_result),
-        "action_required=reassess_goal_amount_or_horizon_or_drawdown_or_candidate_allocations",
-    ]
-    return best_allocation, best_result, notes
+    finite_expected_returns = [value for value in expected_returns if value is not None]
+    binding_constraints: list[dict[str, Any]] = []
+    candidate_families = sorted(
+        {
+            str(result.allocation_name or "").split("__", 1)[0]
+            for result in all_results
+            if str(result.allocation_name or "").strip()
+        }
+    )
+    candidate_family_set = set(candidate_families)
+    structural_limitations: list[str] = []
+    if frontier_analysis is not None:
+        target_status = frontier_analysis.scenario_status.get("target_return_priority", {})
+        if target_status.get("available") is False:
+            binding_constraints.append(
+                {
+                    "constraint_name": "required_annual_return",
+                    "reason": target_status.get("reason"),
+                    "required_value": frontier_analysis.implied_required_annual_return,
+                }
+            )
+        drawdown_status = frontier_analysis.scenario_status.get("drawdown_priority", {})
+        if drawdown_status.get("available") is False:
+            binding_constraints.append(
+                {
+                    "constraint_name": "max_drawdown_tolerance",
+                    "reason": drawdown_status.get("reason"),
+                    "required_value": inp.constraints.max_drawdown_tolerance,
+                }
+            )
+        max_expected_return = max(finite_expected_returns) if finite_expected_returns else None
+        if (
+            frontier_analysis.implied_required_annual_return is not None
+            and max_expected_return is not None
+            and max_expected_return + 1e-9 < frontier_analysis.implied_required_annual_return
+        ):
+            structural_limitations.append("required_return_above_frontier_ceiling")
+    if "growth_tilt" not in candidate_family_set and "max_return_unconstrained" not in candidate_family_set:
+        if inp.goal.priority == "essential":
+            structural_limitations.append("return_seeking_families_suppressed_by_essential_priority")
+        elif inp.goal.risk_preference == "conservative":
+            structural_limitations.append("return_seeking_families_suppressed_by_conservative_risk_preference")
+        else:
+            structural_limitations.append("return_seeking_families_not_generated_under_current_solver_inputs")
+    if inp.constraints.satellite_cap <= 0.15:
+        structural_limitations.append("satellite_cap_limits_high_beta_allocations")
+    if inp.constraints.qdii_cap <= 0.20:
+        structural_limitations.append("qdii_cap_limits_overseas_exposure")
+    if inp.solver_params.shrinkage_factor < 1.0:
+        structural_limitations.append("expected_return_shrinkage_applied")
+    return {
+        "raw_candidate_count": len(all_results),
+        "feasible_candidate_count": sum(1 for result in all_results if result.is_feasible),
+        "frontier_max_expected_annual_return": max(finite_expected_returns) if finite_expected_returns else None,
+        "frontier_max_effective_success_probability": (
+            max(_effective_success_probability(result) for result in all_results) if all_results else None
+        ),
+        "candidate_families": candidate_families,
+        "binding_constraints": binding_constraints,
+        "structural_limitations": structural_limitations,
+    }
 
 
 def _summarize_infeasibility_reasons(all_results: list[SuccessProbabilityResult]) -> str:
@@ -483,33 +1219,6 @@ def _summarize_infeasibility_reasons(all_results: list[SuccessProbabilityResult]
         return "unknown"
     ordered = sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
     return ",".join(reason for reason, _count in ordered[:3])
-
-
-def _selected_fallback_context_note(result: SuccessProbabilityResult) -> str:
-    reason_to_input = {
-        "drawdown_violation": "drawdown_tolerance",
-        "ips_boundary_violation": "ips_bucket_boundaries",
-        "satellite_cap_violation": "satellite_cap",
-        "theme_cap_violation": "theme_caps",
-        "liquidity_violation": "liquidity_reserve_min",
-    }
-    reason_keys: list[str] = []
-    score_inputs: list[str] = []
-    for reason in result.infeasibility_reasons:
-        reason_key = reason.split()[0]
-        if reason_key not in reason_keys:
-            reason_keys.append(reason_key)
-        score_input = reason_to_input.get(reason_key, "other_constraints")
-        if score_input not in score_inputs:
-            score_inputs.append(score_input)
-    reasons_summary = ",".join(reason_keys[:3]) if reason_keys else "unknown"
-    score_inputs_summary = ",".join(score_inputs[:3]) if score_inputs else "other_constraints"
-    return (
-        "fallback_selected_context "
-        f"allocation={result.allocation_name} "
-        f"reasons={reasons_summary} "
-        f"score_inputs={score_inputs_summary}"
-    )
 
 
 def _build_structure_budget(
@@ -571,7 +1280,8 @@ def _append_solver_context_notes(
     inp: GoalSolverInput,
     recommended_result: SuccessProbabilityResult,
 ) -> None:
-    threshold_gap = max(inp.goal.success_prob_threshold - recommended_result.success_probability, 0.0)
+    effective_success_probability = _effective_success_probability(recommended_result)
+    threshold_gap = max(inp.goal.success_prob_threshold - effective_success_probability, 0.0)
     notes.append(
         "monte_carlo "
         f"paths={inp.solver_params.n_paths} "
@@ -581,7 +1291,7 @@ def _append_solver_context_notes(
     notes.append(
         "success_threshold "
         f"threshold={inp.goal.success_prob_threshold:.4f} "
-        f"recommended={recommended_result.success_probability:.4f} "
+        f"recommended={effective_success_probability:.4f} "
         f"gap={threshold_gap:.4f} "
         f"met={'true' if threshold_gap <= 1e-9 else 'false'}"
     )
@@ -637,8 +1347,14 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
     inp = _goal_solver_input_from_any(inp)
     params = inp.solver_params
     cashflow_schedule = _build_cashflow_schedule(inp.cashflow_plan, inp.goal.horizon_months)
+    implied_required_annual_return = _solve_implied_required_annual_return(
+        initial_value=inp.current_portfolio_value,
+        cashflow_schedule=cashflow_schedule,
+        goal_amount=inp.goal.goal_amount,
+    )
     notes: list[str] = []
     ranking_mode = _resolve_ranking_mode(inp, notes)
+    success_event_spec = _build_success_event_spec(inp)
     all_results: list[SuccessProbabilityResult] = []
 
     for allocation in inp.candidate_allocations:
@@ -651,61 +1367,115 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
             params.n_paths,
             params.seed,
         )
+        bucket_probability = probability
+        effective_probability = probability
+        effective_extra = extra
+        effective_risk = risk
+        product_proxy_adjusted_success_probability = None
+        product_independent_success_probability = None
+        product_probability_method = "bucket_only_no_product_proxy_adjustment"
+        selected_product_ids: list[str] = []
+        selected_proxy_refs: list[str] = []
+        bucket_expected_return_adjustments: dict[str, float] = {}
+        bucket_volatility_multipliers: dict[str, float] = {}
+        simulation_coverage_summary: dict[str, Any] = {}
+        decomposition_market_state = params.market_assumptions
+        product_context = inp.candidate_product_contexts.get(allocation.name)
+        if product_context is not None:
+            selected_product_ids = list(product_context.selected_product_ids)
+            selected_proxy_refs = list(product_context.selected_proxy_refs)
+            bucket_expected_return_adjustments = dict(product_context.bucket_expected_return_adjustments)
+            bucket_volatility_multipliers = dict(product_context.bucket_volatility_multipliers)
+            adjusted_market_assumptions, product_probability_method = _apply_candidate_product_context(
+                params.market_assumptions,
+                product_context,
+            )
+            adjusted_probability, adjusted_extra, adjusted_risk = _run_monte_carlo(
+                allocation.weights,
+                cashflow_schedule,
+                inp.current_portfolio_value,
+                inp.goal.goal_amount,
+                adjusted_market_assumptions,
+                params.n_paths,
+                params.seed,
+            )
+            effective_probability = adjusted_probability
+            effective_extra = adjusted_extra
+            effective_risk = adjusted_risk
+            product_proxy_adjusted_success_probability = adjusted_probability
+            decomposition_market_state = adjusted_market_assumptions
+            simulation_input = product_context.product_simulation_input
+            if (
+                simulation_input is not None
+                and simulation_input.products
+                and (
+                    str(product_context.product_probability_method or "").strip().lower()
+                    == "product_independent_path"
+                    or str(simulation_input.simulation_method or "").strip().lower()
+                    == "product_independent_path"
+                )
+            ):
+                independent_probability, independent_extra, independent_risk = _run_product_independent_monte_carlo(
+                    simulation_input=simulation_input,
+                    cashflow_schedule=cashflow_schedule,
+                    initial_value=inp.current_portfolio_value,
+                    goal_amount=inp.goal.goal_amount,
+                    n_paths=params.n_paths,
+                    seed=params.seed,
+                )
+                effective_probability = independent_probability
+                effective_extra = independent_extra
+                effective_risk = independent_risk
+                product_independent_success_probability = independent_probability
+                product_probability_method = "product_independent_path"
+                simulation_coverage_summary = dict(simulation_input.coverage_summary or {})
+            elif simulation_input is not None:
+                simulation_coverage_summary = dict(simulation_input.coverage_summary or {})
+        expected_annual_return = _scenario_expected_annual_return(
+            initial_value=inp.current_portfolio_value,
+            cashflow_schedule=cashflow_schedule,
+            expected_terminal_value=effective_extra["expected_terminal_value"],
+        )
         interim_result = SuccessProbabilityResult(
             allocation_name=allocation.name,
             weights=allocation.weights,
-            success_probability=probability,
-            expected_terminal_value=extra["expected_terminal_value"],
-            risk_summary=risk,
+            success_probability=effective_probability,
+            bucket_success_probability=bucket_probability,
+            product_proxy_adjusted_success_probability=product_proxy_adjusted_success_probability,
+            product_independent_success_probability=product_independent_success_probability,
+            product_probability_method=product_probability_method,
+            selected_product_ids=selected_product_ids,
+            selected_proxy_refs=selected_proxy_refs,
+            bucket_expected_return_adjustments=bucket_expected_return_adjustments,
+            bucket_volatility_multipliers=bucket_volatility_multipliers,
+            simulation_coverage_summary=simulation_coverage_summary,
+            implied_required_annual_return=implied_required_annual_return,
+            expected_annual_return=expected_annual_return,
+            expected_terminal_value=effective_extra["expected_terminal_value"],
+            risk_summary=effective_risk,
             is_feasible=True,
             infeasibility_reasons=[],
+        )
+        interim_result.success_event_spec = success_event_spec
+        interim_result.formal_estimated_result_spec = _formal_estimated_result_spec_from_result(
+            result=interim_result,
+            product_context=product_context,
+        )
+        interim_result.expected_return_decomposition = _build_expected_return_decomposition(
+            result=interim_result,
+            market_state=decomposition_market_state,
         )
         is_feasible, infeasibility_reasons = _check_allocation_feasibility(
             allocation,
             interim_result,
             inp.constraints,
         )
-        all_results.append(
-            SuccessProbabilityResult(
-                allocation_name=allocation.name,
-                weights=allocation.weights,
-                success_probability=probability,
-                expected_terminal_value=extra["expected_terminal_value"],
-                risk_summary=risk,
-                is_feasible=is_feasible,
-                infeasibility_reasons=infeasibility_reasons,
-            )
-        )
+        interim_result.is_feasible = is_feasible
+        interim_result.infeasibility_reasons = infeasibility_reasons
+        all_results.append(interim_result)
 
     if not all_results:
-        fallback = StrategicAllocation(
-            name="fallback",
-            weights={"equity_cn": 0.55, "bond_cn": 0.30, "gold": 0.05, "satellite": 0.10},
-            complexity_score=0.10,
-            description="synthetic fallback allocation",
-        )
-        probability, extra, risk = _run_monte_carlo(
-            fallback.weights,
-            cashflow_schedule,
-            inp.current_portfolio_value,
-            inp.goal.goal_amount,
-            params.market_assumptions,
-            params.n_paths,
-            params.seed,
-        )
-        fallback_result = SuccessProbabilityResult(
-            allocation_name=fallback.name,
-            weights=fallback.weights,
-            success_probability=probability,
-            expected_terminal_value=extra["expected_terminal_value"],
-            risk_summary=risk,
-            is_feasible=True,
-            infeasibility_reasons=[],
-        )
-        all_results = [fallback_result]
-        best_allocation = fallback
-        best_result = fallback_result
-        notes.append("warning=empty_candidate_allocations synthetic_fallback_used")
+        raise ValueError("goal solver requires candidate allocations")
     else:
         feasible_results = [result for result in all_results if result.is_feasible]
         if feasible_results:
@@ -719,22 +1489,33 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
                 ),
             )
             best_allocation = _find_allocation(inp.candidate_allocations, best_result.allocation_name)
-            if best_result.success_probability < inp.goal.success_prob_threshold:
+            if _effective_success_probability(best_result) < inp.goal.success_prob_threshold:
                 notes.append(
                     "warning=success_probability_below_threshold "
                     f"threshold={inp.goal.success_prob_threshold:.4f} "
-                    f"recommended={best_result.success_probability:.4f}"
+                    f"recommended={_effective_success_probability(best_result):.4f}"
                 )
         else:
-            best_allocation, best_result, fallback_notes = _handle_no_feasible_allocation(
-                all_results,
-                inp.candidate_allocations,
-                inp.constraints,
+            dominant_reasons = _summarize_infeasibility_reasons(all_results)
+            raise ValueError(
+                "goal solver produced no feasible allocations "
+                f"(dominant_constraints={dominant_reasons})"
             )
-            notes.extend(fallback_notes)
 
     structure_budget = _build_structure_budget(best_allocation, inp.constraints)
     risk_budget = _build_risk_budget(best_result, inp.constraints)
+    frontier_analysis = _build_frontier_analysis(
+        inp=inp,
+        recommended_result=best_result,
+        all_results=all_results,
+        cashflow_schedule=cashflow_schedule,
+    )
+    frontier_diagnostics = _build_frontier_diagnostics(
+        inp=inp,
+        all_results=all_results,
+        frontier_analysis=frontier_analysis,
+        cashflow_schedule=cashflow_schedule,
+    )
     _append_solver_context_notes(notes, inp, best_result)
     _append_model_honesty_notes(notes, inp, shrinkage_factor_note_value)
     return GoalSolverOutput(
@@ -748,6 +1529,8 @@ def run_goal_solver(inp: GoalSolverInput | dict[str, Any]) -> GoalSolverOutput:
         risk_budget=risk_budget,
         solver_notes=notes,
         params_version=params.version,
+        frontier_analysis=frontier_analysis,
+        frontier_diagnostics=frontier_diagnostics,
     )
 
 
@@ -781,8 +1564,20 @@ def build_account_state_baseline(
     live = _obj(live_portfolio)
     recommended = solver_output_dict["recommended_allocation"]
     structure_budget = solver_output_dict["structure_budget"]
+    current_weights = dict(live["weights"])
+    total_value = float(live["total_value"])
+    available_cash = float(live["available_cash"])
+    weight_total = sum(float(value) for value in current_weights.values())
+    if (
+        weight_total < 1.0 - 1e-6
+        and "cash_liquidity" not in current_weights
+        and "cash" not in current_weights
+        and total_value > 0.0
+        and available_cash > 0.0
+    ):
+        current_weights["cash_liquidity"] = max(min(available_cash / total_value, 1.0 - weight_total), 0.0)
     return {
-        "current_weights": dict(live["weights"]),
+        "current_weights": current_weights,
         "target_weights": dict(recommended["weights"]),
         "goal_gap": float(
             live.get(
@@ -795,7 +1590,7 @@ def build_account_state_baseline(
         ),
         "success_prob_baseline": float(solver_output_dict["recommended_result"]["success_probability"]),
         "horizon_months": int(live["remaining_horizon_months"]),
-        "available_cash": float(live["available_cash"]),
-        "total_portfolio_value": float(live["total_value"]),
+        "available_cash": available_cash,
+        "total_portfolio_value": total_value,
         "theme_remaining_budget": dict(structure_budget.get("theme_remaining_budget", {})),
     }

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from shared.audit import DataStatus
 from snapshot_ingestion.adapters.http_json_adapter import (
     FetchedSnapshotPayload,
     ExternalSnapshotAdapterError,
@@ -78,6 +79,11 @@ def _provenance_items_for_source(
             "field": key,
             "label": _ALLOWED_OVERRIDE_KEYS[key],
             "value": source_ref,
+            "source_ref": source_ref,
+            "as_of": (freshness or {}).get("as_of"),
+            "fetched_at": fetched_at,
+            "data_status": DataStatus.OBSERVED.value,
+            "audit_window": dict((freshness or {}).get("domains", {}).get(key, {}).get("audit_window") or {}),
             "note": note,
             "freshness": dict((freshness or {}).get("domains", {}).get(key) or {}),
         }
@@ -154,4 +160,3 @@ __all__ = [
     "FileJsonSnapshotAdapterConfig",
     "fetch_file_json_snapshot",
 ]
-

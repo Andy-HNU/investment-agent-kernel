@@ -18,7 +18,11 @@ Supported intents:
 - feedback → `frontdesk.service.record_frontdesk_execution_feedback(...)`
 - approve_plan → `frontdesk.service.approve_frontdesk_execution_plan(...)`
 
+On onboarding inputs:
+- `goal_amount` 表示期末总资产目标。
+- 若用户提供的是“目标年化收益率”，应优先传 `target_annual_return`，由 kernel 结合当前资产、每月投入与期限折算 `goal_amount`。
+- 不要在 advisor shell 侧手工把“年化目标”简化成只对当前资产复利后的终值。
+
 Non-goals:
 - No EV scoring or candidate generation here.
 - No skill body copies from OpenClaw.
-

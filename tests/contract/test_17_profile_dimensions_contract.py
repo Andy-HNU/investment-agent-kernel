@@ -95,3 +95,69 @@ def test_onboarding_persists_profile_dimensions_and_applies_risk_overlay():
     assert constraints["liquidity_reserve_min"] >= 0.08
     assert allocation_input["account_profile"]["complexity_tolerance"] == "low"
     assert allocation_input["account_profile"]["profile_flags"]["goal_priority"] == dimensions["model_inputs"]["goal_priority"]
+
+
+@pytest.mark.contract
+def test_high_return_pressure_profiles_emit_pressure_flags_and_relax_caps():
+    profile = _base_profile(
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=124_203.16,
+        goal_horizon_months=36,
+        max_drawdown_tolerance=0.20,
+        current_holdings="",
+        restrictions=[],
+    )
+
+    bundle = build_user_onboarding_inputs(profile)
+    dimensions = bundle.profile.profile_dimensions
+    model_inputs = dimensions["model_inputs"]
+    constraints = bundle.goal_solver_input["constraints"]
+
+    assert model_inputs["target_return_pressure"] == "high"
+    assert model_inputs["implied_required_annual_return"] == pytest.approx(0.083, abs=1e-3)
+    assert constraints["satellite_cap"] >= 0.12
+    assert constraints["ips_bucket_boundaries"]["equity_cn"][1] >= 0.70
+    assert constraints["qdii_cap"] >= 0.25
+
+
+@pytest.mark.contract
+def test_profile_dimensions_do_not_treat_negative_monthly_cashflow_as_zero():
+    profile = _base_profile(
+        current_total_assets=100_000.0,
+        monthly_contribution=-2_000.0,
+        goal_amount=100_000.0,
+        goal_horizon_months=36,
+        current_holdings="现金",
+        restrictions=[],
+    )
+
+    bundle = build_user_onboarding_inputs(profile)
+    model_inputs = bundle.profile.profile_dimensions["model_inputs"]
+
+    assert model_inputs["projected_funding_ratio"] < 1.0
+    assert model_inputs["implied_required_annual_return"] > 0.0
+    assert model_inputs["target_return_pressure"] != "low"
+
+
+@pytest.mark.contract
+def test_target_annual_return_derives_goal_amount_from_assets_and_contributions():
+    profile = _base_profile(
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=0.0,
+        goal_horizon_months=36,
+        target_annual_return=0.08,
+        current_holdings="",
+        restrictions=[],
+    )
+
+    bundle = build_user_onboarding_inputs(profile)
+    model_inputs = bundle.profile.profile_dimensions["model_inputs"]
+
+    assert bundle.profile.goal_amount == pytest.approx(123_588.24, abs=0.5)
+    assert bundle.goal_solver_input["goal"]["target_annual_return"] == pytest.approx(0.08)
+    assert model_inputs["implied_required_annual_return"] == pytest.approx(0.08, abs=1e-3)
+    assert any(
+        item["field"] == "goal.target_annual_return" for item in bundle.input_provenance["user_provided"]
+    )

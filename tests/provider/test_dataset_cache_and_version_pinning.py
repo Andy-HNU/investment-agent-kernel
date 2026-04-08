@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from urllib3.exceptions import ProtocolError
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> Path:
@@ -101,3 +102,178 @@ def test_manifest_schema_and_row_shape(tmp_path):
         "volume": 120000000.0,
     }
 
+
+@pytest.mark.contract
+def test_yfinance_provider_uses_cached_version_when_live_fetch_fails(tmp_path, monkeypatch):
+    from shared.datasets.types import DatasetSpec, VersionPin
+    from shared.datasets.cache import DatasetCache
+    from shared.providers.timeseries import fetch_timeseries
+
+    class _FakeFrame:
+        def __init__(self, rows):
+            self._rows = rows
+            self.empty = not rows
+
+        def iterrows(self):
+            for idx, row in self._rows:
+                yield idx, row
+
+    class _FakeIndex:
+        def __init__(self, text: str):
+            self._text = text
+
+        def date(self):
+            from datetime import date
+
+            return date.fromisoformat(self._text)
+
+    rows = [
+        (_FakeIndex("2024-03-28"), {"Open": 3.26, "High": 3.28, "Low": 3.22, "Close": 3.24, "Volume": 1000}),
+        (_FakeIndex("2024-03-29"), {"Open": 3.24, "High": 3.30, "Low": 3.20, "Close": 3.27, "Volume": 2000}),
+    ]
+
+    def _download_ok(*args, **kwargs):
+        return _FakeFrame(rows)
+
+    monkeypatch.setattr("yfinance.download", _download_ok)
+
+    cache = DatasetCache(base_dir=tmp_path / "cache")
+    spec = DatasetSpec(kind="timeseries", dataset_id="equity_ohlcv", provider="yfinance", symbol="510300.SS")
+    good_pin = VersionPin(version_id="v1-yf", source_ref="yfinance://510300.SS")
+
+    good_rows = fetch_timeseries(spec, pin=good_pin, cache=cache)
+    assert len(good_rows) == 2
+
+    def _download_fail(*args, **kwargs):
+        raise RuntimeError("yfinance_rate_limited")
+
+    monkeypatch.setattr("yfinance.download", _download_fail)
+
+    broken_pin = VersionPin(version_id="v2-yf", source_ref="yfinance://510300.SS")
+    fallback_rows, used_pin = fetch_timeseries(
+        spec,
+        pin=broken_pin,
+        cache=cache,
+        allow_fallback=True,
+        return_used_pin=True,
+    )
+    assert fallback_rows == good_rows
+    assert used_pin.version_id == good_pin.version_id
+
+
+@pytest.mark.contract
+def test_yfinance_provider_does_not_use_latest_cache_when_requested_window_differs(tmp_path, monkeypatch):
+    from shared.datasets.types import DatasetSpec, VersionPin
+    from shared.datasets.cache import DatasetCache
+    from shared.providers.timeseries import fetch_timeseries
+
+    class _FakeFrame:
+        def __init__(self, rows):
+            self._rows = rows
+            self.empty = not rows
+
+        def iterrows(self):
+            for idx, row in self._rows:
+                yield idx, row
+
+    class _FakeIndex:
+        def __init__(self, text: str):
+            self._text = text
+
+        def date(self):
+            from datetime import date
+
+            return date.fromisoformat(self._text)
+
+    rows = [
+        (_FakeIndex("2024-03-28"), {"Open": 3.26, "High": 3.28, "Low": 3.22, "Close": 3.24, "Volume": 1000}),
+        (_FakeIndex("2024-03-29"), {"Open": 3.24, "High": 3.30, "Low": 3.20, "Close": 3.27, "Volume": 2000}),
+    ]
+
+    def _download_ok(*args, **kwargs):
+        return _FakeFrame(rows)
+
+    monkeypatch.setattr("yfinance.download", _download_ok)
+
+    cache = DatasetCache(base_dir=tmp_path / "cache")
+    spec = DatasetSpec(kind="timeseries", dataset_id="equity_ohlcv", provider="yfinance", symbol="510300.SS")
+    good_pin = VersionPin(
+        version_id="v1-yf-window-a",
+        source_ref="yfinance://market_history?symbol=510300.SS&start=2024-03-01&end=2024-03-31",
+    )
+    good_rows = fetch_timeseries(spec, pin=good_pin, cache=cache)
+    assert len(good_rows) == 2
+
+    def _download_fail(*args, **kwargs):
+        raise RuntimeError("yfinance_rate_limited")
+
+    monkeypatch.setattr("yfinance.download", _download_fail)
+
+    mismatched_window_pin = VersionPin(
+        version_id="v2-yf-window-b",
+        source_ref="yfinance://market_history?symbol=510300.SS&start=2025-01-01&end=2025-01-31",
+    )
+    with pytest.raises(RuntimeError, match="yfinance_rate_limited"):
+        fetch_timeseries(
+            spec,
+            pin=mismatched_window_pin,
+            cache=cache,
+            allow_fallback=True,
+            return_used_pin=True,
+        )
+
+
+@pytest.mark.contract
+def test_yfinance_provider_treats_end_date_as_inclusive(tmp_path, monkeypatch):
+    from shared.datasets.types import DatasetSpec, VersionPin
+    from shared.datasets.cache import DatasetCache
+    from shared.providers.timeseries import fetch_timeseries
+
+    captured: dict[str, object] = {}
+
+    class _FakeFrame:
+        empty = True
+
+        def iterrows(self):
+            return iter(())
+
+    def _download(*args, **kwargs):
+        captured["start"] = kwargs.get("start")
+        captured["end"] = kwargs.get("end")
+        raise RuntimeError("yfinance_rate_limited")
+
+    monkeypatch.setattr("yfinance.download", _download)
+
+    cache = DatasetCache(base_dir=tmp_path / "cache")
+    spec = DatasetSpec(kind="timeseries", dataset_id="equity_ohlcv", provider="yfinance", symbol="510300.SS")
+    pin = VersionPin(
+        version_id="v1-yf-inclusive",
+        source_ref="yfinance://market_history?symbol=510300.SS&start=2024-03-01&end=2024-03-31",
+    )
+
+    with pytest.raises(RuntimeError, match="yfinance_rate_limited"):
+        fetch_timeseries(spec, pin=pin, cache=cache)
+
+    assert captured["start"] == "2024-03-01"
+    assert captured["end"] == "2024-04-01"
+
+
+@pytest.mark.contract
+def test_akshare_provider_normalizes_eastmoney_history_disconnect(tmp_path, monkeypatch):
+    from http.client import RemoteDisconnected
+
+    from shared.datasets.types import DatasetSpec, VersionPin
+    from shared.datasets.cache import DatasetCache
+    from shared.providers.timeseries import fetch_timeseries
+
+    def _raise_disconnect(*args, **kwargs):
+        raise ConnectionError(ProtocolError("Connection aborted.", RemoteDisconnected("Remote end closed connection without response")))
+
+    monkeypatch.setattr("akshare.stock_zh_a_hist", _raise_disconnect)
+
+    cache = DatasetCache(base_dir=tmp_path / "cache")
+    spec = DatasetSpec(kind="timeseries", dataset_id="equity_ohlcv", provider="akshare", symbol="000001")
+    pin = VersionPin(version_id="v1-ak", source_ref="akshare://000001")
+
+    with pytest.raises(RuntimeError, match="historical_provider_unavailable:eastmoney_history_endpoint_closed"):
+        fetch_timeseries(spec, pin=pin, cache=cache)

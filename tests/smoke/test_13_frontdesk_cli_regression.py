@@ -5,26 +5,21 @@ import json
 import pytest
 
 from shared.onboarding import UserOnboardingProfile
+from tests.support.formal_snapshot_helpers import write_formal_snapshot_source
 
 
 def _profile(*, account_profile_id: str = "frontdesk_regression_user") -> UserOnboardingProfile:
     return UserOnboardingProfile(
         account_profile_id=account_profile_id,
         display_name="Andy",
-        current_total_assets=50_000.0,
-        monthly_contribution=12_000.0,
-        goal_amount=1_000_000.0,
-        goal_horizon_months=60,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
         risk_preference="中等",
-        max_drawdown_tolerance=0.10,
-        current_holdings="portfolio",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
         restrictions=[],
-        current_weights={
-            "equity_cn": 0.50,
-            "bond_cn": 0.30,
-            "gold": 0.10,
-            "satellite": 0.10,
-        },
     )
 
 
@@ -66,6 +61,7 @@ def test_frontdesk_cli_followup_profile_json_updates_state_and_output(tmp_path, 
         json.dumps(baseline_profile.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    snapshot_path = write_formal_snapshot_source(tmp_path, baseline_profile)
 
     onboarding_exit_code = main(
         [
@@ -74,6 +70,8 @@ def test_frontdesk_cli_followup_profile_json_updates_state_and_output(tmp_path, 
             str(db_path),
             "--profile-json",
             str(baseline_path),
+            "--external-snapshot-source",
+            str(snapshot_path),
             "--non-interactive",
             "--json",
         ]

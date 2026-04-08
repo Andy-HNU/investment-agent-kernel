@@ -7,6 +7,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from shared.audit import DataStatus
+
 _ALLOWED_OVERRIDE_KEYS = {
     "market_raw": "市场输入",
     "account_raw": "账户快照",
@@ -99,6 +101,11 @@ def _provenance_items_for_source(
             "field": key,
             "label": _ALLOWED_OVERRIDE_KEYS[key],
             "value": source_ref,
+            "source_ref": source_ref,
+            "as_of": (freshness or {}).get("as_of"),
+            "fetched_at": fetched_at,
+            "data_status": DataStatus.OBSERVED.value,
+            "audit_window": dict((freshness or {}).get("domains", {}).get(key, {}).get("audit_window") or {}),
             "note": note,
             "freshness": dict((freshness or {}).get("domains", {}).get(key) or {}),
         }

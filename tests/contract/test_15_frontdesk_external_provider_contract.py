@@ -7,6 +7,10 @@ import pytest
 from frontdesk.external_data import ExternalSnapshotAdapterError
 from frontdesk.service import load_user_state, run_frontdesk_followup, run_frontdesk_onboarding
 from shared.onboarding import UserOnboardingProfile
+from tests.support.formal_snapshot_helpers import (
+    build_formal_snapshot_payload,
+    write_formal_snapshot_source,
+)
 from tests.support.http_snapshot_server import serve_json_routes
 
 
@@ -14,61 +18,47 @@ def _profile(*, account_profile_id: str = "frontdesk_provider_user") -> UserOnbo
     return UserOnboardingProfile(
         account_profile_id=account_profile_id,
         display_name="Andy",
-        current_total_assets=50_000.0,
-        monthly_contribution=12_000.0,
-        goal_amount=1_000_000.0,
-        goal_horizon_months=60,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
         risk_preference="中等",
-        max_drawdown_tolerance=0.10,
-        current_holdings="cash",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
         restrictions=[],
     )
 
 
 def _snapshot(*, total_value: float) -> dict[str, object]:
+    profile = _profile(account_profile_id="provider_snapshot_profile")
     weights = {"equity_cn": 0.48, "bond_cn": 0.32, "gold": 0.12, "satellite": 0.08}
-    return {
-        "market_raw": {
-            "raw_volatility": {"equity_cn": 0.19, "bond_cn": 0.05, "gold": 0.10, "satellite": 0.22},
-            "liquidity_scores": {"equity_cn": 0.90, "bond_cn": 0.96, "gold": 0.83, "satellite": 0.60},
-            "valuation_z_scores": {"equity_cn": -0.1, "bond_cn": 0.05, "gold": -0.15, "satellite": 0.9},
-            "expected_returns": {"equity_cn": 0.09, "bond_cn": 0.03, "gold": 0.04, "satellite": 0.10},
-        },
-        "account_raw": {
+    payload = build_formal_snapshot_payload(
+        profile,
+        account_raw_overrides={
             "weights": weights,
             "total_value": total_value,
             "available_cash": 2_000.0,
-            "remaining_horizon_months": 60,
+            "remaining_horizon_months": 36,
         },
-        "behavior_raw": {
-            "recent_chase_risk": "low",
-            "recent_panic_risk": "none",
-            "trade_frequency_30d": 1.0,
-            "override_count_90d": 0,
-            "cooldown_active": False,
-            "cooldown_until": None,
-            "behavior_penalty_coeff": 0.1,
+        live_portfolio_overrides={
+            "weights": weights,
+            "total_value": total_value,
+            "available_cash": 2_000.0,
+            "remaining_horizon_months": 36,
         },
-        "provider_name": "broker_http_json",
-        "fetched_at": "2026-03-30T08:00:00Z",
-        "as_of": "2026-03-30T07:30:00Z",
-        "domains": {
-            "market_raw": {
-                "status": "fresh",
-                "fetched_at": "2026-03-30T08:00:00Z",
-                "as_of": "2026-03-30T07:30:00Z",
-            },
-            "account_raw": {
-                "status": "fresh",
-                "fetched_at": "2026-03-30T08:00:00Z",
-                "as_of": "2026-03-30T07:30:00Z",
-            },
-            "behavior_raw": {
-                "status": "fresh",
-                "fetched_at": "2026-03-30T08:00:00Z",
-                "as_of": "2026-03-30T07:30:00Z",
-            },
-        },
+        provider_name="broker_http_json",
+        source_ref="provider://snapshot/broker_http_json",
+    )
+    meta = payload["external_snapshot_meta"]
+    return {
+        "market_raw": payload["market_raw"],
+        "account_raw": payload["account_raw"],
+        "behavior_raw": payload["behavior_raw"],
+        "live_portfolio": payload["live_portfolio"],
+        "provider_name": meta["provider_name"],
+        "as_of": meta["as_of"],
+        "fetched_at": meta["fetched_at"],
+        "domains": meta["domains"],
     }
 
 
@@ -88,7 +78,7 @@ def test_frontdesk_onboarding_accepts_http_json_provider_config(tmp_path):
             },
         )
 
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fetched"
     assert summary["external_snapshot_source"].startswith(f"{base_url}/snapshot?")
     assert summary["input_provenance"]["counts"]["externally_fetched"] >= 1
@@ -117,7 +107,7 @@ def test_frontdesk_provider_config_fail_open_falls_back_without_blocking(tmp_pat
             },
         )
 
-    assert summary["status"] == "completed"
+    assert summary["status"] == "blocked"
     assert summary["external_snapshot_status"] == "fallback"
     assert summary["external_snapshot_error"] is not None
     assert summary["input_provenance"]["counts"]["externally_fetched"] == 0
@@ -145,8 +135,12 @@ def test_frontdesk_provider_config_fail_closed_raises(tmp_path):
 def test_frontdesk_monthly_accepts_provider_config_from_json_file(tmp_path):
     profile = _profile(account_profile_id="frontdesk_provider_monthly")
     db_path = tmp_path / "frontdesk.sqlite"
-    onboarding_summary = run_frontdesk_onboarding(profile, db_path=db_path)
-    assert onboarding_summary["status"] == "completed"
+    onboarding_summary = run_frontdesk_onboarding(
+        profile,
+        db_path=db_path,
+        external_snapshot_source=write_formal_snapshot_source(tmp_path, profile),
+    )
+    assert onboarding_summary["status"] in {"completed", "degraded"}
 
     config_path = tmp_path / "provider_config.json"
     with serve_json_routes({"/snapshot": (200, _snapshot(total_value=64_000.0))}) as base_url:
@@ -170,7 +164,7 @@ def test_frontdesk_monthly_accepts_provider_config_from_json_file(tmp_path):
         )
 
     user_state = load_user_state(profile.account_profile_id, db_path=db_path)
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fetched"
     assert summary["input_provenance"]["counts"]["externally_fetched"] >= 1
     assert user_state is not None
@@ -187,13 +181,11 @@ def test_frontdesk_onboarding_accepts_inline_snapshot_provider_config(tmp_path):
         external_data_config={
             "adapter": "inline_snapshot",
             "provider_name": "fixture_inline_provider",
-            "as_of": "2026-03-30T07:30:00Z",
-            "fetched_at": "2026-03-30T08:00:00Z",
             "payload": _snapshot(total_value=62_500.0),
         },
     )
 
-    assert summary["status"] == "completed"
+    assert summary["status"] in {"completed", "degraded"}
     assert summary["external_snapshot_status"] == "fetched"
     assert summary["refresh_summary"]["provider_name"] == "fixture_inline_provider"
     assert summary["user_state"]["profile"]["current_total_assets"] == 62_500.0

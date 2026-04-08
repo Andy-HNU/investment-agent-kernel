@@ -30,6 +30,41 @@ def _reference_snapshot_date(output: dict[str, Any], baseline: dict[str, Any]) -
     return date.fromisoformat(str(output["generated_at"])[:10])
 
 
+def portfolio_weight_coverage(weights: dict[str, Any], total_value: Any, available_cash: Any) -> tuple[float, float]:
+    invested_total = sum(float(v) for v in dict(weights or {}).values())
+    if abs(invested_total - 1.0) < 0.01:
+        return invested_total, 0.0
+    total_portfolio_value = float(total_value or 0.0)
+    available_cash_amount = float(available_cash or 0.0)
+    cash_weight_in_weights = float(
+        dict(weights or {}).get("cash_liquidity", dict(weights or {}).get("cash", 0.0)) or 0.0
+    )
+    cash_coverage = 0.0 if total_portfolio_value <= 0.0 else max(available_cash_amount / total_portfolio_value, 0.0)
+    additional_cash_coverage = max(cash_coverage - cash_weight_in_weights, 0.0)
+    return invested_total + additional_cash_coverage, cash_coverage
+
+
+def augment_weights_with_cash_bucket(
+    weights: dict[str, Any],
+    total_value: Any,
+    available_cash: Any,
+) -> dict[str, float]:
+    normalized = {str(bucket): float(value) for bucket, value in dict(weights or {}).items()}
+    if "cash_liquidity" in normalized or "cash" in normalized:
+        return normalized
+    total_portfolio_value = float(total_value or 0.0)
+    available_cash_amount = float(available_cash or 0.0)
+    if total_portfolio_value <= 0.0 or available_cash_amount <= 0.0:
+        return normalized
+    invested_total = sum(normalized.values())
+    cash_fraction = max(min(available_cash_amount / total_portfolio_value, 1.0), 0.0)
+    additional_cash_fraction = max(min(1.0 - invested_total, cash_fraction), 0.0)
+    if additional_cash_fraction <= 0.0:
+        return normalized
+    normalized["cash_liquidity"] = additional_cash_fraction
+    return normalized
+
+
 def validate_ev_state_inputs(
     live_portfolio: LivePortfolioSnapshot | dict[str, Any],
     constraint_state: ConstraintState | dict[str, Any],
@@ -44,12 +79,17 @@ def validate_ev_state_inputs(
     params = _obj(optimizer_params)
 
     total = sum(float(v) for v in live["weights"].values())
+    total_value = float(live.get("total_value", 0.0) or 0.0)
+    available_cash = float(live.get("available_cash", 0.0) or 0.0)
+    covered_total, cash_coverage = portfolio_weight_coverage(live["weights"], total_value, available_cash)
     all_cash_snapshot = (
         total <= 1e-9
-        and float(live.get("total_value", 0.0)) > 0.0
-        and float(live.get("available_cash", 0.0)) >= float(live.get("total_value", 0.0)) - 1e-6
+        and total_value > 0.0
+        and available_cash >= total_value - 1e-6
     )
-    assert abs(total - 1.0) < 0.01 or all_cash_snapshot, f"weights 合计 {total:.4f}，应接近 1.0"
+    assert abs(covered_total - 1.0) < 0.01 or all_cash_snapshot, (
+        f"weights 合计 {total:.4f}、现金覆盖 {cash_coverage:.4f}，账户总覆盖 {covered_total:.4f}，应接近 1.0"
+    )
     assert constraints.get("bucket_category"), "bucket_category 不能为空；必须显式提供，禁止字符串推断"
     unmapped = [b for b in live["weights"] if b not in constraints["bucket_category"]]
     assert not unmapped, f"以下资产桶未在 bucket_category 中映射：{unmapped}"

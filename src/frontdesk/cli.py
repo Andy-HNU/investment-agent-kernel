@@ -8,9 +8,13 @@ from typing import Any, Sequence
 from frontdesk.service import (
     DEFAULT_DB_PATH,
     approve_frontdesk_execution_plan,
+    explain_frontdesk_plan_change,
+    explain_frontdesk_probability,
     load_frontdesk_snapshot,
     load_user_state,
     record_frontdesk_execution_feedback,
+    run_frontdesk_daily_monitor,
+    sync_observed_portfolio,
     run_frontdesk_followup,
     run_frontdesk_onboarding,
 )
@@ -48,10 +52,19 @@ def _prompt_profile(args: argparse.Namespace) -> UserOnboardingProfile:
         if args.monthly_contribution is not None
         else _parse_float(_prompt_text("每月投入", "12000"))
     )
+    target_annual_return = (
+        args.target_annual_return
+        if getattr(args, "target_annual_return", None) is not None
+        else None
+    )
     goal_amount = (
         args.goal_amount
         if args.goal_amount is not None
-        else _parse_float(_prompt_text("目标期末总资产", "1000000"))
+        else (
+            _parse_float(_prompt_text("目标期末总资产", "1000000"))
+            if target_annual_return is None
+            else 0.0
+        )
     )
     goal_horizon_months = (
         args.goal_horizon_months
@@ -73,6 +86,7 @@ def _prompt_profile(args: argparse.Namespace) -> UserOnboardingProfile:
         monthly_contribution=float(monthly_contribution),
         goal_amount=float(goal_amount),
         goal_horizon_months=int(goal_horizon_months),
+        target_annual_return=None if target_annual_return is None else float(target_annual_return),
         risk_preference=risk_preference,
         max_drawdown_tolerance=float(max_drawdown_tolerance),
         current_holdings=current_holdings,
@@ -122,12 +136,13 @@ def _profile_from_non_interactive_args(args: argparse.Namespace) -> UserOnboardi
         "display_name": args.display_name,
         "current_total_assets": args.current_total_assets,
         "monthly_contribution": args.monthly_contribution,
-        "goal_amount": args.goal_amount,
         "goal_horizon_months": args.goal_horizon_months,
         "risk_preference": args.risk_preference,
         "max_drawdown_tolerance": args.max_drawdown_tolerance,
         "current_holdings": args.current_holdings,
     }
+    if args.goal_amount is None and getattr(args, "target_annual_return", None) is None:
+        required_fields["goal_amount"] = args.goal_amount
     missing = [field for field, value in required_fields.items() if value is None]
     if missing:
         raise SystemExit(
@@ -139,8 +154,11 @@ def _profile_from_non_interactive_args(args: argparse.Namespace) -> UserOnboardi
         display_name=str(args.display_name),
         current_total_assets=float(args.current_total_assets),
         monthly_contribution=float(args.monthly_contribution),
-        goal_amount=float(args.goal_amount),
+        goal_amount=float(args.goal_amount or 0.0),
         goal_horizon_months=int(args.goal_horizon_months),
+        target_annual_return=(
+            None if getattr(args, "target_annual_return", None) is None else float(args.target_annual_return)
+        ),
         risk_preference=str(args.risk_preference),
         max_drawdown_tolerance=float(args.max_drawdown_tolerance),
         current_holdings=str(args.current_holdings),
@@ -185,11 +203,19 @@ def _render_candidate_lines(options: list[dict[str, Any]], *, prefix: str) -> li
         lines.append(
             f"{prefix}_{index}={option.get('label')} | {option.get('highlight')} | "
             f"success={option.get('success_probability')} "
+            f"bucket_success={option.get('bucket_success_probability')} "
+            f"product_independent_success={option.get('product_independent_success_probability')} "
+            f"product_success={option.get('product_proxy_adjusted_success_probability')} "
+            f"probability_method={option.get('product_probability_method')} "
+            f"required_return={option.get('implied_required_annual_return')} "
+            f"expected_return={option.get('expected_annual_return')} "
             f"dd90={option.get('max_drawdown_90pct')} "
             f"shortfall={option.get('shortfall_probability')}"
         )
         if option.get("description"):
             lines.append(f"{prefix}_{index}_note={option.get('description')}")
+        if option.get("probability_disclosure"):
+            lines.append(f"{prefix}_{index}_probability_disclosure={option.get('probability_disclosure')}")
         if option.get("risk_label") or option.get("liquidity_label") or option.get("complexity_label"):
             lines.append(
                 f"{prefix}_{index}_tags="
@@ -198,6 +224,96 @@ def _render_candidate_lines(options: list[dict[str, Any]], *, prefix: str) -> li
                 f"complexity={option.get('complexity_label')}"
             )
     return lines
+
+
+def _render_probability_explanation_block(decision_card: dict[str, Any]) -> list[str]:
+    explanation = decision_card.get("probability_explanation") or {}
+    if not explanation:
+        return []
+    target_label = explanation.get("target_return_priority_allocation_label") or ""
+    target_reason = explanation.get("why_not_target_return_priority") or ""
+    if target_label:
+        target_line = (
+            "probability_target_return="
+            f"{target_label} | "
+            f"success={explanation.get('target_return_priority_success_probability')} | "
+            f"expected_return={explanation.get('target_return_priority_expected_annual_return')} | "
+            f"required_return={explanation.get('implied_required_annual_return')}"
+        )
+    else:
+        target_line = (
+            "probability_target_return="
+            f"unavailable | "
+            f"reason={target_reason} | "
+            f"required_return={explanation.get('implied_required_annual_return')}"
+        )
+
+    drawdown_label = explanation.get("drawdown_priority_allocation_label") or ""
+    drawdown_reason = explanation.get("why_not_drawdown_priority") or ""
+    if drawdown_label:
+        drawdown_line = (
+            "probability_drawdown="
+            f"{drawdown_label} | "
+            f"success={explanation.get('drawdown_priority_success_probability')} | "
+            f"expected_return={explanation.get('drawdown_priority_expected_annual_return')}"
+        )
+    else:
+        drawdown_line = f"probability_drawdown=unavailable | reason={drawdown_reason}"
+
+    lines = [
+        "probability_recommended="
+        f"{explanation.get('recommended_allocation_label')} | "
+        f"success={explanation.get('recommended_success_probability')} | "
+        f"expected_return={explanation.get('recommended_expected_annual_return')}",
+        "probability_highest="
+        f"{explanation.get('highest_probability_allocation_label')} | "
+        f"success={explanation.get('highest_probability_success_probability')} | "
+        f"expected_return={explanation.get('highest_probability_expected_annual_return')}",
+        target_line,
+        drawdown_line,
+    ]
+    if explanation.get("difficulty_source"):
+        lines.append(f"probability_difficulty_source={explanation.get('difficulty_source')}")
+    if explanation.get("product_probability_disclosure"):
+        lines.append(f"probability_method_disclosure={explanation.get('product_probability_disclosure')}")
+    evidence_layer = explanation.get("evidence_layer") or {}
+    if evidence_layer.get("formal_path_status") is not None:
+        lines.append(f"probability_evidence_formal_path_status={evidence_layer.get('formal_path_status')}")
+    if evidence_layer.get("observed_ratio") is not None:
+        lines.append(f"probability_evidence_observed_ratio={evidence_layer.get('observed_ratio')}")
+    if evidence_layer.get("observed_product_count") is not None:
+        lines.append(f"probability_evidence_observed_product_count={evidence_layer.get('observed_product_count')}")
+    if explanation.get("constraint_contributions"):
+        lines.append(f"probability_constraint_contributions={explanation.get('constraint_contributions')}")
+    counterfactuals = explanation.get("counterfactuals") or {}
+    fallback_scenarios = counterfactuals.get("fallback_scenarios") or []
+    if fallback_scenarios:
+        lines.append(f"probability_counterfactuals={fallback_scenarios}")
+    product_contributions = explanation.get("product_contributions") or []
+    if product_contributions:
+        rendered = [
+            f"{item.get('product_id')}:{item.get('contribution_direction')}"
+            for item in product_contributions
+            if item.get("product_id") and item.get("contribution_direction")
+        ]
+        if rendered:
+            lines.append(f"probability_product_contributions={rendered}")
+    return lines
+
+
+def _render_frontier_diagnostics_block(decision_card: dict[str, Any]) -> list[str]:
+    frontier_analysis = decision_card.get("frontier_analysis") or {}
+    diagnostics = frontier_analysis.get("frontier_diagnostics") or {}
+    if not diagnostics:
+        return []
+    return [
+        f"frontier_raw_candidate_count={diagnostics.get('raw_candidate_count')}",
+        f"frontier_feasible_candidate_count={diagnostics.get('feasible_candidate_count')}",
+        f"frontier_max_expected_annual_return={diagnostics.get('frontier_max_expected_annual_return')}",
+        f"frontier_candidate_families={diagnostics.get('candidate_families')}",
+        f"frontier_binding_constraints={diagnostics.get('binding_constraints')}",
+        f"frontier_structural_limitations={diagnostics.get('structural_limitations')}",
+    ]
 
 
 def _render_refresh_block(refresh_summary: dict[str, Any]) -> list[str]:
@@ -306,6 +422,70 @@ def _render_feedback_block(
     return lines
 
 
+def _render_observed_portfolio_block(observed_portfolio: dict[str, Any] | None) -> list[str]:
+    if not observed_portfolio:
+        return []
+    lines = [
+        "observed_portfolio: "
+        + ", ".join(
+            [
+                f"snapshot_id={observed_portfolio.get('snapshot_id')}",
+                f"source_kind={observed_portfolio.get('source_kind')}",
+                f"completeness_status={observed_portfolio.get('completeness_status')}",
+                f"data_status={observed_portfolio.get('data_status')}",
+                f"total_value={observed_portfolio.get('total_value')}",
+                f"available_cash={observed_portfolio.get('available_cash')}",
+            ]
+        )
+    ]
+    if observed_portfolio.get("missing_fields"):
+        lines.append(
+            "observed_portfolio_missing_fields="
+            + ",".join(str(item) for item in observed_portfolio.get("missing_fields") or [])
+        )
+    if observed_portfolio.get("weights"):
+        lines.append(f"observed_portfolio_weights={observed_portfolio.get('weights')}")
+    return lines
+
+
+def _render_reconciliation_state_block(reconciliation_state: dict[str, Any] | None) -> list[str]:
+    if not reconciliation_state:
+        return []
+    lines = [
+        "reconciliation_state: "
+        + ", ".join(
+            [
+                f"snapshot_id={reconciliation_state.get('snapshot_id')}",
+                f"status={reconciliation_state.get('status')}",
+                f"compared_against={reconciliation_state.get('compared_against')}",
+                f"observed_snapshot_id={reconciliation_state.get('observed_snapshot_id')}",
+            ]
+        )
+    ]
+    coverage = reconciliation_state.get("coverage_summary") or {}
+    if coverage:
+        lines.append(f"reconciliation_plan_coverage={coverage}")
+    if reconciliation_state.get("bucket_deltas"):
+        lines.append(f"reconciliation_bucket_deltas={reconciliation_state.get('bucket_deltas')}")
+    if reconciliation_state.get("product_deltas"):
+        lines.append(f"reconciliation_product_deltas={reconciliation_state.get('product_deltas')}")
+    if reconciliation_state.get("required_actions"):
+        lines.append(
+            "reconciliation_required_actions="
+            + ",".join(str(item) for item in reconciliation_state.get("required_actions") or [])
+        )
+    if reconciliation_state.get("blockers"):
+        lines.append(
+            "reconciliation_blockers="
+            + ",".join(str(item) for item in reconciliation_state.get("blockers") or [])
+        )
+    if reconciliation_state.get("notes"):
+        lines.append("reconciliation_notes=" + "; ".join(str(item) for item in reconciliation_state.get("notes") or []))
+    if reconciliation_state.get("summary"):
+        lines.append(f"reconciliation_summary={reconciliation_state.get('summary')}")
+    return lines
+
+
 def _render_execution_plan_block(
     execution_plan: dict[str, Any] | None,
     *,
@@ -322,9 +502,133 @@ def _render_execution_plan_block(
                 f"status={execution_plan.get('status')}",
                 f"items={execution_plan.get('item_count')}",
                 f"confirmation_required={execution_plan.get('confirmation_required')}",
+                f"runtime_candidates={execution_plan.get('runtime_candidate_count')}",
             ]
         )
     ]
+    if execution_plan.get("registry_candidate_count") is not None:
+        lines.append(f"{label}_registry_candidates={execution_plan.get('registry_candidate_count')}")
+    if execution_plan.get("candidate_filter_dropped_reasons"):
+        lines.append(
+            f"{label}_candidate_filter_drop_reasons={execution_plan.get('candidate_filter_dropped_reasons')}"
+        )
+    proxy_universe_summary = execution_plan.get("proxy_universe_summary") or {}
+    if proxy_universe_summary:
+        lines.append(f"{label}_proxy_mode={proxy_universe_summary.get('solving_mode')}")
+        if proxy_universe_summary.get("proxy_scope") is not None:
+            lines.append(f"{label}_proxy_scope={proxy_universe_summary.get('proxy_scope')}")
+        lines.append(
+            f"{label}_proxy_covered_buckets={proxy_universe_summary.get('covered_asset_buckets')}"
+        )
+        lines.append(
+            f"{label}_proxy_uncovered_buckets={proxy_universe_summary.get('uncovered_asset_buckets')}"
+        )
+        if proxy_universe_summary.get("product_proxy_count") is not None:
+            lines.append(f"{label}_proxy_selected_product_count={proxy_universe_summary.get('product_proxy_count')}")
+        if proxy_universe_summary.get("runtime_candidate_proxy_count") is not None:
+            lines.append(
+                f"{label}_proxy_runtime_candidate_count={proxy_universe_summary.get('runtime_candidate_proxy_count')}"
+            )
+        if proxy_universe_summary.get("data_status") is not None:
+            lines.append(f"{label}_proxy_data_status={proxy_universe_summary.get('data_status')}")
+        lines.append(
+            f"{label}_proxy_disclosure={proxy_universe_summary.get('disclosure')}"
+        )
+    product_proxy_specs = execution_plan.get("product_proxy_specs") or []
+    if product_proxy_specs:
+        data_statuses = sorted({str(spec.get("data_status")) for spec in product_proxy_specs if spec.get("data_status")})
+        confidence_statuses = sorted(
+            {
+                str(spec.get("confidence_data_status"))
+                for spec in product_proxy_specs
+                if spec.get("confidence_data_status")
+            }
+        )
+        if data_statuses:
+            lines.append(f"{label}_proxy_spec_data_statuses={data_statuses}")
+        if confidence_statuses:
+            lines.append(f"{label}_proxy_confidence_data_statuses={confidence_statuses}")
+    execution_realism_summary = execution_plan.get("execution_realism_summary") or {}
+    if execution_realism_summary:
+        lines.append(f"{label}_executable={execution_realism_summary.get('executable')}")
+        if execution_realism_summary.get("cash_reserve_target_amount") is not None:
+            lines.append(
+                f"{label}_cash_reserve_target={execution_realism_summary.get('cash_reserve_target_amount')}"
+            )
+        if execution_realism_summary.get("initial_buy_amount") is not None:
+            lines.append(
+                f"{label}_initial_buy_amount={execution_realism_summary.get('initial_buy_amount')}"
+            )
+        if execution_realism_summary.get("initial_sell_amount") is not None:
+            lines.append(
+                f"{label}_initial_sell_amount={execution_realism_summary.get('initial_sell_amount')}"
+            )
+        if execution_realism_summary.get("fundable_initial_cash") is not None:
+            lines.append(
+                f"{label}_fundable_initial_cash={execution_realism_summary.get('fundable_initial_cash')}"
+            )
+        if execution_realism_summary.get("minimum_trade_amount") is not None:
+            lines.append(
+                f"{label}_minimum_trade_amount={execution_realism_summary.get('minimum_trade_amount')}"
+            )
+        if execution_realism_summary.get("estimated_total_fee") is not None:
+            lines.append(
+                f"{label}_estimated_total_fee={execution_realism_summary.get('estimated_total_fee')}"
+            )
+        if execution_realism_summary.get("estimated_total_slippage") is not None:
+            lines.append(
+                f"{label}_estimated_total_slippage={execution_realism_summary.get('estimated_total_slippage')}"
+            )
+        if execution_realism_summary.get("execution_cost_data_status") is not None:
+            lines.append(
+                f"{label}_execution_cost_data_status={execution_realism_summary.get('execution_cost_data_status')}"
+            )
+        if execution_realism_summary.get("tax_estimate_status") is not None:
+            lines.append(
+                f"{label}_tax_estimate_status={execution_realism_summary.get('tax_estimate_status')}"
+            )
+        if execution_realism_summary.get("tiny_trade_buckets"):
+            lines.append(
+                f"{label}_tiny_trade_buckets={execution_realism_summary.get('tiny_trade_buckets')}"
+            )
+        if execution_realism_summary.get("reasons"):
+            lines.append(
+                f"{label}_execution_realism_reasons={execution_realism_summary.get('reasons')}"
+            )
+    if execution_plan.get("product_universe_audit_summary"):
+        lines.append(
+            f"{label}_product_universe_audit={execution_plan.get('product_universe_audit_summary')}"
+        )
+    if execution_plan.get("valuation_audit_summary"):
+        lines.append(f"{label}_valuation_audit={execution_plan.get('valuation_audit_summary')}")
+    if execution_plan.get("policy_news_audit_summary"):
+        lines.append(f"{label}_policy_news_audit={execution_plan.get('policy_news_audit_summary')}")
+    maintenance_policy_summary = execution_plan.get("maintenance_policy_summary") or {}
+    if maintenance_policy_summary:
+        lines.append(f"{label}_maintenance_policy={maintenance_policy_summary}")
+        for key in (
+            "initial_deploy_fraction",
+            "drawdown_add_buy_threshold",
+            "core_take_profit_threshold",
+            "satellite_take_profit_threshold",
+            "rebalance_band",
+        ):
+            if maintenance_policy_summary.get(key) is not None:
+                lines.append(f"{label}_{key}={maintenance_policy_summary.get(key)}")
+    for index, item in enumerate(list(execution_plan.get("items") or []), start=1):
+        item_prefix = f"{label}_item_{index}"
+        lines.append(
+            f"{item_prefix}=bucket:{item.get('asset_bucket')}, product:{item.get('primary_product_id')}, "
+            f"target_weight:{item.get('target_weight')}, target_amount:{item.get('target_amount')}, "
+            f"trade_direction:{item.get('trade_direction')}, initial_trade_amount:{item.get('initial_trade_amount')}, "
+            f"deferred_trade_amount:{item.get('deferred_trade_amount')}"
+        )
+        if item.get("trigger_conditions"):
+            lines.append(f"{item_prefix}_trigger_conditions={item.get('trigger_conditions')}")
+        if item.get("valuation_audit"):
+            lines.append(f"{item_prefix}_valuation_audit={item.get('valuation_audit')}")
+        if item.get("policy_news_audit"):
+            lines.append(f"{item_prefix}_policy_news_audit={item.get('policy_news_audit')}")
     if execution_plan.get("approved_at"):
         lines.append(f"{label}_approved_at={execution_plan.get('approved_at')}")
     if execution_plan.get("superseded_by_plan_id"):
@@ -383,7 +687,193 @@ def _render_execution_plan_guidance_block(guidance: dict[str, Any] | None) -> li
     return lines
 
 
+def _render_observed_portfolio_block(observed_portfolio: dict[str, Any] | None) -> list[str]:
+    if not observed_portfolio:
+        return []
+    return [
+        "observed_portfolio: "
+        + ", ".join(
+            [
+                f"snapshot_id={observed_portfolio.get('snapshot_id')}",
+                f"source_kind={observed_portfolio.get('source_kind')}",
+                f"data_status={observed_portfolio.get('data_status')}",
+                f"completeness={observed_portfolio.get('completeness_status')}",
+                f"total_value={observed_portfolio.get('total_value')}",
+                f"available_cash={observed_portfolio.get('available_cash')}",
+            ]
+        ),
+        f"observed_portfolio_weights={observed_portfolio.get('weights')}",
+    ]
+
+
+def _render_reconciliation_state_block(reconciliation_state: dict[str, Any] | None) -> list[str]:
+    if not reconciliation_state:
+        return []
+    lines = [
+        "reconciliation_state: "
+        + ", ".join(
+            [
+                f"snapshot_id={reconciliation_state.get('snapshot_id')}",
+                f"status={reconciliation_state.get('status')}",
+                f"compared_against={reconciliation_state.get('compared_against')}",
+            ]
+        )
+    ]
+    if reconciliation_state.get("required_actions"):
+        lines.append(f"reconciliation_required_actions={reconciliation_state.get('required_actions')}")
+    if reconciliation_state.get("blockers"):
+        lines.append(f"reconciliation_blockers={reconciliation_state.get('blockers')}")
+    if reconciliation_state.get("bucket_deltas"):
+        lines.append(f"reconciliation_bucket_deltas={reconciliation_state.get('bucket_deltas')}")
+    if reconciliation_state.get("product_deltas"):
+        lines.append(f"reconciliation_product_deltas={reconciliation_state.get('product_deltas')}")
+    return lines
+
+
+def _unique_text_items(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        rendered = str(item).strip()
+        if not rendered or rendered in seen:
+            continue
+        seen.add(rendered)
+        ordered.append(rendered)
+    return ordered
+
+
+def _append_scope(scope: list[str], value: str | None) -> None:
+    rendered = str(value or "").strip()
+    if rendered:
+        scope.append(rendered)
+
+
+def _formal_path_visibility(
+    decision_card: dict[str, Any] | None,
+    refresh_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    card = decision_card or {}
+    refresh = refresh_summary or {}
+    degraded_scope: list[str] = []
+    fallback_scope: list[str] = []
+
+    for item in list(card.get("guardrails") or []) + list(card.get("execution_notes") or []):
+        text = str(item).strip()
+        if text.startswith("bundle_quality="):
+            _append_scope(degraded_scope, "bundle")
+        elif text.startswith("calibration_quality="):
+            _append_scope(degraded_scope, "calibration")
+        elif text.startswith("candidate_poverty="):
+            _append_scope(degraded_scope, "runtime_candidates")
+        elif text.startswith("cooldown_active=") or text.startswith("high_risk_request="):
+            _append_scope(degraded_scope, "runtime_controls")
+
+    refresh_state = str(refresh.get("freshness_state") or "").strip().lower()
+    external_status = str(refresh.get("external_status") or "").strip().lower()
+    if refresh_state in {"fallback", "degraded", "stale"} or external_status == "fallback":
+        _append_scope(fallback_scope, "external_snapshot")
+    for item in refresh.get("domain_details") or []:
+        detail = item or {}
+        domain = str(detail.get("domain") or "").strip()
+        state = str(detail.get("freshness_state") or detail.get("source_type") or "").strip().lower()
+        if state in {"fallback", "degraded", "stale"}:
+            _append_scope(degraded_scope, domain)
+            if state == "fallback":
+                _append_scope(fallback_scope, domain)
+
+    combined_text = " ".join(
+        [
+            str(card.get("summary") or "").strip(),
+            *[str(item).strip() for item in card.get("recommendation_reason") or []],
+        ]
+    )
+    if any(marker in combined_text for marker in ("临时参考", "不存在满足", "候选方案不足")):
+        _append_scope(fallback_scope, "goal_solver")
+
+    degraded_scope = _unique_text_items(degraded_scope)
+    fallback_scope = _unique_text_items(fallback_scope)
+
+    recommended_action = str(card.get("recommended_action") or "").strip()
+    execution_eligible = True
+    execution_eligibility_reason = "eligible"
+    if str(card.get("card_type") or "") == "blocked":
+        execution_eligible = False
+        execution_eligibility_reason = "blocked_card"
+    elif str(card.get("status_badge") or "") == "degraded":
+        execution_eligible = False
+        execution_eligibility_reason = "degraded_card"
+    elif fallback_scope:
+        execution_eligible = False
+        execution_eligibility_reason = "fallback_used"
+    elif any(item == "manual_review_required" for item in card.get("execution_notes") or []):
+        execution_eligible = False
+        execution_eligibility_reason = "manual_review_required"
+    elif recommended_action in {"", "blocked", "review", "observe", "freeze"}:
+        execution_eligible = False
+        execution_eligibility_reason = "non_executable_recommendation"
+
+    return {
+        "degraded_scope": degraded_scope,
+        "fallback_used": bool(fallback_scope),
+        "fallback_scope": fallback_scope,
+        "execution_eligible": execution_eligible,
+        "execution_eligibility_reason": execution_eligibility_reason,
+    }
+
+
+def _render_formal_path_block(formal_path_visibility: dict[str, Any] | None) -> list[str]:
+    if not formal_path_visibility:
+        return []
+    lines = [
+        "formal_path: "
+        + ", ".join(
+            [
+                f"status={formal_path_visibility.get('status')}",
+                "degraded_scope=" + ",".join(formal_path_visibility.get("degraded_scope") or []),
+                f"fallback_used={'true' if formal_path_visibility.get('fallback_used') else 'false'}",
+                "fallback_scope=" + ",".join(formal_path_visibility.get("fallback_scope") or []),
+                f"execution_eligible={'true' if formal_path_visibility.get('execution_eligible') else 'false'}",
+                f"execution_eligibility_reason={formal_path_visibility.get('execution_eligibility_reason')}",
+            ]
+        )
+    ]
+    if formal_path_visibility.get("missing_audit_fields"):
+        lines.append(
+            "formal_path_missing_audit_fields="
+            + ",".join(str(item) for item in formal_path_visibility.get("missing_audit_fields") or [])
+        )
+    return lines
+
+
+def _augment_formal_path_visibility(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    top_level_visibility = result.get("formal_path_visibility")
+    if "user_state" in result:
+        user_state = dict(result.get("user_state") or {})
+        decision_card = dict(user_state.get("decision_card") or {})
+        refresh_summary = dict(result.get("refresh_summary") or {})
+        visibility = (
+            top_level_visibility
+            or user_state.get("formal_path_visibility")
+            or decision_card.get("formal_path_visibility")
+            or _formal_path_visibility(decision_card, refresh_summary)
+        )
+        user_state["formal_path_visibility"] = visibility
+        result["user_state"] = user_state
+        result["formal_path_visibility"] = visibility
+        return result
+    decision_card = dict(result.get("decision_card") or {})
+    refresh_summary = dict(result.get("refresh_summary") or {})
+    result["formal_path_visibility"] = (
+        top_level_visibility
+        or decision_card.get("formal_path_visibility")
+        or _formal_path_visibility(decision_card, refresh_summary)
+    )
+    return result
+
+
 def render_frontdesk_summary(payload: dict[str, Any]) -> str:
+    payload = _augment_formal_path_visibility(payload)
     external_lines = []
     if payload.get("external_snapshot_source") is not None:
         external_lines.append(f"external_snapshot_source={payload.get('external_snapshot_source')}")
@@ -409,6 +899,13 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
             f"workflow={payload.get('workflow')}",
             f"status={payload.get('status')}",
         ]
+        if payload.get("run_outcome_status") is not None:
+            lines.append(f"run_outcome_status={payload.get('run_outcome_status')}")
+        if "resolved_result_category" in payload:
+            lines.append(f"resolved_result_category={payload.get('resolved_result_category')}")
+        disclosure_decision = payload.get("disclosure_decision") or decision_card.get("disclosure_decision") or {}
+        if disclosure_decision.get("disclosure_level") is not None:
+            lines.append(f"disclosure_level={disclosure_decision.get('disclosure_level')}")
         if decision_card:
             lines.extend(
                 [
@@ -418,6 +915,22 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
                     f"recommended_action={decision_card.get('recommended_action')}",
                 ]
             )
+        key_metrics = decision_card.get("key_metrics") or {}
+        if key_metrics:
+            for key in (
+                "success_probability",
+                "max_drawdown_90pct",
+                "shortfall_probability",
+                "expected_terminal_value",
+                "implied_required_annual_return",
+                "expected_annual_return",
+                "product_independent_success_probability",
+                "product_proxy_adjusted_success_probability",
+                "product_probability_method",
+            ):
+                value = key_metrics.get(key)
+                if value is not None:
+                    lines.append(f"{key}={value}")
         lines.extend(_render_provenance_block(decision_card.get("input_provenance") or {}))
         lines.extend(_render_input_source_summary(decision_card.get("input_provenance") or {}))
         lines.extend(_render_candidate_lines(decision_card.get("candidate_options") or [], prefix="candidate"))
@@ -429,7 +942,12 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         lines.extend(_render_execution_plan_block(active_execution_plan, label="active_execution_plan"))
         lines.extend(_render_execution_plan_block(pending_execution_plan, label="pending_execution_plan"))
         lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison") or user_state.get("execution_plan_comparison")))
+        lines.extend(_render_observed_portfolio_block(payload.get("observed_portfolio") or user_state.get("observed_portfolio")))
+        lines.extend(_render_reconciliation_state_block(payload.get("reconciliation_state") or user_state.get("reconciliation_state")))
         lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
+        lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
+        lines.extend(_render_probability_explanation_block(decision_card))
+        lines.extend(_render_frontier_diagnostics_block(decision_card))
         lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
         lines.extend(
             _render_feedback_block(
@@ -470,7 +988,10 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
         lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
         lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
+        lines.extend(_render_observed_portfolio_block((payload.get("user_state") or {}).get("observed_portfolio")))
+        lines.extend(_render_reconciliation_state_block((payload.get("user_state") or {}).get("reconciliation_state")))
         lines.extend(_render_execution_plan_guidance_block((payload.get("user_state") or {}).get("decision_card", {}).get("execution_plan_guidance")))
+        lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
         lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
         return "\n".join(lines)
 
@@ -480,7 +1001,14 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         f"workflow={payload['workflow_type']}",
         f"status={payload['status']}",
     ]
+    if payload.get("run_outcome_status") is not None:
+        lines.append(f"run_outcome_status={payload.get('run_outcome_status')}")
+    if "resolved_result_category" in payload:
+        lines.append(f"resolved_result_category={payload.get('resolved_result_category')}")
     decision_card = payload.get("decision_card") or {}
+    disclosure_decision = payload.get("disclosure_decision") or decision_card.get("disclosure_decision") or {}
+    if disclosure_decision.get("disclosure_level") is not None:
+        lines.append(f"disclosure_level={disclosure_decision.get('disclosure_level')}")
     if decision_card:
         lines.extend(
             [
@@ -492,7 +1020,17 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
         )
     key_metrics = payload.get("key_metrics") or {}
     if key_metrics:
-        for key in ("success_probability", "max_drawdown_90pct", "shortfall_probability", "expected_terminal_value"):
+        for key in (
+            "success_probability",
+            "max_drawdown_90pct",
+            "shortfall_probability",
+            "expected_terminal_value",
+            "implied_required_annual_return",
+            "expected_annual_return",
+            "product_independent_success_probability",
+            "product_proxy_adjusted_success_probability",
+            "product_probability_method",
+        ):
             value = key_metrics.get(key)
             if value is not None:
                 lines.append(f"{key}={value}")
@@ -502,7 +1040,12 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
     lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
     lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
+    lines.extend(_render_observed_portfolio_block(payload.get("observed_portfolio")))
+    lines.extend(_render_reconciliation_state_block(payload.get("reconciliation_state")))
     lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
+    lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
+    lines.extend(_render_probability_explanation_block(decision_card))
+    lines.extend(_render_frontier_diagnostics_block(decision_card))
     lines.extend(
         _render_feedback_block(
             payload.get("execution_feedback"),
@@ -520,6 +1063,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
 
 
 def render_frontdesk_snapshot(payload: dict[str, Any]) -> str:
+    payload = _augment_formal_path_visibility(payload)
     profile = payload.get("profile") or {}
     latest_run = payload.get("latest_run") or {}
     latest_baseline = payload.get("latest_baseline") or {}
@@ -542,7 +1086,10 @@ def render_frontdesk_snapshot(payload: dict[str, Any]) -> str:
     lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
     lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
+    lines.extend(_render_observed_portfolio_block(payload.get("observed_portfolio")))
+    lines.extend(_render_reconciliation_state_block(payload.get("reconciliation_state")))
     lines.extend(_render_execution_plan_guidance_block(decision_card.get("execution_plan_guidance")))
+    lines.extend(_render_formal_path_block(payload.get("formal_path_visibility")))
     lines.extend(
         _render_feedback_block(
             payload.get("execution_feedback"),
@@ -579,6 +1126,7 @@ def build_parser() -> argparse.ArgumentParser:
     onboarding.add_argument("--current-total-assets", type=float)
     onboarding.add_argument("--monthly-contribution", type=float)
     onboarding.add_argument("--goal-amount", type=float)
+    onboarding.add_argument("--target-annual-return", type=float)
     onboarding.add_argument("--goal-horizon-months", type=int)
     onboarding.add_argument("--risk-preference")
     onboarding.add_argument("--max-drawdown-tolerance", type=float)
@@ -600,6 +1148,7 @@ def build_parser() -> argparse.ArgumentParser:
     onboard.add_argument("--current-total-assets", type=float)
     onboard.add_argument("--monthly-contribution", type=float)
     onboard.add_argument("--goal-amount", type=float)
+    onboard.add_argument("--target-annual-return", type=float)
     onboard.add_argument("--goal-horizon-months", type=int)
     onboard.add_argument("--risk-preference")
     onboard.add_argument("--max-drawdown-tolerance", type=float)
@@ -612,7 +1161,7 @@ def build_parser() -> argparse.ArgumentParser:
     onboard.add_argument("--fee-assumption", choices=["transaction_cost_only", "platform_fee_excluded", "unknown"], default="transaction_cost_only")
     onboard.add_argument("--contribution-commitment-confidence", type=float)
 
-    for name in ("monthly", "event", "quarterly", "show-user"):
+    for name in ("monthly", "event", "quarterly", "show-user", "daily-monitor", "explain-probability", "explain-plan-change"):
         sub = subparsers.add_parser(name, help=f"Run {name} flow using saved SQLite state.")
         _add_common_flags(sub)
         sub.add_argument("--account-profile-id", required=True)
@@ -645,6 +1194,15 @@ def build_parser() -> argparse.ArgumentParser:
     approve_plan.add_argument("--plan-version", type=int, required=True)
     approve_plan.add_argument("--approved-at", help="Optional approval timestamp (ISO-8601).")
 
+    sync_portfolio = subparsers.add_parser("sync-portfolio", help="Sync an observed portfolio snapshot and reconcile it against saved plans.")
+    _add_common_flags(sync_portfolio)
+    sync_portfolio.add_argument("--account-profile-id", required=True)
+    sync_portfolio.add_argument(
+        "--observed-portfolio-json",
+        required=True,
+        help="Observed portfolio JSON file path or inline JSON; also accepts OCR merged_portfolio payloads.",
+    )
+
     return parser
 
 
@@ -676,6 +1234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "status": payload["status"],
                 "run_id": payload["run_id"],
                 "user_state": payload["user_state"],
+                "refresh_summary": payload.get("refresh_summary"),
                 "external_snapshot_source": payload.get("external_snapshot_source"),
                 "external_snapshot_config": payload.get("external_snapshot_config"),
                 "external_snapshot_status": payload.get("external_snapshot_status"),
@@ -714,6 +1273,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             approved_at=args.approved_at,
             db_path=db_path,
         )
+    elif args.command == "sync-portfolio":
+        payload = sync_observed_portfolio(
+            account_profile_id=args.account_profile_id,
+            observed_portfolio=_json_object_from_source(
+                args.observed_portfolio_json,
+                option_name="observed-portfolio-json",
+            ),
+            db_path=db_path,
+        )
+    elif args.command == "daily-monitor":
+        payload = run_frontdesk_daily_monitor(
+            account_profile_id=args.account_profile_id,
+            db_path=db_path,
+        )
+    elif args.command == "explain-probability":
+        payload = explain_frontdesk_probability(
+            account_profile_id=args.account_profile_id,
+            db_path=db_path,
+        )
+    elif args.command == "explain-plan-change":
+        payload = explain_frontdesk_plan_change(
+            account_profile_id=args.account_profile_id,
+            db_path=db_path,
+        )
     else:
         profile = None
         event_context = None
@@ -731,6 +1314,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             external_snapshot_source=external_snapshot_source,
             external_data_config=external_data_config,
         )
+
+    payload = _augment_formal_path_visibility(payload)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))

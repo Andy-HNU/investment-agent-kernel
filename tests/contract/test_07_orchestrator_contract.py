@@ -180,6 +180,32 @@ def test_run_orchestrator_onboarding_builds_goal_baseline(
 
 
 @pytest.mark.contract
+def test_run_orchestrator_blocks_strict_formal_path_without_observed_runtime_inputs(
+    goal_solver_input_base,
+    calibration_result_base,
+):
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "run_onboarding_formal_path_blocked"},
+        raw_inputs={
+            "bundle_id": "bundle_acc001_20260329T120000Z",
+            "snapshot_bundle": {"bundle_id": "bundle_acc001_20260329T120000Z"},
+            "calibration_result": calibration_result_base,
+            "allocation_engine_input": _allocation_input(goal_solver_input_base),
+            "goal_solver_input": goal_solver_input_base,
+            "formal_path_required": True,
+        },
+    )
+
+    assert result.status == WorkflowStatus.BLOCKED
+    assert result.goal_solver_output is None
+    assert result.execution_plan is None
+    assert any("candidate_product_context" in reason for reason in result.blocking_reasons)
+    assert result.run_outcome_status == "blocked"
+    assert result.resolved_result_category is None
+    assert result.disclosure_decision["disclosure_level"] == "unavailable"
+
+
+@pytest.mark.contract
 def test_run_orchestrator_onboarding_persistence_plan_includes_execution_plan_artifact(
     goal_solver_input_base,
     calibration_result_base,
@@ -209,6 +235,46 @@ def test_run_orchestrator_onboarding_persistence_plan_includes_execution_plan_ar
     assert execution_plan["payload"]["plan_id"] == result.execution_plan.plan_id
     assert result.card_build_input.execution_plan_summary["plan_id"] == result.execution_plan.plan_id
     assert result.decision_card["execution_plan_summary"]["plan_id"] == result.execution_plan.plan_id
+
+
+@pytest.mark.contract
+def test_run_orchestrator_attaches_candidate_product_contexts_before_solver(
+    goal_solver_input_base,
+    calibration_result_base,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "_build_solver_candidate_product_contexts",
+        lambda **_kwargs: {
+            "balanced_core__moderate__02": {
+                "allocation_name": "balanced_core__moderate__02",
+                "product_probability_method": "product_proxy_adjustment_estimate",
+                "selected_product_ids": ["510300", "511010"],
+                "bucket_expected_return_adjustments": {"equity_cn": 0.01},
+                "bucket_volatility_multipliers": {"equity_cn": 1.08},
+            }
+        },
+    )
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "run_onboarding_product_context"},
+        raw_inputs={
+            "bundle_id": "bundle_acc001_20260329T120000Z",
+            "snapshot_bundle": {"bundle_id": "bundle_acc001_20260329T120000Z"},
+            "calibration_result": calibration_result_base,
+            "allocation_engine_input": _allocation_input(goal_solver_input_base),
+            "goal_solver_input": goal_solver_input_base,
+        },
+    )
+
+    assert result.status == WorkflowStatus.COMPLETED
+    contexts = result.card_build_input.goal_solver_input["candidate_product_contexts"]
+    assert contexts
+    for context in contexts.values():
+        assert context["product_probability_method"] == "product_proxy_adjustment_estimate"
+        assert context["selected_product_ids"]
+        assert "bucket_expected_return_adjustments" in context
 
 
 @pytest.mark.contract
@@ -1207,3 +1273,115 @@ def test_run_orchestrator_onboarding_replaces_candidates_and_fills_snapshot_from
     assert result.card_build_input is not None
     assert result.card_build_input.card_type == DecisionCardType.GOAL_BASELINE
     assert result.card_build_input.bundle_id == bundle_id
+
+
+@pytest.mark.contract
+def test_run_orchestrator_onboarding_auto_enriches_runtime_product_inputs_without_market_raw(
+    goal_solver_input_base,
+    calibration_result_base,
+    monkeypatch,
+):
+    goal_solver_input = deepcopy(goal_solver_input_base)
+    allocation_result = AllocationEngineResult(
+        candidate_set_id="fresh",
+        account_profile_id=goal_solver_input_base["account_profile_id"],
+        engine_version="v1.0.0",
+        candidate_allocations=[
+            {
+                "name": "fresh_allocation",
+                "weights": {"equity_cn": 0.5, "bond_cn": 0.3, "gold": 0.1, "satellite": 0.1},
+                "complexity_score": 0.2,
+                "description": "fresh allocation from allocation engine",
+            }
+        ],
+        diagnostics=[],
+        warnings=[],
+    )
+    enriched_market_raw = {
+        "product_universe_inputs": {"requested": True, "source_kind": "tinyshare_runtime_catalog"},
+        "product_universe_result": {
+            "source_status": "observed",
+            "source_name": "tinyshare_runtime_catalog",
+            "source_ref": "tinyshare://runtime_catalog",
+            "snapshot_id": "tinyshare_runtime_catalog_2026-04-06",
+            "item_count": 1,
+            "runtime_candidates": [
+                {
+                    "product_id": "ts_stock_000001_sz",
+                    "product_name": "平安银行",
+                    "asset_bucket": "equity_cn",
+                    "product_family": "a_share_stock",
+                    "wrapper_type": "stock",
+                    "provider_source": "tinyshare_stock_basic",
+                    "provider_symbol": "000001.SZ",
+                    "tags": ["equity", "stock_wrapper", "cn"],
+                    "risk_labels": ["个股波动", "集中度"],
+                }
+            ],
+        },
+        "product_valuation_inputs": {"requested": True, "source_kind": "tinyshare_runtime_valuation"},
+        "product_valuation_result": {
+            "source_status": "observed",
+            "source_name": "tinyshare_runtime_valuation",
+            "source_ref": "tinyshare://daily_basic?trade_date=20260403",
+            "products": {},
+            },
+        }
+    captured_build_plan: dict[str, object] = {}
+    monkeypatch.setattr(orchestrator_engine, "run_allocation_engine", lambda _inp: allocation_result)
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "enrich_market_raw_with_runtime_product_inputs",
+        lambda market_raw, *, as_of, formal_path_required=False, execution_policy=None: enriched_market_raw,
+    )
+
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "run_goal_solver",
+        lambda inp: {
+            "input_snapshot_id": inp["snapshot_id"],
+            "recommended_allocation": {
+                "name": "fresh_allocation",
+                "weights": {"equity_cn": 0.5, "bond_cn": 0.3, "gold": 0.1, "satellite": 0.1},
+            },
+        },
+    )
+
+    def _fake_build_execution_plan(**kwargs):
+        captured_build_plan["kwargs"] = kwargs
+        return {
+            "product_universe_audit_summary": {"requested": True, "source_status": "observed"},
+            "valuation_audit_summary": {"requested": True, "source_status": "observed"},
+        }
+
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "build_execution_plan",
+        _fake_build_execution_plan,
+    )
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "run_auto_enrich"},
+        raw_inputs={
+            "as_of": "2026-04-06T12:00:00Z",
+            "account_raw": {
+                "weights": {"equity_cn": 0.5, "bond_cn": 0.25, "gold": 0.15, "satellite": 0.10},
+                "total_value": 100000.0,
+                "available_cash": 5000.0,
+                "remaining_horizon_months": 36,
+            },
+            "control_flags": {"disable_provenance_checks": True},
+            "snapshot_bundle": {
+                "bundle_id": calibration_result_base["source_bundle_id"],
+                "bundle_quality": "full",
+            },
+            "calibration_result": calibration_result_base,
+            "allocation_engine_input": _allocation_input(goal_solver_input_base),
+            "goal_solver_input": goal_solver_input,
+        },
+    )
+
+    assert result.status == WorkflowStatus.COMPLETED
+    assert captured_build_plan["kwargs"]["product_universe_inputs"]["requested"] is True
+    assert captured_build_plan["kwargs"]["product_universe_result"]["source_status"] == "observed"
+    assert captured_build_plan["kwargs"]["valuation_inputs"]["requested"] is True

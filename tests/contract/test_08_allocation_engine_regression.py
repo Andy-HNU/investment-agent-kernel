@@ -294,3 +294,23 @@ def test_allocation_engine_trim_preserves_family_diversity(goal_solver_input_bas
     assert len(result.candidate_allocations) == 5
     assert families.count("theme_tilt") == 1
     assert "liquidity_buffered" in families
+
+
+@pytest.mark.contract
+def test_allocation_engine_expands_return_seeking_families_for_moderate_36m_profiles(goal_solver_input_base):
+    allocation_input = _allocation_input(goal_solver_input_base)
+    allocation_input["goal"]["risk_preference"] = "moderate"
+    allocation_input["goal"]["priority"] = "aspirational"
+    allocation_input["goal"]["horizon_months"] = 36
+    allocation_input["account_profile"]["complexity_tolerance"] = "high"
+    allocation_input["account_profile"]["profile_flags"] = {
+        "target_return_pressure": "high",
+        "risk_capacity_score": 0.82,
+        "risk_tolerance_score": 0.82,
+    }
+
+    result = run_allocation_engine(allocation_input)
+    families = [allocation.name.split("__")[0] for allocation in result.candidate_allocations]
+
+    assert "growth_tilt" in families
+    assert "max_return_unconstrained" in families

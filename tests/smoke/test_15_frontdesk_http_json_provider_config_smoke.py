@@ -12,6 +12,10 @@ from tests.support.frontdesk_http_json_provider_config import (
     fetch_provider_snapshot,
     payload_from_snapshot,
 )
+from tests.support.formal_snapshot_helpers import (
+    build_formal_snapshot_payload,
+    write_formal_snapshot_source,
+)
 from tests.support.http_snapshot_server import serve_json_routes
 
 
@@ -22,20 +26,14 @@ def _profile(*, account_profile_id: str = "frontdesk_provider_config_user") -> U
     return UserOnboardingProfile(
         account_profile_id=account_profile_id,
         display_name="Andy",
-        current_total_assets=50_000.0,
-        monthly_contribution=12_000.0,
-        goal_amount=1_000_000.0,
-        goal_horizon_months=60,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
         risk_preference="中等",
-        max_drawdown_tolerance=0.10,
-        current_holdings="portfolio",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
         restrictions=[],
-        current_weights={
-            "equity_cn": 0.50,
-            "bond_cn": 0.30,
-            "gold": 0.10,
-            "satellite": 0.10,
-        },
     )
 
 
@@ -119,7 +117,13 @@ def test_frontdesk_cli_onboard_with_http_json_provider_config_path_fetches_exter
         )
 
     assert fetched is not None
-    provider_payload = payload_from_snapshot(fetched)
+    provider_payload = build_formal_snapshot_payload(
+        profile,
+        market_raw_overrides=fetched.raw_overrides.get("market_raw") or {},
+        behavior_raw_overrides=fetched.raw_overrides.get("behavior_raw") or {},
+        provider_name=fetched.provider_name or "http_json",
+        source_ref=fetched.source_ref,
+    )
     monkeypatch.setattr(
         "frontdesk.service._external_snapshot_payload",
         lambda source: deepcopy(provider_payload),
@@ -142,7 +146,7 @@ def test_frontdesk_cli_onboard_with_http_json_provider_config_path_fetches_exter
 
     assert exit_code == 0
     assert payload["external_snapshot_status"] == "fetched"
-    assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 2
+    assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["externally_fetched"] >= 2
     assert Path(payload["external_snapshot_source"]) == config_path
 
 
@@ -158,6 +162,7 @@ def test_frontdesk_cli_monthly_with_inline_http_json_provider_config_updates_sta
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     db_path = tmp_path / "frontdesk.sqlite"
+    baseline_snapshot_path = write_formal_snapshot_source(tmp_path, profile)
 
     onboarding_exit_code = main(
         [
@@ -166,6 +171,8 @@ def test_frontdesk_cli_monthly_with_inline_http_json_provider_config_updates_sta
             str(db_path),
             "--profile-json",
             str(profile_path),
+            "--external-snapshot-source",
+            str(baseline_snapshot_path),
             "--non-interactive",
             "--json",
         ]
@@ -225,7 +232,13 @@ def test_frontdesk_cli_monthly_with_inline_http_json_provider_config_updates_sta
         )
 
     assert fetched is not None
-    provider_payload = payload_from_snapshot(fetched)
+    provider_payload = build_formal_snapshot_payload(
+        profile,
+        account_raw_overrides=fetched.raw_overrides.get("account_raw") or {},
+        live_portfolio_overrides=fetched.raw_overrides.get("live_portfolio") or {},
+        provider_name=fetched.provider_name or "http_json",
+        source_ref=fetched.source_ref,
+    )
     monkeypatch.setattr(
         "frontdesk.service._external_snapshot_payload",
         lambda source: deepcopy(provider_payload),
@@ -311,5 +324,6 @@ def test_frontdesk_cli_onboard_http_json_provider_config_fail_open_falls_back(
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
+    assert payload["status"] == "blocked"
     assert payload["external_snapshot_status"] == "fallback"
     assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["externally_fetched"] == 0

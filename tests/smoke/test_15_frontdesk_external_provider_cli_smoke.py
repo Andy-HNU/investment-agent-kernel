@@ -6,6 +6,10 @@ import pytest
 
 from frontdesk.service import load_user_state
 from shared.onboarding import UserOnboardingProfile
+from tests.support.formal_snapshot_helpers import (
+    build_formal_snapshot_payload,
+    write_formal_snapshot_source,
+)
 from tests.support.http_snapshot_server import serve_json_routes
 
 
@@ -13,41 +17,47 @@ def _profile(*, account_profile_id: str = "frontdesk_provider_cli") -> UserOnboa
     return UserOnboardingProfile(
         account_profile_id=account_profile_id,
         display_name="Andy",
-        current_total_assets=50_000.0,
-        monthly_contribution=12_000.0,
-        goal_amount=1_000_000.0,
-        goal_horizon_months=60,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
         risk_preference="中等",
-        max_drawdown_tolerance=0.10,
-        current_holdings="cash",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
         restrictions=[],
     )
 
 
 def _snapshot(*, total_value: float) -> dict[str, object]:
     weights = {"equity_cn": 0.46, "bond_cn": 0.34, "gold": 0.12, "satellite": 0.08}
-    return {
-        "market_raw": {
-            "raw_volatility": {"equity_cn": 0.18, "bond_cn": 0.05, "gold": 0.10, "satellite": 0.21},
-            "liquidity_scores": {"equity_cn": 0.89, "bond_cn": 0.96, "gold": 0.84, "satellite": 0.62},
-            "valuation_z_scores": {"equity_cn": -0.1, "bond_cn": 0.05, "gold": -0.12, "satellite": 0.85},
-            "expected_returns": {"equity_cn": 0.09, "bond_cn": 0.03, "gold": 0.04, "satellite": 0.10},
-        },
-        "account_raw": {
+    profile = _profile(account_profile_id="frontdesk_provider_cli_fixture")
+    payload = build_formal_snapshot_payload(
+        profile,
+        account_raw_overrides={
             "weights": weights,
             "total_value": total_value,
             "available_cash": 1_500.0,
-            "remaining_horizon_months": 60,
+            "remaining_horizon_months": 36,
         },
-        "behavior_raw": {
-            "recent_chase_risk": "low",
-            "recent_panic_risk": "none",
-            "trade_frequency_30d": 0.0,
-            "override_count_90d": 0,
-            "cooldown_active": False,
-            "cooldown_until": None,
-            "behavior_penalty_coeff": 0.15,
+        live_portfolio_overrides={
+            "weights": weights,
+            "total_value": total_value,
+            "available_cash": 1_500.0,
+            "remaining_horizon_months": 36,
         },
+        provider_name="broker_http_json",
+        source_ref="provider://snapshot/broker_http_json",
+    )
+    meta = payload["external_snapshot_meta"]
+    return {
+        "market_raw": payload["market_raw"],
+        "account_raw": payload["account_raw"],
+        "behavior_raw": payload["behavior_raw"],
+        "live_portfolio": payload["live_portfolio"],
+        "provider_name": meta["provider_name"],
+        "as_of": meta["as_of"],
+        "fetched_at": meta["fetched_at"],
+        "domains": meta["domains"],
     }
 
 
@@ -89,6 +99,7 @@ def test_frontdesk_cli_monthly_accepts_external_provider_config_file(tmp_path, c
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     db_path = tmp_path / "frontdesk.sqlite"
+    baseline_snapshot_path = write_formal_snapshot_source(tmp_path, profile)
 
     onboarding_exit_code = main(
         [
@@ -97,6 +108,8 @@ def test_frontdesk_cli_monthly_accepts_external_provider_config_file(tmp_path, c
             str(db_path),
             "--profile-json",
             str(profile_path),
+            "--external-snapshot-source",
+            str(baseline_snapshot_path),
             "--non-interactive",
             "--json",
         ]

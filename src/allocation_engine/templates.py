@@ -7,9 +7,10 @@ FAMILY_PRIORITY = {
     "defense_heavy": 0,
     "balanced_core": 1,
     "growth_tilt": 2,
-    "theme_tilt": 3,
-    "liquidity_buffered": 4,
-    "satellite_light": 5,
+    "max_return_unconstrained": 3,
+    "theme_tilt": 4,
+    "liquidity_buffered": 5,
+    "satellite_light": 6,
 }
 
 
@@ -35,6 +36,18 @@ def _has_negative_cashflow_within_horizon(
         event.amount < 0 and event.month_index <= horizon_months
         for event in inp.cashflow_plan.cashflow_events
     )
+
+
+def _risk_headroom(inp: AllocationEngineInput) -> float:
+    flags = dict(inp.account_profile.profile_flags or {})
+    tolerance = float(flags.get("risk_tolerance_score", 0.55) or 0.55)
+    capacity = float(flags.get("risk_capacity_score", 0.55) or 0.55)
+    return max(0.0, min(1.0, min(tolerance, capacity)))
+
+
+def _target_return_pressure(inp: AllocationEngineInput) -> str:
+    flags = dict(inp.account_profile.profile_flags or {})
+    return str(flags.get("target_return_pressure") or "").strip().lower()
 
 
 def _retarget_template(
@@ -133,6 +146,8 @@ def build_template_family(inp: AllocationEngineInput) -> list[AllocationTemplate
     profile = inp.account_profile
     constraints = inp.constraints
     params = inp.params
+    risk_headroom = _risk_headroom(inp)
+    target_return_pressure = _target_return_pressure(inp)
     near_term_negative_cashflow = _has_negative_cashflow_within_horizon(inp, horizon_months=12)
     templates: list[AllocationTemplate] = [
         AllocationTemplate(
@@ -151,16 +166,43 @@ def build_template_family(inp: AllocationEngineInput) -> list[AllocationTemplate
         ),
     ]
 
-    if goal.priority != "essential" and (
+    allow_growth_tilt = goal.priority != "essential" and (
         goal.risk_preference == "aggressive"
-        or (goal.risk_preference == "moderate" and goal.horizon_months >= 60)
-    ):
+        or (
+            goal.risk_preference == "moderate"
+            and (
+                goal.horizon_months >= 60
+                or target_return_pressure in {"high", "very_high"}
+                or risk_headroom >= 0.75
+            )
+        )
+    )
+    if allow_growth_tilt:
         templates.append(
             AllocationTemplate(
                 template_name="growth_tilt",
                 template_family="growth_tilt",
                 target_core_weight=0.65,
                 target_defense_weight=0.20,
+                target_satellite_weight=0.15,
+            )
+        )
+
+    if (
+        goal.priority != "essential"
+        and goal.risk_preference != "conservative"
+        and (
+            target_return_pressure in {"high", "very_high"}
+            or goal.priority == "aspirational"
+            or risk_headroom >= 0.80
+        )
+    ):
+        templates.append(
+            AllocationTemplate(
+                template_name="max_return_unconstrained",
+                template_family="max_return_unconstrained",
+                target_core_weight=0.75,
+                target_defense_weight=0.10,
                 target_satellite_weight=0.15,
             )
         )

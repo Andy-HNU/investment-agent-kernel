@@ -7,26 +7,21 @@ import pytest
 
 from frontdesk.cli import main
 from shared.onboarding import UserOnboardingProfile
+from tests.support.formal_snapshot_helpers import write_formal_snapshot_source
 
 
 def _profile(*, display_name: str = "Andy") -> UserOnboardingProfile:
     return UserOnboardingProfile(
         account_profile_id="cli_frontdesk_user",
         display_name=display_name,
-        current_total_assets=50_000.0,
-        monthly_contribution=12_000.0,
-        goal_amount=1_000_000.0,
-        goal_horizon_months=60,
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
         risk_preference="中等",
-        max_drawdown_tolerance=0.10,
-        current_holdings="portfolio",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
         restrictions=[],
-        current_weights={
-            "equity_cn": 0.50,
-            "bond_cn": 0.30,
-            "gold": 0.10,
-            "satellite": 0.10,
-        },
     )
 
 
@@ -59,6 +54,7 @@ def test_frontdesk_cli_followup_profile_json_update_changes_state_and_output(tmp
         json.dumps(initial_profile.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    snapshot_path = write_formal_snapshot_source(tmp_path, initial_profile)
     updated_profile_path = tmp_path / "updated_profile.json"
     updated_profile_path.write_text(
         json.dumps(updated_profile.to_dict(), ensure_ascii=False, indent=2),
@@ -72,6 +68,8 @@ def test_frontdesk_cli_followup_profile_json_update_changes_state_and_output(tmp
             str(db_path),
             "--profile-json",
             str(initial_profile_path),
+            "--external-snapshot-source",
+            str(snapshot_path),
             "--non-interactive",
             "--json",
         ]
@@ -105,6 +103,7 @@ def test_frontdesk_cli_feedback_updates_execution_status(tmp_path, capsys):
         json.dumps(profile.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    snapshot_path = write_formal_snapshot_source(tmp_path, profile)
 
     onboarding_exit_code = main(
         [
@@ -113,6 +112,8 @@ def test_frontdesk_cli_feedback_updates_execution_status(tmp_path, capsys):
             str(db_path),
             "--profile-json",
             str(profile_path),
+            "--external-snapshot-source",
+            str(snapshot_path),
             "--non-interactive",
             "--json",
         ]

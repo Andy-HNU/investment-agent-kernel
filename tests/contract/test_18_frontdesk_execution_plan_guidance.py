@@ -4,6 +4,7 @@ import pytest
 
 from frontdesk.service import approve_frontdesk_execution_plan, run_frontdesk_followup, run_frontdesk_onboarding
 from shared.onboarding import UserOnboardingProfile
+from tests.support.formal_snapshot_helpers import write_formal_snapshot_source
 
 
 def _profile(
@@ -29,7 +30,12 @@ def _profile(
 @pytest.mark.contract
 def test_quarterly_followup_surfaces_execution_plan_guidance_when_pending_differs_from_active(tmp_path):
     db_path = tmp_path / "frontdesk.sqlite"
-    first = run_frontdesk_onboarding(_profile(), db_path=db_path)
+    baseline_profile = _profile()
+    first = run_frontdesk_onboarding(
+        baseline_profile,
+        db_path=db_path,
+        external_snapshot_source=write_formal_snapshot_source(tmp_path, baseline_profile),
+    )
     pending = first["user_state"]["pending_execution_plan"]
     approve_frontdesk_execution_plan(
         account_profile_id="phase1b_guidance_user",
@@ -43,6 +49,14 @@ def test_quarterly_followup_surfaces_execution_plan_guidance_when_pending_differ
         workflow_type="quarterly",
         db_path=db_path,
         profile=_profile(risk_preference="进取", restrictions=["只接受黄金和现金"]),
+        external_snapshot_source=write_formal_snapshot_source(
+            tmp_path,
+            _profile(
+                account_profile_id="phase1b_guidance_user",
+                risk_preference="进取",
+                restrictions=["只接受黄金和现金"],
+            ),
+        ),
     )
 
     guidance = (summary["decision_card"] or {}).get("execution_plan_guidance")
