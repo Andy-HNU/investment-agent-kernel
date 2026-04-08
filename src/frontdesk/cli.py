@@ -351,6 +351,50 @@ def _render_refresh_block(refresh_summary: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _render_reuse_block(reuse_context: dict[str, Any] | None) -> list[str]:
+    if not reuse_context:
+        return []
+    lines = [
+        "reuse_context: "
+        + ", ".join(
+            [
+                f"reused={reuse_context.get('reused')}",
+                f"source_run_id={reuse_context.get('source_run_id')}",
+                f"source_workflow_type={reuse_context.get('source_workflow_type')}",
+            ]
+        )
+    ]
+    if reuse_context.get("reuse_signature"):
+        lines.append(f"reuse_signature={reuse_context.get('reuse_signature')}")
+    signature_basis = reuse_context.get("signature_basis") or {}
+    if signature_basis:
+        lines.append(
+            "reuse_signature_basis="
+            + ", ".join(
+                f"{key}={signature_basis.get(key)}"
+                for key in ("goal_solver_input", "goal_semantics", "profile_dimensions", "market_raw", "account_raw")
+                if signature_basis.get(key) is not None
+            )
+        )
+    report = reuse_context.get("evidence_invariance_report") or {}
+    if report:
+        lines.append(
+            "evidence_invariance_report: "
+            + ", ".join(
+                [
+                    f"baseline_run_ref={report.get('baseline_run_ref')}",
+                    f"optimized_run_ref={report.get('optimized_run_ref')}",
+                    f"verdict={report.get('verdict')}",
+                ]
+            )
+        )
+        if report.get("semantic_refs"):
+            lines.append(f"evidence_invariance_semantic_refs={report.get('semantic_refs')}")
+        if report.get("artifact_refs"):
+            lines.append(f"evidence_invariance_artifact_refs={report.get('artifact_refs')}")
+    return lines
+
+
 def _render_goal_semantics_block(goal_semantics: dict[str, Any] | None) -> list[str]:
     semantics = goal_semantics or {}
     if not semantics:
@@ -1037,6 +1081,7 @@ def render_frontdesk_summary(payload: dict[str, Any]) -> str:
     lines.extend(_render_provenance_block(payload.get("input_provenance") or {}))
     lines.extend(_render_input_source_summary(payload.get("input_provenance") or {}))
     lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
+    lines.extend(_render_reuse_block(payload.get("reuse_context") or {}))
     lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
     lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))
@@ -1083,6 +1128,7 @@ def render_frontdesk_snapshot(payload: dict[str, Any]) -> str:
     lines.extend(_render_goal_semantics_block((profile.get("profile") or {}).get("goal_semantics")))
     lines.extend(_render_profile_dimensions_block((profile.get("profile") or {}).get("profile_dimensions")))
     lines.extend(_render_refresh_block(payload.get("refresh_summary") or {}))
+    lines.extend(_render_reuse_block(payload.get("reuse_context") or latest_run.get("reuse_context") or {}))
     lines.extend(_render_execution_plan_block(payload.get("active_execution_plan"), label="active_execution_plan"))
     lines.extend(_render_execution_plan_block(payload.get("pending_execution_plan"), label="pending_execution_plan"))
     lines.extend(_render_execution_plan_comparison_block(payload.get("execution_plan_comparison")))

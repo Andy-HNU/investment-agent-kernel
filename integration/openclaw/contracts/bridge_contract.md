@@ -8,6 +8,8 @@ def handle_task(task: str, *, db_path: str, now: str | None = None) -> dict:
     - intent: {name, confidence}
     - invocation: tool inputs resolved from NL
     - result: frontdesk service summary or user_state snapshot
+      including reuse_context and evidence_invariance_report when the
+      run reuses a saved baseline
     """
 ```
 

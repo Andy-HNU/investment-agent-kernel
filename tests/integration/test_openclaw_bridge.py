@@ -120,6 +120,26 @@ def test_bridge_preserves_probability_explanation_payload(tmp_path, monkeypatch)
     assert "product_probability_method" in decision_card["key_metrics"]
 
 
+def test_bridge_reuses_baseline_evidence_for_repeated_onboarding(tmp_path, monkeypatch):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    snapshot_source = _observed_snapshot_source(tmp_path)
+    monkeypatch.setenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", str(snapshot_source))
+    task = (
+        "please onboard user bridge_reuse_user with current assets 18000, "
+        "monthly 2500, goal 120000 in 36 months, risk moderate"
+    )
+
+    first = handle_task(task, db_path=str(db))
+    second = handle_task(task, db_path=str(db))
+
+    assert first["result"]["run_id"] != second["result"]["run_id"]
+    assert second["result"]["reuse_context"]["reused"] is True
+    assert second["result"]["reuse_context"]["source_run_id"] == first["result"]["run_id"]
+    assert second["result"]["evidence_invariance_report"]["baseline_run_ref"] == first["result"]["run_id"]
+
+
 def test_acceptance_cli_writes_logs(tmp_path, capsys):
     # Smoke test the CLI wrapper to ensure it writes a log file
     import sys

@@ -196,3 +196,41 @@ def test_run_orchestrator_emits_evidence_invariance_report_when_baseline_bundle_
     assert report["artifact_refs"]["bundle_id"] == "bundle_acc001_20260329T120000Z"
     assert report["verdict"] in {"invariant", "drifted"}
     assert "resolved_result_category" in report["semantic_refs"]
+
+
+@pytest.mark.contract
+def test_frontdesk_onboarding_reuses_saved_baseline_evidence_automatically(tmp_path):
+    from frontdesk.service import run_frontdesk_onboarding
+    from shared.onboarding import UserOnboardingProfile
+    from tests.contract.test_12_frontdesk_regression import (
+        _formal_market_raw_overrides,
+        _observed_external_snapshot_source,
+    )
+
+    profile = UserOnboardingProfile(
+        account_profile_id="reuse_package4_user",
+        display_name="Andy",
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.20,
+        current_holdings="cash",
+        restrictions=[],
+    )
+    snapshot_source = _observed_external_snapshot_source(
+        tmp_path,
+        profile,
+        market_raw_overrides=_formal_market_raw_overrides(),
+    )
+    db_path = tmp_path / "frontdesk.sqlite"
+
+    first = run_frontdesk_onboarding(profile, db_path=db_path, external_snapshot_source=snapshot_source)
+    second = run_frontdesk_onboarding(profile, db_path=db_path, external_snapshot_source=snapshot_source)
+
+    assert first["run_id"] != second["run_id"]
+    assert second["reuse_context"]["reused"] is True
+    assert second["reuse_context"]["source_run_id"] == first["run_id"]
+    assert second["evidence_invariance_report"]["baseline_run_ref"] == first["run_id"]
+    assert second["decision_card"]["evidence_invariance_report"]["baseline_run_ref"] == first["run_id"]

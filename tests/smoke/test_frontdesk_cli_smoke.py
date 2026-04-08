@@ -205,6 +205,57 @@ def test_frontdesk_cli_text_summary_surfaces_readable_candidates_and_disclaimer(
 
 
 @pytest.mark.smoke
+def test_frontdesk_cli_json_summary_surfaces_reuse_context_and_evidence_invariance(tmp_path, capsys):
+    from frontdesk.cli import main
+
+    profile = _profile()
+    db_path = tmp_path / "frontdesk.sqlite"
+    profile_path = tmp_path / "profile.json"
+    snapshot_path = _observed_snapshot_source(tmp_path, profile)
+    profile_path.write_text(
+        json.dumps(profile.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    first_exit_code = main(
+        [
+            "onboarding",
+            "--db",
+            str(db_path),
+            "--profile-json",
+            str(profile_path),
+            "--external-snapshot-source",
+            str(snapshot_path),
+            "--non-interactive",
+            "--json",
+        ]
+    )
+    first_payload = json.loads(capsys.readouterr().out)
+
+    second_exit_code = main(
+        [
+            "onboarding",
+            "--db",
+            str(db_path),
+            "--profile-json",
+            str(profile_path),
+            "--external-snapshot-source",
+            str(snapshot_path),
+            "--non-interactive",
+            "--json",
+        ]
+    )
+    second_payload = json.loads(capsys.readouterr().out)
+
+    assert first_exit_code == 0
+    assert first_payload["reuse_context"]["reused"] is False
+    assert second_exit_code == 0
+    assert second_payload["reuse_context"]["reused"] is True
+    assert second_payload["reuse_context"]["source_run_id"] == first_payload["run_id"]
+    assert second_payload["evidence_invariance_report"]["baseline_run_ref"] == first_payload["run_id"]
+
+
+@pytest.mark.smoke
 def test_frontdesk_cli_approve_plan_promotes_pending_execution_plan(tmp_path, capsys):
     from frontdesk.cli import main
 

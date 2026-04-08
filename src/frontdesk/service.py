@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,9 @@ from shared.audit import (
     ExecutionPolicy,
     FormalPathStatus,
     FormalPathVisibility,
+    EvidenceBundle,
     coerce_data_status,
+    build_evidence_invariance_report,
 )
 from shared.goal_semantics import build_goal_semantics
 from shared.profile_dimensions import build_profile_dimensions, goal_priority_from_dimensions
@@ -119,6 +122,96 @@ _AUDIT_DATA_STATUS_PRIORITY = {
     DataStatus.MANUAL_ANNOTATION: 1,
     DataStatus.SYNTHETIC_DEMO: 0,
 }
+_REUSE_VOLATILE_KEYS = {
+    "run_id",
+    "snapshot_id",
+    "created_at",
+    "updated_at",
+    "generated_at",
+    "approved_at",
+    "executed_at",
+    "source_run_id",
+}
+
+
+def _reuse_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _reuse_value(item)
+            for key, item in value.items()
+            if str(key) not in _REUSE_VOLATILE_KEYS
+        }
+    if isinstance(value, list):
+        return [_reuse_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_reuse_value(item) for item in value)
+    if hasattr(value, "to_dict"):
+        return _reuse_value(value.to_dict())
+    if hasattr(value, "__dict__"):
+        return _reuse_value(dict(value.__dict__))
+    return value
+
+
+def _reuse_signature_basis(
+    *,
+    workflow_type: str,
+    account_profile_id: str,
+    goal_solver_input: dict[str, Any] | None,
+    raw_inputs: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized_goal_solver_input = _reuse_value(dict(goal_solver_input or {}))
+    if isinstance(normalized_goal_solver_input, dict):
+        normalized_goal_solver_input.pop("snapshot_id", None)
+    payload = {
+        "workflow_type": str(workflow_type or ""),
+        "account_profile_id": str(account_profile_id or ""),
+        "goal_solver_input": normalized_goal_solver_input,
+        "goal_semantics": _reuse_value(dict((raw_inputs or {}).get("goal_semantics") or {})),
+        "profile_dimensions": _reuse_value(dict((raw_inputs or {}).get("profile_dimensions") or {})),
+        "market_raw": _reuse_value(dict((raw_inputs or {}).get("market_raw") or {})),
+        "account_raw": _reuse_value(dict((raw_inputs or {}).get("account_raw") or {})),
+        "behavior_raw": _reuse_value(dict((raw_inputs or {}).get("behavior_raw") or {})),
+        "live_portfolio": _reuse_value(dict((raw_inputs or {}).get("live_portfolio") or {})),
+        "formal_path_required": bool((raw_inputs or {}).get("formal_path_required")),
+        "execution_policy": str((raw_inputs or {}).get("execution_policy") or ""),
+    }
+    return payload
+
+
+def _reuse_signature(
+    *,
+    workflow_type: str,
+    account_profile_id: str,
+    goal_solver_input: dict[str, Any] | None,
+    raw_inputs: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    basis = _reuse_signature_basis(
+        workflow_type=workflow_type,
+        account_profile_id=account_profile_id,
+        goal_solver_input=goal_solver_input,
+        raw_inputs=raw_inputs,
+    )
+    digest = hashlib.sha256(json.dumps(basis, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    return digest, basis
+
+
+def _baseline_evidence_bundle(baseline: Any | None) -> EvidenceBundle | None:
+    if not baseline:
+        return None
+    payload = _as_dict(baseline)
+    result_payload = dict(payload.get("result_payload") or {})
+    return EvidenceBundle.from_any(result_payload.get("evidence_bundle"))
+
+
+def _baseline_reuse_context(baseline: Any | None) -> dict[str, Any]:
+    if not baseline:
+        return {}
+    payload = _as_dict(baseline)
+    result_payload = dict(payload.get("result_payload") or {})
+    reuse_context = dict(result_payload.get("reuse_context") or {})
+    if reuse_context:
+        return reuse_context
+    return {}
 
 
 def _now_iso() -> str:
@@ -1447,6 +1540,7 @@ def _frontdesk_summary(
             result_payload.get("evidence_bundle") or decision_card.get("evidence_bundle") or {}
         ),
         "evidence_invariance_report": dict(result_payload.get("evidence_invariance_report") or {}),
+        "reuse_context": dict(result_payload.get("reuse_context") or decision_card.get("reuse_context") or {}),
         "decision_card": decision_card,
         "key_metrics": decision_card.get("key_metrics", {}),
         "input_provenance": decision_card.get("input_provenance", {}),
@@ -1550,6 +1644,79 @@ def _apply_execution_plan_guidance(
     return card
 
 
+def _prepare_reuse_context(
+    *,
+    workflow_type: str,
+    account_profile_id: str,
+    goal_solver_input: dict[str, Any] | None,
+    raw_inputs: dict[str, Any] | None,
+    baseline: Any | None,
+) -> dict[str, Any]:
+    reuse_signature, signature_basis = _reuse_signature(
+        workflow_type=workflow_type,
+        account_profile_id=account_profile_id,
+        goal_solver_input=goal_solver_input,
+        raw_inputs=raw_inputs,
+    )
+    context = {
+        "reuse_signature": reuse_signature,
+        "signature_basis": signature_basis,
+        "reused": False,
+        "source_run_id": None,
+        "source_workflow_type": None,
+    }
+    if baseline is None:
+        return context
+    baseline_payload = _as_dict(baseline)
+    baseline_run_id = str(baseline_payload.get("run_id") or "").strip()
+    baseline_workflow_type = str(baseline_payload.get("workflow_type") or "").strip()
+    baseline_result_payload = dict(baseline_payload.get("result_payload") or {})
+    baseline_reuse_context = dict(baseline_result_payload.get("reuse_context") or {})
+    baseline_signature = str(baseline_reuse_context.get("reuse_signature") or "").strip()
+    if not baseline_signature:
+        return context
+    if baseline_signature != reuse_signature:
+        return context
+    if baseline_run_id:
+        context["reused"] = True
+        context["source_run_id"] = baseline_run_id
+        context["source_workflow_type"] = baseline_workflow_type or workflow_type
+        baseline_bundle = _baseline_evidence_bundle(baseline)
+        if baseline_bundle is not None:
+            context["baseline_evidence_bundle"] = baseline_bundle.to_dict()
+        baseline_report = dict(baseline_result_payload.get("evidence_invariance_report") or {})
+        if baseline_report:
+            context["baseline_evidence_invariance_report"] = baseline_report
+    return context
+
+
+def _reuse_context_for_payload(
+    *,
+    reuse_context: dict[str, Any] | None,
+    current_result_payload: dict[str, Any],
+) -> dict[str, Any]:
+    if not reuse_context:
+        return {}
+    payload = dict(reuse_context)
+    baseline_bundle = payload.get("baseline_evidence_bundle")
+    current_bundle = EvidenceBundle.from_any(current_result_payload.get("evidence_bundle"))
+    if baseline_bundle is not None and current_bundle is not None:
+        report = build_evidence_invariance_report(
+            baseline=baseline_bundle,
+            optimized=current_bundle,
+            baseline_run_ref=str(payload.get("source_run_id") or ""),
+            optimized_run_ref=str(current_result_payload.get("run_id") or ""),
+            artifact_refs={
+                "bundle_id": str(current_result_payload.get("bundle_id") or ""),
+                "workflow_type": str(current_result_payload.get("workflow_type") or ""),
+            },
+        ).to_dict()
+        payload["evidence_invariance_report"] = report
+    payload.pop("baseline_evidence_bundle", None)
+    payload.pop("baseline_evidence_invariance_report", None)
+    return payload
+
+
 def run_frontdesk_onboarding(
     profile: UserOnboardingProfile,
     *,
@@ -1631,9 +1798,30 @@ def run_frontdesk_onboarding(
             raw_inputs,
             external_source_ref=external_source_ref,
             external_payload=external_payload,
-        )
+    )
     raw_inputs.setdefault("formal_path_required", True)
     raw_inputs.setdefault("execution_policy", ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
+    reuse_signature, _ = _reuse_signature(
+        workflow_type="onboarding",
+        account_profile_id=onboarding.profile.account_profile_id,
+        goal_solver_input=raw_inputs.get("goal_solver_input"),
+        raw_inputs=raw_inputs,
+    )
+    reusable_baseline = store.get_reusable_baseline(
+        onboarding.profile.account_profile_id,
+        reuse_signature=reuse_signature,
+        workflow_type="onboarding",
+    )
+    reuse_context = _prepare_reuse_context(
+        workflow_type="onboarding",
+        account_profile_id=onboarding.profile.account_profile_id,
+        goal_solver_input=raw_inputs.get("goal_solver_input"),
+        raw_inputs=raw_inputs,
+        baseline=reusable_baseline,
+    )
+    if reuse_context.get("reused") and reuse_context.get("baseline_evidence_bundle") is not None:
+        raw_inputs["baseline_evidence_bundle"] = reuse_context["baseline_evidence_bundle"]
+        raw_inputs["evidence_invariance_baseline"] = reuse_context["baseline_evidence_bundle"]
     run_id = _make_run_id("frontdesk", onboarding.profile.account_profile_id, "onboarding")
     result = run_orchestrator(
         trigger={"workflow_type": "onboarding", "run_id": run_id},
@@ -1660,6 +1848,19 @@ def run_frontdesk_onboarding(
         input_provenance=input_provenance,
         refresh_summary=payload.get("refresh_summary"),
     )
+    reuse_context_payload = _reuse_context_for_payload(
+        reuse_context=reuse_context,
+        current_result_payload=payload,
+    )
+    if reuse_context_payload:
+        payload["reuse_context"] = reuse_context_payload
+        if reuse_context_payload.get("evidence_invariance_report"):
+            payload["evidence_invariance_report"] = reuse_context_payload["evidence_invariance_report"]
+        decision_card = dict(payload.get("decision_card") or {})
+        decision_card["reuse_context"] = reuse_context_payload
+        if reuse_context_payload.get("evidence_invariance_report"):
+            decision_card["evidence_invariance_report"] = reuse_context_payload["evidence_invariance_report"]
+        payload["decision_card"] = decision_card
     created_at = _now_iso()
     store.save_onboarding_result(
         account_profile=account_profile,
@@ -1848,6 +2049,27 @@ def run_frontdesk_followup(
         )
     raw_inputs.setdefault("formal_path_required", True)
     raw_inputs.setdefault("execution_policy", ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
+    reuse_signature, _ = _reuse_signature(
+        workflow_type=workflow_type,
+        account_profile_id=account_profile_id,
+        goal_solver_input=goal_solver_input,
+        raw_inputs=raw_inputs,
+    )
+    reusable_baseline = store.get_reusable_baseline(
+        account_profile_id,
+        reuse_signature=reuse_signature,
+        workflow_type=workflow_type,
+    )
+    reuse_context = _prepare_reuse_context(
+        workflow_type=workflow_type,
+        account_profile_id=account_profile_id,
+        goal_solver_input=goal_solver_input,
+        raw_inputs=raw_inputs,
+        baseline=reusable_baseline,
+    )
+    if reuse_context.get("reused") and reuse_context.get("baseline_evidence_bundle") is not None:
+        raw_inputs["baseline_evidence_bundle"] = reuse_context["baseline_evidence_bundle"]
+        raw_inputs["evidence_invariance_baseline"] = reuse_context["baseline_evidence_bundle"]
     run_id = _make_run_id("frontdesk", account_profile_id, workflow_type)
     result = run_orchestrator(
         trigger={
@@ -1882,6 +2104,19 @@ def run_frontdesk_followup(
         input_provenance=input_provenance,
         refresh_summary=payload.get("refresh_summary"),
     )
+    reuse_context_payload = _reuse_context_for_payload(
+        reuse_context=reuse_context,
+        current_result_payload=payload,
+    )
+    if reuse_context_payload:
+        payload["reuse_context"] = reuse_context_payload
+        if reuse_context_payload.get("evidence_invariance_report"):
+            payload["evidence_invariance_report"] = reuse_context_payload["evidence_invariance_report"]
+        decision_card = dict(payload.get("decision_card") or {})
+        decision_card["reuse_context"] = reuse_context_payload
+        if reuse_context_payload.get("evidence_invariance_report"):
+            decision_card["evidence_invariance_report"] = reuse_context_payload["evidence_invariance_report"]
+        payload["decision_card"] = decision_card
     created_at = _now_iso()
     normalized_provenance = store.save_run_artifacts(
         account_profile_id=account_profile_id,
@@ -2067,10 +2302,18 @@ def load_frontdesk_snapshot(
         or decision_card.get("audit_records")
         or _normalize_audit_records(decision_card.get("input_provenance", {}) or {}, snapshot.get("refresh_summary"))
     )
+    snapshot["reuse_context"] = dict(result_payload.get("reuse_context") or decision_card.get("reuse_context") or {})
+    snapshot["evidence_invariance_report"] = dict(
+        result_payload.get("evidence_invariance_report") or decision_card.get("evidence_invariance_report") or {}
+    )
     if decision_card:
         decision_card["formal_path_visibility"] = snapshot["formal_path_visibility"]
         decision_card["audit_records"] = snapshot["audit_records"]
+        decision_card["reuse_context"] = snapshot["reuse_context"]
+        decision_card["evidence_invariance_report"] = snapshot["evidence_invariance_report"]
         latest_run["decision_card"] = decision_card
+        latest_run["reuse_context"] = snapshot["reuse_context"]
+        latest_run["evidence_invariance_report"] = snapshot["evidence_invariance_report"]
         snapshot["latest_run"] = latest_run
     return snapshot
 
@@ -2091,6 +2334,8 @@ def load_user_state(
         user_state["input_source_summary"] = snapshot.get("input_source_summary")
         user_state["formal_path_visibility"] = snapshot.get("formal_path_visibility")
         user_state["audit_records"] = snapshot.get("audit_records")
+        user_state["reuse_context"] = snapshot.get("reuse_context")
+        user_state["evidence_invariance_report"] = snapshot.get("evidence_invariance_report")
     return user_state
 
 

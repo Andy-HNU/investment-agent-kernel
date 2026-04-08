@@ -354,6 +354,18 @@ class FrontdeskBaselineRecord:
     created_at: str
 
 
+def _baseline_reuse_context(record: FrontdeskBaselineRecord | None) -> dict[str, Any]:
+    if record is None:
+        return {}
+    result_payload = dict(record.result_payload or {})
+    reuse_context = dict(result_payload.get("reuse_context") or {})
+    return reuse_context
+
+
+def _baseline_reuse_signature(record: FrontdeskBaselineRecord | None) -> str:
+    return str(_baseline_reuse_context(record).get("reuse_signature") or "").strip()
+
+
 @dataclass
 class FrontdeskExecutionFeedbackRecord:
     account_profile_id: str
@@ -1896,15 +1908,34 @@ class FrontdeskStore:
         decision_card = dict((latest_run.get("decision_card") or baseline.get("decision_card") or {}))
         if "input_provenance" not in decision_card and baseline.get("input_provenance") is not None:
             decision_card["input_provenance"] = baseline["input_provenance"]
+        latest_run_result_payload = dict(latest_run.get("result_payload") or {})
+        reuse_context = dict(
+            latest_run.get("reuse_context")
+            or latest_run_result_payload.get("reuse_context")
+            or baseline.get("result_payload", {}).get("reuse_context")
+            or decision_card.get("reuse_context")
+            or {}
+        )
+        evidence_invariance_report = dict(
+            latest_run.get("evidence_invariance_report")
+            or latest_run_result_payload.get("evidence_invariance_report")
+            or baseline.get("result_payload", {}).get("evidence_invariance_report")
+            or decision_card.get("evidence_invariance_report")
+            or {}
+        )
         return {
             "profile": profile,
             "latest_result": {
                 "run_id": latest_run.get("run_id"),
                 "workflow_type": latest_run.get("workflow_type"),
                 "status": latest_run.get("status"),
+                "reuse_context": reuse_context,
+                "evidence_invariance_report": evidence_invariance_report,
             },
             "decision_card": decision_card,
             "baseline_card": dict(baseline.get("decision_card") or {}),
+            "reuse_context": reuse_context,
+            "evidence_invariance_report": evidence_invariance_report,
             "active_execution_plan": snapshot.get("active_execution_plan"),
             "pending_execution_plan": snapshot.get("pending_execution_plan"),
             "execution_plan_comparison": snapshot.get("execution_plan_comparison"),
@@ -1959,6 +1990,44 @@ class FrontdeskStore:
             result_payload=_compact_result_payload_for_persistence(_json_loads(row["result_payload_json"]) or {}),
             created_at=row["created_at"],
         )
+
+    def get_reusable_baseline(
+        self,
+        account_profile_id: str,
+        *,
+        reuse_signature: str,
+        workflow_type: str | None = None,
+    ) -> FrontdeskBaselineRecord | None:
+        reuse_signature = str(reuse_signature or "").strip()
+        if not reuse_signature:
+            return None
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM frontdesk_baselines
+                WHERE account_profile_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (account_profile_id,),
+            ).fetchall()
+        for row in rows:
+            record = FrontdeskBaselineRecord(
+                account_profile_id=row["account_profile_id"],
+                run_id=row["run_id"],
+                workflow_type=row["workflow_type"],
+                goal_solver_input=_json_loads(row["goal_solver_input_json"]) or {},
+                goal_solver_output=_json_loads(row["goal_solver_output_json"]) or {},
+                decision_card=_compact_decision_card_for_persistence(_json_loads(row["decision_card_json"]) or {}),
+                input_provenance=_json_loads(row["input_provenance_json"]) or {},
+                result_payload=_compact_result_payload_for_persistence(_json_loads(row["result_payload_json"]) or {}),
+                created_at=row["created_at"],
+            )
+            if workflow_type is not None and str(record.workflow_type) != workflow_type:
+                continue
+            if _baseline_reuse_signature(record) == reuse_signature:
+                return record
+        return None
 
     def get_latest_run(self, account_profile_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
