@@ -96,6 +96,113 @@
 - **Challenger**：方案 C
 - **Stress**：重尾/跳跃强化配方
 
+### 3.4 方案 B 的完整定义
+
+方案 B 不是“产品选五种模型之一”，而是：
+
+> **产品边际过程 + 因子联合过程 + 产品残差过程** 的组合。
+
+单个产品 `i` 在 `t -> t+1` 的日收益写成：
+
+```text
+r_i,t+1
+= alpha_i(S_t)
++ beta_i,t' * f_t+1
++ u_i,t+1
++ J_sys,i,t+1
++ J_idio,i,t+1
+- cost_i,t+1
+```
+
+其中：
+
+- `S_t`：当期 regime
+- `f_t+1`：因子收益向量
+- `beta_i,t`：产品对因子的暴露
+- `u_i,t+1`：产品 idiosyncratic 残差
+- `J_sys,i,t+1`：系统 jump 通过因子或映射传到产品
+- `J_idio,i,t+1`：产品自身 jump
+- `cost_i,t+1`：费率、跟踪误差、流动性拖累
+
+进一步拆开：
+
+```text
+u_i,t+1 = sqrt(h_i,t+1) * eps_i,t+1
+eps_i,t+1 ~ StudentT(df_i)
+```
+
+以及：
+
+```text
+h_i,t+1 = omega_i + alpha_i * u_i,t^2 + beta_i * h_i,t
+```
+
+也就是说，方案 B 同时刻画：
+
+- 因子共同驱动
+- 产品自身波动聚集
+- 厚尾
+- jump
+- regime 切换
+
+但它把“共同依赖结构”压缩到因子层，而不是在几千产品上直接做联合状态估计。
+
+### 3.5 方案 C 的完整定义
+
+方案 C 不是“低配版方案 B”，而是：
+
+> **以真实历史产品日收益路径为核心、按 regime 过滤后的经验重采样 challenger**。
+
+其目标不是替代 primary，而是回答：
+
+- primary 是否过于乐观
+- 当前参数模型是否低估路径依赖
+- 在真实历史路径形状下，达标概率是否显著下降
+
+方案 C 的单条路径生成过程：
+
+1. 先确定当前 regime `S_t`
+2. 从历史中选出 regime 相近的交易日集合
+3. 从该集合中抽取长度为 `B` 的历史块
+4. 依次拼接成未来 `T` 个交易日的产品日收益序列
+5. 在必要时叠加轻量 stress overlay
+
+它不重新估计 GARCH/DCC 参数，而是直接复用真实历史中的：
+
+- 波动聚集
+- 厚尾
+- 跨产品共同波动
+- 连续回撤段
+
+因此它天然更擅长当 challenger，而不是当前瞻主模型。
+
+### 3.6 primary / challenger / stress 的协作关系
+
+`v1.4` 明确禁止把多个模型简单平均成一个主概率。
+
+角色关系固定为：
+
+- `primary`
+  - 输出正式主成功率和主收益区间
+- `challenger`
+  - 输出对照成功率与对照区间
+- `stress`
+  - 输出尾部损失强化视图
+
+它们的作用关系是：
+
+```text
+主结果 = primary
+置信度调整 = primary vs challenger/stress 的分歧函数
+区间加宽 = primary 区间 + 模型分歧宽化
+```
+
+不允许：
+
+- `primary` 与 `challenger` 数值平均
+- `stress` 直接覆盖主成功率
+- 任何 challenger/stress 结果在前台伪装成主结果
+
 ---
 
 ## 4. 总体架构抽象设计
@@ -157,6 +264,29 @@
 - 把 5 种 recipe 简单平均成一个成功率
 - 月级模拟作为日频失败时的 fallback
 - 桶级模拟作为逐产品失败时的 fallback
+
+### 4.5 一次 formal run 的内部调用关系
+
+一次 formal run 必须显式经历以下阶段：
+
+1. **Data Assembly**
+   - 读取产品价格、持仓、估值、事件数据
+2. **Mapping Build**
+   - 生成产品到因子的暴露与映射证据
+3. **State Calibration**
+   - 拟合产品边际状态、因子状态、regime、jump 状态
+4. **Recipe Selection**
+   - 确定 primary/challenger/stress recipe
+5. **Daily Path Generation**
+   - 按日频推进各条路径
+6. **Portfolio Policy Simulation**
+   - 注入现金流、再平衡、执行约束
+7. **Event Evaluation**
+   - 计算 success event
+8. **Disclosure Assembly**
+   - 组装 primary/challenger/stress 结果与置信度
+
+formal run 禁止跳过第 4 步到第 7 步之间的任意层直接出结果。
 
 ---
 
@@ -342,6 +472,86 @@ beta_final
 - `FORMAL_STRICT`：不得给 `formal_independent_result`
 - `FORMAL_ESTIMATION_ALLOWED`：最多给 `formal_estimated_result`
 
+### 7.7 映射的数学定义
+
+产品 `i` 的最终因子暴露向量定义为：
+
+```text
+beta_i,final
+= w_prior,i * beta_i,prior
++ w_holdings,i * beta_i,holdings
++ w_returns,i * beta_i,returns
+```
+
+满足：
+
+```text
+w_prior,i + w_holdings,i + w_returns,i = 1
+w_* >= 0
+```
+
+其中：
+
+- `beta_i,prior`：结构先验暴露
+- `beta_i,holdings`：穿透持仓汇总暴露
+- `beta_i,returns`：收益回归暴露
+
+权重建议函数：
+
+```text
+w_holdings ∝ holdings_freshness * holdings_coverage
+w_returns  ∝ regression_stability * history_length_score
+w_prior    ∝ 1 - (w_holdings + w_returns)
+```
+
+再做一次 shrinkage：
+
+```text
+beta_i,shrunk
+= lambda_i * beta_i,final + (1-lambda_i) * beta_i,anchor
+```
+
+这里 `beta_i,anchor` 通常取结构先验或同类产品簇均值，`lambda_i` 由证据质量决定。
+
+### 7.8 回归暴露的正式计算
+
+对每个产品，使用日频收益回归：
+
+```text
+r_i,t = alpha_i + B_i' f_t + e_i,t
+```
+
+估计要求：
+
+- 主窗口：最近 `252` 交易日
+- 最低窗口：`126` 交易日
+- 使用指数衰减权重，半衰期建议 `63` 交易日
+- 暴露稳定性由滚动窗口方差衡量
+
+形式上可采用加权岭回归：
+
+```text
+min_B Σ_t w_t (r_i,t - alpha_i - B_i' f_t)^2 + λ ||B_i - B_i,prior||^2
+```
+
+这样收益回归既能贴市场，又不会完全漂离结构先验。
+
+### 7.9 持仓暴露的正式计算
+
+若产品 `i` 拥有底层持仓集合 `H_i`，则：
+
+```text
+beta_i,holdings = Σ_{j in H_i} weight_{i,j} * beta_j,security
+```
+
+其中 `beta_j,security` 可来自：
+
+- 底层证券行业/风格分类
+- 单证券历史回归
+- 外部风险模型标签
+
+若持仓覆盖率低于阈值，例如 `< 0.7`，则 `holdings_beta` 不得作为主证据。
+
 ---
 
 ## 8. 分层建模设计
@@ -388,6 +598,22 @@ beta_final
 - 区间加宽
 - 置信度下调
 
+### 8.5 层间信息流
+
+这五层不是并列标签，而是严格的信息流：
+
+```text
+regime_layer
+  -> factor_mean / factor_vol / systemic_jump
+  -> dependency_layer(DCC on factors)
+  -> factor_returns
+  -> product marginal layer(beta + residual volatility + idio jump)
+  -> product_returns
+  -> portfolio construction layer
+```
+
+如果某一层未参与当期 recipe，必须在 `recipe_trace` 中显式标记，而不能让字段存在但对数值无影响。
+
 ---
 
 ## 9. 核心数据结构设计
@@ -411,6 +637,25 @@ class ProductMarginalSpec:
     evidence_refs: list[str]
 ```
 
+扩展约束：
+
+- `factor_betas` 必须是规范化后的低维向量
+- `innovation_family` 只能是闭集枚举
+- `garch_params` 至少包含 `omega / alpha / beta`
+- `idiosyncratic_jump_profile` 至少包含：
+  - `jump_probability_1d`
+  - `loss_mean`
+  - `loss_std`
+  - `positive_jump_allowed`
+- `carry_profile` 必须显式区分：
+  - `dividend_carry`
+  - `coupon_carry`
+  - `roll_carry`
+- `valuation_profile` 至少包含：
+  - `valuation_anchor`
+  - `reversion_speed`
+  - `valuation_confidence`
+
 ### 9.2 因子动态规格
 
 ```python
@@ -424,6 +669,16 @@ class FactorDynamicsSpec:
     dcc_params: dict[str, float]
     garch_params_by_factor: dict[str, dict[str, float]]
     long_run_covariance: dict[str, dict[str, float]]
+```
+
+建议补字段：
+
+```python
+    factor_series_ref: str
+    calibration_window_days: int
+    volatility_half_life_days: int
+    dcc_variant: str             # dcc / block_dcc / sparse_dcc
+    covariance_shrinkage: float
 ```
 
 ### 9.3 regime 状态规格
@@ -462,6 +717,15 @@ class SimulationRecipe:
     jump_layer: str
 ```
 
+建议再补：
+
+```python
+    dependency_scope: str        # factor_level / factor_cluster_level
+    path_count: int
+    confidence_role: str         # primary / challenger / stress
+    admissible_result_categories: list[str]
+```
+
 ### 9.6 主输入对象
 
 ```python
@@ -498,6 +762,22 @@ class DailySimulationInput:
 - `tail_df` 通过近 `252` 日标准化残差拟合
 - 若样本不足，formal strict 不允许进入主结果
 
+正式拟合过程：
+
+1. 对因子或产品先估条件均值与条件波动
+2. 取标准化残差：
+
+```text
+z_t = (r_t - mu_t) / sqrt(h_t)
+```
+
+3. 用最大似然或矩匹配估计 `tail_df`
+
+建议边界：
+
+- `tail_df < 3` 视为不稳定，需截断
+- `tail_df > 30` 时可近似正态，但 formal 仍保留 `student_t` 标签
+
 #### 影响
 
 - `tail_df` 越小，尾部越厚
@@ -524,6 +804,25 @@ h_{t+1} = omega + alpha * eps_t^2 + beta * h_t
 
 - 主窗口：`252` 日
 - 最短：`126` 日
+
+正式拟合方式：
+
+- 单产品和单因子分别拟合
+- 参数约束：
+  - `omega > 0`
+  - `alpha >= 0`
+  - `beta >= 0`
+  - `alpha + beta < 1`
+
+建议使用滚动再估计或固定窗口平滑更新，而不是每日全量重拟合。
+
+#### 输出如何影响模拟
+
+在 `t -> t+1`，若上一期冲击大，则：
+
+- `h_{t+1}` 上升
+- 当期残差项 `sqrt(h_{t+1}) * eps_{t+1}` 变大
+- 这直接扩大未来路径扇面
 
 #### 影响
 
@@ -555,6 +854,34 @@ R_{t+1} = normalize(Q_{t+1})
 
 - `Qbar`：用最近 `756` 交易日估长期相关
 - `a, b`：先共享参数，再允许后续扩展到 block-specific 参数
+
+正式定义：
+
+- `z_t` 只允许使用**因子标准化残差**
+- 不允许直接对全产品残差求 DCC
+
+推荐默认：
+
+- `K = 8-12` 个因子
+- `Qbar` 使用最近 `756` 日样本协方差再标准化
+- `a` 建议 `0.01-0.05`
+- `b` 建议 `0.90-0.98`
+
+这组参数不是写死常数，而是校准初值范围；真实值应在 calibration 阶段估计并固化进 state。
+
+#### DCC 输出如何影响产品
+
+设因子收益向量为 `f_t`，产品收益共同部分为：
+
+```text
+r_i,t(common) = beta_i' f_t
+```
+
+如果 `R_t` 中：
+
+- `US_EQ_GROWTH` 与 `CN_EQ_GROWTH` 相关抬升
+
+则所有对这两个因子有暴露的产品，其共同波动会同步增强。
 
 #### 影响
 
@@ -594,6 +921,27 @@ R_{t+1} = normalize(Q_{t+1})
 - `systemic_jump_impact_by_factor`
 - `systemic_jump_dispersion`
 
+推荐估计：
+
+1. 在每个因子上识别极端日：
+
+```text
+|z_t| > q_{0.995}
+```
+
+或
+
+```text
+|z_t| > 4σ
+```
+
+2. 统计：
+
+- 极端事件频率 -> `jump_probability_1d`
+- 极端损失均值/方差 -> `impact distribution`
+
+3. 估计因子间联合极端共现概率，用于 systemic jump 触发
+
 #### idiosyncratic jump 依据
 
 从产品残差序列识别极端异常值：
@@ -601,9 +949,39 @@ R_{t+1} = normalize(Q_{t+1})
 - 因子解释之后的残差尾部
 - 特定产品的跳跃频率与平均损失
 
+即对产品残差：
+
+```text
+e_i,t = r_i,t - alpha_i - beta_i' f_t
+```
+
+识别尾部事件：
+
+```text
+|e_i,t / sqrt(h_i,t)| > threshold
+```
+
+并估：
+
+- `idio_jump_probability_1d`
+- `idio_jump_loss_mean`
+- `idio_jump_loss_std`
+
 #### 影响
 
 每天先抽 systemic jump，再抽 idio jump，叠加到产品收益。
+
+更具体地：
+
+```text
+J_sys,i,t+1 = M_sys,t+1 * exposure_i_to_jump_factors * L_sys,t+1
+J_idio,i,t+1 = M_idio,i,t+1 * L_idio,i,t+1
+```
+
+其中：
+
+- `M_*` 是 Bernoulli 触发变量
+- `L_*` 是损失大小随机变量
 
 ### 10.5 regime 层
 
@@ -627,6 +1005,26 @@ R_{t+1} = normalize(Q_{t+1})
   - 因子均值不同
   - 因子波动不同
   - systemic jump 概率不同
+
+建议 regime 数量控制在 `3-4`，例如：
+
+- `risk_on`
+- `neutral`
+- `risk_off`
+- `crisis`（可选）
+
+状态转移：
+
+```text
+Pr(S_{t+1}=j | S_t=i) = P_{ij}
+```
+
+正式估计可先用：
+
+- 明确规则标签
+- 或 Markov switching 估计
+
+但进入 formal 的 regime 定义必须稳定、可解释、可复验。
 
 #### 影响
 
@@ -702,6 +1100,107 @@ V_{x+1} = V_x * (1 + r_p,x+1) + contribution_{x+1}
 - downside tail
 - rebalancing frequency
 
+### 11.6 具体数值例子
+
+假设当前组合包含 4 个产品：
+
+- `CSI300 ETF`
+- `Gold ETF`
+- `NASDAQ ETF`
+- `Short Bond ETF`
+
+当前权重：
+
+- `CSI300 ETF = 0.40`
+- `Gold ETF = 0.20`
+- `NASDAQ ETF = 0.25`
+- `Short Bond ETF = 0.15`
+
+当前 regime：
+
+- `S_x = risk_off`
+
+#### Step 1: 采样下一状态
+
+若转移矩阵给出：
+
+```text
+P(risk_off -> risk_off) = 0.72
+P(risk_off -> neutral)  = 0.24
+P(risk_off -> risk_on)  = 0.04
+```
+
+本次采样结果仍为 `risk_off`。
+
+#### Step 2: 生成下一日因子收益
+
+假设采样得到：
+
+```text
+CN_EQ_BROAD      = -1.4%
+CN_EQ_GROWTH     = -2.0%
+US_EQ_GROWTH     = -3.2%
+GOLD_GLOBAL      = +0.8%
+CN_RATE_DURATION = +0.2%
+CN_CREDIT_SPREAD = -0.3%
+USD_CNH          = +0.1%
+```
+
+#### Step 3: 产品收益合成
+
+`NASDAQ ETF` 的暴露若为：
+
+```text
+US_EQ_GROWTH = 1.05
+USD_CNH      = 0.12
+```
+
+则其共同部分：
+
+```text
+beta' * f = 1.05 * (-3.2%) + 0.12 * 0.1% ≈ -3.35%
+```
+
+若：
+
+- 产品条件波动项给出 `-0.90%`
+- systemic jump 传导给出 `-1.40%`
+- idio jump 未触发
+- 成本拖累 `-0.02%`
+
+则：
+
+```text
+r_nasdaq,x+1 ≈ -5.67%
+```
+
+同理可得：
+
+- `CSI300 ETF ≈ -2.30%`
+- `Gold ETF ≈ +0.92%`
+- `Short Bond ETF ≈ -0.05%`
+
+#### Step 4: 组合收益
+
+```text
+r_p,x+1
+= 0.40*(-2.30%)
++ 0.20*(+0.92%)
++ 0.25*(-5.67%)
++ 0.15*(-0.05%)
+≈ -2.16%
+```
+
+#### Step 5: 更新净值
+
+若今日净值 `V_x = 100`，且当日净现金流为 `0.3`：
+
+```text
+V_{x+1} = 100 * (1 - 2.16%) + 0.3 = 98.14
+```
+
+再判断是否触发再平衡，然后进入下一日。
+
 ---
 
 ## 12. 方案 C 作为 challenger 的定义
@@ -722,6 +1221,20 @@ challenger 不是正式主结果替代品，而是：
 - 在 regime 相近的历史块中做 block bootstrap
 - 保留历史路径中的波动聚集与尾部结构
 
+正式过程：
+
+1. 对每个产品准备历史日收益序列
+2. 给每个历史日打上 regime 标签
+3. 在当前 `S_t` 对应的历史子集里抽样
+4. 按 block size `B` 抽取连续历史段
+5. 拼成长度为 `T` 的未来日收益路径
+6. 在组合层复用同样的现金流与再平衡规则
+
+block size 建议：
+
+- 默认 `5-20` 个交易日
+- 可按 regime 或资产波动特征调整
+
 ### 12.3 为什么不用简单平均
 
 不允许：
@@ -734,6 +1247,37 @@ challenger 不是正式主结果替代品，而是：
 - 报 challenger 对比
 - 根据分歧下调 `confidence_level`
 - 根据分歧加宽 `success_probability_range`
+
+### 12.4 challenger 输出如何作用于主结果
+
+设：
+
+- `p_primary = 0.55`
+- `p_challenger = 0.46`
+
+则系统不做：
+
+```text
+p = (0.55 + 0.46)/2
+```
+
+而做：
+
+```text
+model_dispersion = |0.55 - 0.46| = 0.09
+```
+
+再按披露策略：
+
+- 下调 `confidence_level`
+- 放宽 `success_probability_range`
+
+例如：
+
+- 主披露由 `55%`
+- 改为 `46% ~ 55%`
+
+这就是 challenger 的正式角色。
 
 ---
 
@@ -770,6 +1314,31 @@ challenger 不是正式主结果替代品，而是：
 - `src/probability_engine/disclosure.py`
   - 模型分歧、区间、置信度调整
 
+### 13.1.1 关键接口
+
+建议显式定义这些接口，避免实现漂移：
+
+```python
+class FactorMappingBuilder(Protocol):
+    def build(self, product_inputs: list[Any], as_of: str) -> list[ProductMarginalSpec]: ...
+
+class StateCalibrator(Protocol):
+    def calibrate(self, daily_input: DailySimulationInput) -> CalibratedStateBundle: ...
+
+class RecipeRunner(Protocol):
+    def run(self, daily_input: DailySimulationInput, recipe: SimulationRecipe) -> RecipeSimulationResult: ...
+
+class DisclosureAssembler(Protocol):
+    def assemble(
+        self,
+        primary: RecipeSimulationResult,
+        challengers: list[RecipeSimulationResult],
+        stresses: list[RecipeSimulationResult],
+    ) -> ProbabilityDisclosureResult: ...
+```
+
+这样后续扩 DCC / copula / sparse dependence 时，不需要重写整个 orchestrator。
+
 ### 13.2 与旧代码关系
 
 旧的：
@@ -784,6 +1353,21 @@ challenger 不是正式主结果替代品，而是：
 - 编排层
 - 参数装配层
 - 输出桥接层
+
+建议调用关系固定为：
+
+```text
+frontdesk/orchestrator
+  -> probability_engine.contracts
+  -> probability_engine.factors
+  -> probability_engine.regime
+  -> probability_engine.volatility
+  -> probability_engine.dependence
+  -> probability_engine.jumps
+  -> probability_engine.path_generator
+  -> probability_engine.disclosure
+  -> goal_solver/disclosure bridge
+```
 
 真正的逐产品日频模拟放到 `probability_engine/`。
 
@@ -819,6 +1403,17 @@ challenger 不是正式主结果替代品，而是：
 
 - `O(P * T * N^2)`
 
+内存复杂度主要来自：
+
+- 存整条产品路径：`O(P * T * N)`
+- 存因子路径：`O(P * T * K)`
+
+因此实现上不应默认把所有中间路径全量持久化；formal 主路径只保留：
+
+- 统计摘要
+- 必要的审计样本
+- 关键路径片段
+
 这是 `v1.4` 明确拒绝的路径。
 
 ### 14.2 性能策略
@@ -846,6 +1441,17 @@ challenger 不是正式主结果替代品，而是：
      - regime state
      - mapping state
 
+6. **块状向量化**
+   - 在路径维 `P` 上做 numpy 批处理
+   - 避免 Python for-loop 在产品维和路径维双重嵌套
+
+7. **两阶段输出保留**
+   - 第一阶段只保留：
+     - success event
+     - tail stats
+     - drawdown stats
+   - 第二阶段仅对审计样本路径保留完整轨迹
+
 ### 14.3 formal 性能目标
 
 对一个典型组合候选集：
@@ -864,6 +1470,16 @@ formal 单次运行应控制在可交互范围；若超限，允许：
 
 - 回退到月级模拟
 - 回退到桶级模拟
+
+### 14.4 性能不变量
+
+任何性能优化都不得改变：
+
+- `resolved_result_category`
+- `disclosure_level`
+- `confidence_level`
+- `primary/challenger/stress` 角色
+- `evidence_bundle` 的语义 refs
 
 ---
 
@@ -909,6 +1525,41 @@ Claw 必须能明确看见：
 - 当前日频路径证据
 - 当前是否存在 monthly/bucket fallback（应始终为 false）
 
+### 15.5 必须新增的回归组
+
+1. **Primary 路径正确性组**
+   - 日频、逐产品、primary recipe 命中
+
+2. **Challenger 分歧组**
+   - 同一画像下 primary 与 challenger 分歧可见
+
+3. **Stress 尾部组**
+   - stress recipe 的 tail 风险强于 primary
+
+4. **DCC 可扩展接口组**
+   - 更换 dependence provider 不改 orchestrator 调用
+
+5. **No Monthly / No Bucket Gate**
+   - 任一 formal/Claw run 命中月级或桶级逻辑即失败
+
+### 15.6 数学正确性回归
+
+必须对以下对象做数值回归：
+
+- GARCH 状态更新
+- DCC 相关更新
+- regime 转移采样分布
+- jump 触发频率
+- factor beta shrinkage
+- portfolio path aggregation
+
+这些测试要固定 seed，并对比：
+
+- 均值
+- 方差
+- 分位数
+- 命中率
+
 ---
 
 ## 16. v1.4 闭环标准
@@ -949,4 +1600,3 @@ Claw 必须能明确看见：
 `v1.4` 的本质不是“再加几个 mode”，而是把概率引擎改造成：
 
 > 以逐产品日频路径为核心、以因子层承接共同风险、以 challenger/stress 管模型风险、且不允许退回月级/桶级近似的正式概率系统。
-
