@@ -78,9 +78,28 @@ def goal_solver_input_base() -> dict[str, object]:
     }
 
 
+def _historical_distribution_input() -> dict[str, object]:
+    return {
+        "frequency": "monthly",
+        "historical_return_series": {
+            "equity_cn": [0.012, -0.015, 0.011, 0.009, -0.006, 0.014, -0.012, 0.010, 0.008, -0.004, 0.013, -0.009],
+            "bond_cn": [0.002, 0.001, 0.002, 0.001, 0.001, 0.002, 0.001, 0.002, 0.001, 0.001, 0.002, 0.001],
+            "gold": [0.004, -0.002, 0.003, 0.002, -0.001, 0.004, -0.002, 0.003, 0.002, -0.001, 0.004, -0.002],
+            "satellite": [0.020, -0.026, 0.018, 0.013, -0.010, 0.022, -0.019, 0.016, 0.011, -0.008, 0.020, -0.014],
+        },
+        "regime_series": ["normal", "stress", "normal", "normal", "stress", "normal", "stress", "normal", "normal", "stress", "normal", "normal"],
+        "tail_df": 7.0,
+    }
+
+
 @pytest.mark.contract
 def test_run_goal_solver_emits_product_independent_probability_when_series_present(goal_solver_input_base, monkeypatch):
     solver_input = deepcopy(goal_solver_input_base)
+    solver_input["solver_params"] = {
+        **deepcopy(goal_solver_input_base["solver_params"]),
+        "simulation_mode": "historical_block_bootstrap",
+        "distribution_input": _historical_distribution_input(),
+    }
     solver_input["candidate_product_contexts"] = {
         "balanced": {
             "allocation_name": "balanced",
@@ -149,7 +168,12 @@ def test_run_goal_solver_emits_product_independent_probability_when_series_prese
         market_state,
         _n_paths: int,
         _seed: int,
+        *,
+        mode: str = "static_gaussian",
+        distribution_input=None,
     ):
+        assert mode == "historical_block_bootstrap"
+        assert distribution_input is not None
         observed_expected_returns.append(dict(market_state.expected_returns))
         probability = 0.51 if len(observed_expected_returns) == 1 else 0.60
         terminal = 2_100_000.0 if len(observed_expected_returns) == 1 else 2_260_000.0

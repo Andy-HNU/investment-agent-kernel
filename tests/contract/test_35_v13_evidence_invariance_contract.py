@@ -12,6 +12,20 @@ from orchestrator.engine import run_orchestrator
 from shared.audit import EvidenceBundle, RunOutcomeStatus, build_evidence_invariance_report
 
 
+def _historical_distribution_input() -> dict[str, object]:
+    return {
+        "frequency": "monthly",
+        "historical_return_series": {
+            "equity_cn": [0.012, -0.015, 0.011, 0.009, -0.006, 0.014, -0.012, 0.010, 0.008, -0.004, 0.013, -0.009],
+            "bond_cn": [0.002, 0.001, 0.002, 0.001, 0.001, 0.002, 0.001, 0.002, 0.001, 0.001, 0.002, 0.001],
+            "gold": [0.004, -0.002, 0.003, 0.002, -0.001, 0.004, -0.002, 0.003, 0.002, -0.001, 0.004, -0.002],
+            "satellite": [0.020, -0.026, 0.018, 0.013, -0.010, 0.022, -0.019, 0.016, 0.011, -0.008, 0.020, -0.014],
+        },
+        "regime_series": ["normal", "stress", "normal", "normal", "stress", "normal", "stress", "normal", "normal", "stress", "normal", "normal"],
+        "tail_df": 7.0,
+    }
+
+
 def _estimated_candidate_context() -> dict[str, object]:
     return {
         "allocation_name": "base_allocation",
@@ -102,7 +116,11 @@ def test_run_orchestrator_emits_evidence_invariance_report_when_baseline_bundle_
         _market_state,
         _n_paths: int,
         _seed: int,
+        *,
+        mode: str = "static_gaussian",
+        distribution_input=None,
     ):
+        assert mode in {"static_gaussian", "historical_block_bootstrap"}
         return (
             0.61,
             {"expected_terminal_value": 2_750_000.0},
@@ -118,6 +136,11 @@ def test_run_orchestrator_emits_evidence_invariance_report_when_baseline_bundle_
 
     solver_input = {
         **deepcopy(goal_solver_input_base),
+        "solver_params": {
+            **deepcopy(goal_solver_input_base["solver_params"]),
+            "simulation_mode": "historical_block_bootstrap",
+            "distribution_input": _historical_distribution_input(),
+        },
         "candidate_product_contexts": {
             "base_allocation": _estimated_candidate_context(),
         },
@@ -191,11 +214,14 @@ def test_run_orchestrator_emits_evidence_invariance_report_when_baseline_bundle_
     report = result.evidence_invariance_report
     assert result.audit_record is not None
     assert result.audit_record.artifact_refs["has_evidence_invariance_report"] is True
+    assert result.runtime_telemetry["solver_screen_ms"] >= 0.0
+    assert result.runtime_telemetry["explanation_build_ms"] >= 0.0
     assert report["baseline_run_ref"] == "baseline_run"
     assert report["optimized_run_ref"] == "v13_package4_invariance"
     assert report["artifact_refs"]["bundle_id"] == "bundle_acc001_20260329T120000Z"
     assert report["verdict"] in {"invariant", "drifted"}
     assert "resolved_result_category" in report["semantic_refs"]
+    assert result.evidence_bundle["simulation_mode"] == "historical_block_bootstrap"
 
 
 @pytest.mark.contract

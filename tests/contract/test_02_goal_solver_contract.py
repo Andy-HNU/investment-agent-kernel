@@ -120,8 +120,11 @@ def test_run_goal_solver_lightweight_uses_lightweight_path_count(goal_solver_inp
         market_state,
         n_paths: int,
         seed: int,
+        *,
+        mode: str = "static_gaussian",
+        distribution_input=None,
     ):
-        del weights, cashflow_schedule, initial_value, goal_amount, market_state
+        del weights, cashflow_schedule, initial_value, goal_amount, market_state, mode, distribution_input
         captured["n_paths"] = n_paths
         captured["seed"] = seed
         return 0.55, {"expected_terminal_value": 1_000_000.0}, RiskSummary(
@@ -359,7 +362,11 @@ def test_run_goal_solver_applies_product_proxy_adjustments_when_context_present(
         market_state,
         _n_paths: int,
         _seed: int,
+        *,
+        mode: str = "static_gaussian",
+        distribution_input=None,
     ):
+        del mode, distribution_input
         observed_expected_returns.append(dict(market_state.expected_returns))
         if market_state.expected_returns["equity_cn"] > 0.09:
             probability, terminal, drawdown = 0.63, 2_350_000.0, 0.17

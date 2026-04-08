@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 
 from allocation_engine.engine import run_allocation_engine
@@ -1457,6 +1458,7 @@ def _gate1_evidence_bundle(
     bundle_id: str | None,
     solver_snapshot_id: str | None,
     goal_solver_input: Any,
+    goal_solver_output: Any,
     calibration_result: Any,
     run_outcome_status: RunOutcomeStatus,
     resolved_result_category: str | None,
@@ -1531,6 +1533,16 @@ def _gate1_evidence_bundle(
             if failure_artifact is not None
             else "result_category_resolution"
         )
+    calibration_payload = _as_dict(calibration_result)
+    distribution_state = _as_dict(calibration_payload.get("distribution_model_state"))
+    simulation_mode = (
+        _text(distribution_state.get("selected_mode"))
+        or _text(distribution_state.get("simulation_mode"))
+        or _text(_as_dict(goal_solver_output).get("simulation_mode_used"))
+        or _text(calibration_payload.get("selected_mode"))
+        or _text(calibration_payload.get("simulation_mode"))
+        or _text(_as_dict(_as_dict(goal_solver_input).get("solver_params")).get("simulation_mode"))
+    )
     return EvidenceBundle(
         bundle_schema_version="v1.3",
         execution_policy_version="v1.3",
@@ -1563,7 +1575,7 @@ def _gate1_evidence_bundle(
         run_outcome_status=run_outcome_status,
         execution_policy=execution_policy.value,
         disclosure_policy="FORMAL_STANDARD",
-        simulation_mode=_text(_as_dict(_as_dict(goal_solver_input).get("solver_params")).get("simulation_mode")),
+        simulation_mode=simulation_mode,
         input_refs=input_refs,
         evidence_refs=evidence_refs,
         coverage_summary=coverage_summary,
@@ -2457,11 +2469,20 @@ def run_orchestrator(
     prior_solver_input: Any | None = None,
     prior_calibration: Any | None = None,
 ) -> OrchestratorResult:
+    telemetry_started = perf_counter()
+    market_enrichment_ms = 0.0
+    solver_screen_ms = 0.0
+    independent_simulation_ms = 0.0
+    explanation_build_ms = 0.0
+    history_fetch_ms = 0.0
+    universe_build_ms: float | None = None
+    valuation_build_ms: float | None = None
     envelope = dict(raw_inputs)
     execution_policy = _execution_policy(envelope)
     formal_path_required = _formal_path_required(envelope)
     snapshot_primary_formal_path = _snapshot_primary_formal_path(envelope)
     if envelope.get("market_raw") is None and not snapshot_primary_formal_path:
+        market_enrichment_started = perf_counter()
         envelope["_auto_market_raw_injected"] = True
         envelope["market_raw"] = enrich_market_raw_with_runtime_product_inputs(
             {},
@@ -2469,13 +2490,16 @@ def run_orchestrator(
             formal_path_required=formal_path_required,
             execution_policy=execution_policy.value,
         )
+        market_enrichment_ms = (perf_counter() - market_enrichment_started) * 1000.0
     elif isinstance(envelope.get("market_raw"), dict) and not snapshot_primary_formal_path:
+        market_enrichment_started = perf_counter()
         envelope["market_raw"] = enrich_market_raw_with_runtime_product_inputs(
             envelope.get("market_raw"),
             as_of=str(envelope.get("as_of") or ""),
             formal_path_required=formal_path_required,
             execution_policy=execution_policy.value,
         )
+        market_enrichment_ms = (perf_counter() - market_enrichment_started) * 1000.0
     requested_workflow = _requested_workflow_from_any(trigger)
     normalized_trigger = _trigger_from_any(trigger)
     resolution_blocking_reasons: list[str] = []
@@ -2585,8 +2609,11 @@ def run_orchestrator(
                     goal_solver_input_used = solver_input
                     if not candidate_context_blocking:
                         try:
+                            solver_started = perf_counter()
                             goal_solver_output = run_goal_solver(solver_input)
+                            solver_screen_ms = (perf_counter() - solver_started) * 1000.0
                         except ValueError as exc:
+                            solver_screen_ms = (perf_counter() - solver_started) * 1000.0
                             blocking_reasons.append(str(exc))
                             goal_solver_output = None
                         if goal_solver_output is not None:
@@ -2595,6 +2622,20 @@ def run_orchestrator(
                                 solver_input,
                             )
                             solver_snapshot_id = _obj(goal_solver_output).get("input_snapshot_id")
+                            recommended_name = _first_text(
+                                _as_dict(goal_solver_output).get("recommended_allocation_name"),
+                                _as_dict(_as_dict(goal_solver_output).get("recommended_result")).get("allocation_name"),
+                            )
+                            candidate_contexts = _as_dict(solver_input).get("candidate_product_contexts") or {}
+                            recommended_context = _as_dict(candidate_contexts.get(recommended_name)) if recommended_name else {}
+                            coverage = _as_dict(
+                                _as_dict(recommended_context.get("product_simulation_input")).get("coverage_summary")
+                            )
+                            independent_simulation_ms = (
+                                solver_screen_ms
+                                if float(coverage.get("independent_weight_adjusted_coverage") or 0.0) > 0.0
+                                else 0.0
+                            )
                     if effective_trigger.workflow_type == WorkflowType.QUARTERLY:
                         runtime_inputs, missing_runtime_inputs = _resolve_runtime_inputs(
                             envelope,
@@ -2744,6 +2785,24 @@ def run_orchestrator(
         and plan_context.get("pending")
     ):
         execution_plan_summary = _build_execution_plan_summary(plan_context.get("pending"))
+    runtime_market = _as_dict(envelope.get("market_raw"))
+    product_universe_result = _as_dict(
+        runtime_market.get("product_universe_result") or runtime_market.get("runtime_product_universe_result")
+    )
+    valuation_result = _as_dict(runtime_market.get("product_valuation_result") or runtime_market.get("valuation_result"))
+    historical_dataset = _as_dict(runtime_market.get("historical_dataset"))
+    if universe_build_ms is None:
+        if snapshot_primary_formal_path and product_universe_result:
+            universe_build_ms = 0.0
+        elif product_universe_result:
+            universe_build_ms = market_enrichment_ms
+    if valuation_build_ms is None:
+        if snapshot_primary_formal_path and valuation_result:
+            valuation_build_ms = 0.0
+        elif valuation_result:
+            valuation_build_ms = market_enrichment_ms
+    if historical_dataset:
+        history_fetch_ms = 0.0 if snapshot_primary_formal_path else market_enrichment_ms
     gate1_input_provenance = _build_input_provenance(
         envelope,
         effective_trigger.workflow_type,
@@ -2817,6 +2876,7 @@ def run_orchestrator(
         bundle_id=bundle_id,
         solver_snapshot_id=solver_snapshot_id,
         goal_solver_input=goal_solver_input_used,
+        goal_solver_output=goal_solver_output,
         calibration_result=calibration_result,
         run_outcome_status=gate1_run_outcome_status,
         resolved_result_category=gate1_resolved_result_category,
@@ -2892,7 +2952,9 @@ def run_orchestrator(
     card_build_input.audit_record = audit_record
     audit_record.artifact_refs["has_execution_plan"] = execution_plan is not None
     audit_record.artifact_refs["has_evidence_invariance_report"] = bool(evidence_invariance_report)
+    explanation_started = perf_counter()
     decision_card = build_decision_card(card_build_input)
+    explanation_build_ms = (perf_counter() - explanation_started) * 1000.0
     audit_record.artifact_refs["has_decision_card"] = decision_card is not None
     persistence_plan = _build_persistence_plan(
         run_id=run_id,
@@ -2916,6 +2978,17 @@ def run_orchestrator(
         control_flags=control_flags,
     )
     audit_record.artifact_refs["has_persistence_plan"] = persistence_plan is not None
+    runtime_telemetry = {
+        "universe_build_ms": None if universe_build_ms is None else round(float(universe_build_ms), 3),
+        "valuation_build_ms": None if valuation_build_ms is None else round(float(valuation_build_ms), 3),
+        "history_fetch_ms": round(float(history_fetch_ms), 3),
+        "solver_screen_ms": round(float(solver_screen_ms), 3),
+        "independent_simulation_ms": round(float(independent_simulation_ms), 3),
+        "explanation_build_ms": round(float(explanation_build_ms), 3),
+        "total_orchestrator_ms": round((perf_counter() - telemetry_started) * 1000.0, 3),
+    }
+    audit_record.artifact_refs["has_runtime_telemetry"] = True
+    audit_record.artifact_refs["runtime_telemetry"] = runtime_telemetry
     return OrchestratorResult(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,
@@ -2925,6 +2998,7 @@ def run_orchestrator(
         disclosure_decision=gate1_disclosure_decision.to_dict(),
         evidence_bundle=gate1_evidence_bundle.to_dict(),
         evidence_invariance_report=evidence_invariance_report,
+        runtime_telemetry=runtime_telemetry,
         requested_workflow_type=requested_workflow,
         bundle_id=bundle_id,
         calibration_id=calibration_data.get("calibration_id"),

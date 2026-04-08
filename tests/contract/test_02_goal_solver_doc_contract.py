@@ -214,8 +214,11 @@ def test_run_goal_solver_lightweight_uses_lightweight_paths_and_seed(
         market_state,
         n_paths,
         seed,
+        *,
+        mode="static_gaussian",
+        distribution_input=None,
     ):
-        del weights, cashflow_schedule, initial_value, goal_amount, market_state
+        del weights, cashflow_schedule, initial_value, goal_amount, market_state, mode, distribution_input
         captured["n_paths"] = n_paths
         captured["seed"] = seed
         return (
