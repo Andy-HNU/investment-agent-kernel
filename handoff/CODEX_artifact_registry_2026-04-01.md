@@ -89,6 +89,15 @@
     - `runtime auto path`
     的最小 prompt、通过标准与结果解释
 
+- `handoff/CODEX_v1.4_daily_product_probability_engine_design_2026-04-09.md`
+  - `v1.4` 主设计稿
+  - 覆盖：
+    - 日频逐产品概率引擎重构
+    - 方案 B 作为 primary、方案 C 作为 challenger
+    - 因子映射、GARCH、DCC、jump、regime 的分层建模
+    - 代码抽象设计、性能复杂度与测试回归方案
+  - 当前作为 `v1.4` 的主规格文档
+
 - `handoff/CODEX_v1.2_three_layer_acceptance_summary_2026-04-06.md`
   - `v1.2` 三层总验收汇总
   - 汇总：
