@@ -18,7 +18,13 @@ from calibration.types import (
     SimulationModeEligibility,
     RuntimeOptimizerParams,
 )
-from goal_solver.types import GoalSolverParams, MarketAssumptions, RankingMode
+from goal_solver.types import (
+    DistributionInput,
+    GoalSolverParams,
+    MarketAssumptions,
+    RankingMode,
+    SimulationMode,
+)
 from snapshot_ingestion.historical import build_historical_dataset_snapshot, summarize_historical_dataset
 from snapshot_ingestion.types import CompletenessLevel, SnapshotBundle
 from snapshot_ingestion.valuation import build_valuation_percentile_results
@@ -121,6 +127,109 @@ def _policy_signal_summary(bundle_data: dict[str, Any]) -> dict[str, Any]:
         "confidence": float(chosen.get("confidence", 0.0) or 0.0),
         "signal_ids": [str(_obj(item).get("signal_id") or "") for item in signals if str(_obj(item).get("signal_id") or "").strip()],
     }
+
+
+def _historical_dataset_from_bundle(bundle_data: dict[str, Any]):
+    market_raw = _obj(bundle_data.get("market", {}))
+    historical_seed = market_raw.get("historical_dataset")
+    if not historical_seed:
+        historical_seed = bundle_data.get("historical_dataset_metadata") or market_raw.get("historical_dataset_metadata")
+    if not historical_seed:
+        return None
+    return build_historical_dataset_snapshot(_obj(historical_seed))
+
+
+def _aligned_historical_series(dataset: Any, buckets: list[str]) -> tuple[dict[str, list[float]], int]:
+    selected = {
+        bucket: [float(value) for value in list(dataset.return_series.get(bucket) or [])]
+        for bucket in buckets
+        if list(dataset.return_series.get(bucket) or [])
+    }
+    if not selected:
+        return {}, 0
+    min_len = min(len(series) for series in selected.values())
+    if min_len <= 0:
+        return {}, 0
+    return {bucket: series[-min_len:] for bucket, series in selected.items()}, min_len
+
+
+def _historical_regime_series(sample_returns: list[float]) -> list[str]:
+    if not sample_returns:
+        return []
+    center = float(np.median(np.asarray(sample_returns, dtype=float)))
+    return ["stress" if value <= center else "normal" for value in sample_returns]
+
+
+def _build_reliability_buckets(
+    predicted_probabilities: np.ndarray,
+    observed_hits: np.ndarray,
+) -> list[dict[str, Any]]:
+    bucket_edges = [0.0, 0.2, 0.4, 0.6, 0.8, 1.01]
+    results: list[dict[str, Any]] = []
+    for low, high in zip(bucket_edges[:-1], bucket_edges[1:], strict=True):
+        if high >= 1.0:
+            mask = (predicted_probabilities >= low) & (predicted_probabilities <= 1.0)
+            label = f"{low:.1f}-1.0"
+        else:
+            mask = (predicted_probabilities >= low) & (predicted_probabilities < high)
+            label = f"{low:.1f}-{high:.1f}"
+        if not np.any(mask):
+            continue
+        results.append(
+            {
+                "bucket": label,
+                "sample_count": int(np.sum(mask)),
+                "predicted_mean": float(np.mean(predicted_probabilities[mask])),
+                "observed_hit_rate": float(np.mean(observed_hits[mask])),
+            }
+        )
+    return results
+
+
+def _build_regime_breakdown(
+    sample_returns: list[float],
+    predicted_probabilities: np.ndarray,
+    observed_hits: np.ndarray,
+) -> list[dict[str, Any]]:
+    regimes = _historical_regime_series(sample_returns)
+    if not regimes:
+        return []
+    results: list[dict[str, Any]] = []
+    for regime in ("normal", "stress"):
+        mask = np.asarray([item == regime for item in regimes], dtype=bool)
+        if not np.any(mask):
+            continue
+        results.append(
+            {
+                "regime": regime,
+                "sample_count": int(np.sum(mask)),
+                "predicted_mean": float(np.mean(predicted_probabilities[mask])),
+                "observed_hit_rate": float(np.mean(observed_hits[mask])),
+                "brier_score": float(np.mean((predicted_probabilities[mask] - observed_hits[mask]) ** 2)),
+            }
+        )
+    return results
+
+
+def _build_distribution_input_from_dataset(dataset: Any | None) -> DistributionInput | None:
+    if dataset is None:
+        return None
+    aligned_series, _sample_count = _aligned_historical_series(dataset, sorted(dataset.return_series))
+    if not aligned_series:
+        return None
+    sample_returns = [
+        float(np.mean([series[idx] for series in aligned_series.values()]))
+        for idx in range(len(next(iter(aligned_series.values()))))
+    ]
+    return DistributionInput(
+        frequency=str(dataset.frequency or "monthly"),
+        historical_return_series=aligned_series,
+        regime_series=_historical_regime_series(sample_returns),
+        tail_df=7.0 if len(sample_returns) >= 24 else 5.0,
+        block_size=max(2, min(6, len(sample_returns) // 12 or 3)),
+        source_ref=str(dataset.source_ref or dataset.version_id or dataset.dataset_id),
+        audit_window=None if dataset.audit_window is None else dataset.audit_window.to_dict(),
+    )
 
 
 def _default_expected_return(bucket: str) -> float:
@@ -508,14 +617,189 @@ def _param_meta_from_prior(prior_calibration: CalibrationResult | dict[str, Any]
     return _obj(_obj(prior_calibration or {}).get("param_version_meta", {}))
 
 
+def _portfolio_return_series_from_dataset(dataset: Any | None) -> list[float]:
+    if dataset is None:
+        return []
+    series_map = {
+        str(bucket): [float(value) for value in list(series or [])]
+        for bucket, series in dict(getattr(dataset, "return_series", {}) or {}).items()
+        if list(series or [])
+    }
+    if not series_map:
+        return []
+    min_len = min(len(series) for series in series_map.values())
+    if min_len <= 0:
+        return []
+    ordered_buckets = sorted(series_map)
+    weight = 1.0 / len(ordered_buckets)
+    portfolio_returns: list[float] = []
+    for idx in range(-min_len, 0):
+        portfolio_returns.append(
+            sum(weight * float(series_map[bucket][idx]) for bucket in ordered_buckets)
+        )
+    return portfolio_returns
+
+
+def _derive_regime_series(dataset: Any | None) -> list[str]:
+    portfolio_returns = _portfolio_return_series_from_dataset(dataset)
+    if not portfolio_returns:
+        return []
+    regimes: list[str] = []
+    for value in portfolio_returns:
+        if value <= -0.01:
+            regimes.append("stress")
+        elif value < 0.0:
+            regimes.append("drawdown")
+        elif value >= 0.01:
+            regimes.append("expansion")
+        else:
+            regimes.append("normal")
+    return regimes
+
+
+def _bucketed_calibration_summary(portfolio_returns: list[float]) -> tuple[float | None, list[dict[str, Any]]]:
+    if not portfolio_returns:
+        return None, []
+    window = min(6, max(len(portfolio_returns) - 1, 1))
+    predictions: list[float] = []
+    actuals: list[float] = []
+    for idx in range(window, len(portfolio_returns)):
+        history = portfolio_returns[max(0, idx - window):idx]
+        if not history:
+            continue
+        predicted = sum(1.0 for value in history if value > 0.0) / len(history)
+        actual = 1.0 if portfolio_returns[idx] > 0.0 else 0.0
+        predictions.append(predicted)
+        actuals.append(actual)
+    if not predictions:
+        base_rate = sum(1.0 for value in portfolio_returns if value > 0.0) / len(portfolio_returns)
+        predictions = [base_rate for _ in portfolio_returns]
+        actuals = [1.0 if value > 0.0 else 0.0 for value in portfolio_returns]
+    brier_score = sum((pred - actual) ** 2 for pred, actual in zip(predictions, actuals, strict=True)) / max(
+        len(predictions),
+        1,
+    )
+    bucket_edges = [(0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.0)]
+    buckets: list[dict[str, Any]] = []
+    for lower, upper in bucket_edges:
+        members = [
+            (pred, actual)
+            for pred, actual in zip(predictions, actuals, strict=True)
+            if (pred >= lower and pred < upper) or (upper == 1.0 and pred <= upper)
+        ]
+        buckets.append(
+            {
+                "bucket_label": f"{int(lower * 100)}-{int(upper * 100)}",
+                "predicted_probability_mean": (
+                    sum(pred for pred, _ in members) / len(members) if members else None
+                ),
+                "realized_hit_rate": (
+                    sum(actual for _, actual in members) / len(members) if members else None
+                ),
+                "sample_count": len(members),
+                "status": "insufficient_sample" if len(members) < 3 else "ready",
+            }
+        )
+    return float(brier_score), buckets
+
+
+def _regime_breakdown(dataset: Any | None) -> list[dict[str, Any]]:
+    portfolio_returns = _portfolio_return_series_from_dataset(dataset)
+    regimes = _derive_regime_series(dataset)
+    if not portfolio_returns or not regimes:
+        return []
+    breakdown: dict[str, list[float]] = {}
+    for regime, value in zip(regimes, portfolio_returns, strict=True):
+        breakdown.setdefault(regime, []).append(float(value))
+    rows: list[dict[str, Any]] = []
+    for regime, values in sorted(breakdown.items()):
+        rows.append(
+            {
+                "regime": regime,
+                "sample_count": len(values),
+                "mean_return": sum(values) / len(values),
+                "hit_rate": sum(1.0 for value in values if value > 0.0) / len(values),
+            }
+        )
+    return rows
+
+
+def _calibration_quality_from_sample_count(sample_count: int) -> str:
+    if sample_count >= 60:
+        return "strong"
+    if sample_count >= 24:
+        return "acceptable"
+    if sample_count >= 12:
+        return "weak"
+    return "insufficient_sample"
+
+
+def _distribution_input_from_historical_dataset(dataset: Any | None) -> DistributionInput | None:
+    if dataset is None:
+        return None
+    return_series = {
+        str(bucket): [float(value) for value in list(series or [])]
+        for bucket, series in dict(getattr(dataset, "return_series", {}) or {}).items()
+        if list(series or [])
+    }
+    if not return_series:
+        return None
+    summary_returns, summary_volatility, summary_corr = summarize_historical_dataset(
+        dataset,
+        buckets=sorted(return_series),
+    )
+    garch_t_state = {
+        bucket: {
+            "annualized_volatility": float(summary_volatility.get(bucket, 0.15) or 0.15),
+            "long_run_variance": float(max((summary_volatility.get(bucket, 0.15) or 0.15) ** 2 / 12.0, 1e-6)),
+            "alpha": 0.06,
+            "beta": 0.90,
+            "nu": 7.0,
+        }
+        for bucket in return_series
+    }
+    bucket_jump_probability: dict[str, float] = {}
+    bucket_jump_loss: dict[str, float] = {}
+    for bucket, series in return_series.items():
+        negatives = [abs(value) for value in series if value < -0.02]
+        bucket_jump_probability[bucket] = min(len(negatives) / max(len(series), 1), 0.25)
+        bucket_jump_loss[bucket] = max(sum(negatives) / len(negatives), 0.03) if negatives else 0.03
+    return DistributionInput(
+        frequency=str(getattr(dataset, "frequency", "monthly") or "monthly"),
+        historical_return_series=return_series,
+        regime_series=_derive_regime_series(dataset),
+        tail_df=7.0,
+        block_size=3,
+        source_ref=str(getattr(dataset, "source_ref", "") or ""),
+        audit_window=None if getattr(dataset, "audit_window", None) is None else dataset.audit_window.to_dict(),
+        garch_t_state=garch_t_state,
+        dcc_state={
+            "correlation_matrix": summary_corr,
+            "long_run_correlation": summary_corr,
+            "alpha": 0.04,
+            "beta": 0.93,
+        },
+        jump_state={
+            "bucket_jump_probability_1m": bucket_jump_probability,
+            "bucket_jump_loss": bucket_jump_loss,
+            "systemic_jump_probability_1m": min(sum(bucket_jump_probability.values()) / max(len(bucket_jump_probability), 1), 0.15),
+            "systemic_jump_scale": 0.75,
+        },
+    )
+
+
 def update_goal_solver_params(
     market_assumptions: MarketAssumptions,
+    distribution_model_state: DistributionModelState,
+    distribution_input: DistributionInput | None,
     prior_params: GoalSolverParams | dict[str, Any] | None,
     created_at: Any,
 ) -> GoalSolverParams:
     params = _coerce_goal_solver_params(prior_params, market_assumptions)
     params.version = _version_id("goal_solver_params", created_at)
     params.market_assumptions = market_assumptions
+    params.simulation_mode = SimulationMode(distribution_model_state.selected_mode)
+    params.distribution_input = distribution_input
     return params
 
 
@@ -664,6 +948,12 @@ def _coerce_goal_solver_params(
     market_assumptions: MarketAssumptions,
 ) -> GoalSolverParams:
     data = _obj(params or {})
+    ranking_mode_default = data.get("ranking_mode_default", "sufficiency_first")
+    simulation_mode = data.get("simulation_mode", SimulationMode.STATIC_GAUSSIAN.value)
+    distribution_input_raw = data.get("distribution_input")
+    distribution_input = None
+    if distribution_input_raw is not None:
+        distribution_input = DistributionInput(**_obj(distribution_input_raw))
     return GoalSolverParams(
         version=str(data.get("version", "v4.0.0")),
         n_paths=int(data.get("n_paths", 5000) or 5000),
@@ -671,7 +961,9 @@ def _coerce_goal_solver_params(
         seed=int(data.get("seed", 42) or 42),
         market_assumptions=market_assumptions,
         shrinkage_factor=float(data.get("shrinkage_factor", 0.85) or 0.85),
-        ranking_mode_default=RankingMode(data.get("ranking_mode_default", "sufficiency_first")),
+        ranking_mode_default=RankingMode(str(getattr(ranking_mode_default, "value", ranking_mode_default))),
+        simulation_mode=SimulationMode(str(getattr(simulation_mode, "value", simulation_mode))),
+        distribution_input=distribution_input,
     )
 
 
@@ -724,14 +1016,20 @@ def _coerce_ev_params(params: Any | None) -> EVParams:
     )
 
 
-def _build_calibration_summary(bundle_id: str, calibration_quality: str) -> CalibrationSummary:
+def _build_calibration_summary(bundle_id: str, calibration_quality: str, historical_dataset: Any | None) -> CalibrationSummary:
+    portfolio_returns = _portfolio_return_series_from_dataset(historical_dataset)
+    brier_score, reliability_buckets = _bucketed_calibration_summary(portfolio_returns)
+    regime_breakdown = _regime_breakdown(historical_dataset)
+    sample_count = len(portfolio_returns)
     return CalibrationSummary(
-        sample_count=0,
-        brier_score=None,
-        reliability_buckets=[],
-        regime_breakdown=[],
-        calibration_quality="insufficient_sample" if calibration_quality != "full" else "acceptable",
-        source_ref=f"{bundle_id or 'unknown'}::static_gaussian",
+        sample_count=sample_count,
+        brier_score=brier_score,
+        reliability_buckets=reliability_buckets,
+        regime_breakdown=regime_breakdown,
+        calibration_quality=_calibration_quality_from_sample_count(sample_count),
+        source_ref=(
+            f"{getattr(historical_dataset, 'source_ref', '') or bundle_id or 'unknown'}::calibration"
+        ),
     )
 
 
@@ -740,39 +1038,63 @@ def _build_distribution_model_state(
     bundle_id: str,
     created_at: Any,
     calibration_summary: CalibrationSummary,
+    requested_mode: SimulationMode,
+    distribution_input: DistributionInput | None,
 ) -> DistributionModelState:
+    sample_count = int(calibration_summary.sample_count)
+    regime_sensitive = bool(distribution_input and distribution_input.regime_series)
+    eligible_modes_in_order: list[str] = [SimulationMode.STATIC_GAUSSIAN.value]
+    if sample_count >= 12:
+        eligible_modes_in_order.append(SimulationMode.STUDENT_T.value)
+    if distribution_input is not None and distribution_input.historical_return_series and sample_count >= 12:
+        eligible_modes_in_order.append(SimulationMode.HISTORICAL_BLOCK_BOOTSTRAP.value)
+    if regime_sensitive and sample_count >= 24:
+        eligible_modes_in_order.append(SimulationMode.REGIME_SWITCHING_BOOTSTRAP.value)
+    if distribution_input is not None and distribution_input.garch_t_state and sample_count >= 24:
+        eligible_modes_in_order.append(SimulationMode.GARCH_T.value)
+    if distribution_input is not None and distribution_input.dcc_state and sample_count >= 24:
+        eligible_modes_in_order.append(SimulationMode.GARCH_T_DCC.value)
+    if distribution_input is not None and distribution_input.jump_state and sample_count >= 24:
+        eligible_modes_in_order.append(SimulationMode.GARCH_T_DCC_JUMP.value)
+    requested_mode_value = requested_mode.value
+    selected_mode = requested_mode_value if requested_mode_value in eligible_modes_in_order else eligible_modes_in_order[-1]
+    downgrade_reason = None if selected_mode == requested_mode_value else f"requested_mode {requested_mode_value} not eligible"
     eligibility = SimulationModeEligibility(
-        simulation_mode="static_gaussian",
-        minimum_sample_months=0,
-        minimum_weight_adjusted_coverage=0.0,
-        requires_regime_stability=False,
-        requires_jump_calibration=False,
+        simulation_mode=selected_mode,
+        minimum_sample_months=24 if selected_mode != SimulationMode.STATIC_GAUSSIAN.value else 0,
+        minimum_weight_adjusted_coverage=0.6 if selected_mode != SimulationMode.STATIC_GAUSSIAN.value else 0.0,
+        requires_regime_stability=selected_mode == SimulationMode.REGIME_SWITCHING_BOOTSTRAP.value,
+        requires_jump_calibration=selected_mode == SimulationMode.GARCH_T_DCC_JUMP.value,
         allowed_result_categories=[
             "formal_independent_result",
             "formal_estimated_result",
             "degraded_formal_result",
         ],
-        downgrade_target=None,
-        ineligibility_action="mark_unavailable",
+        downgrade_target=None if selected_mode == requested_mode_value else "degraded_formal_result",
+        ineligibility_action="degrade_result" if selected_mode != requested_mode_value else "mark_unavailable",
     )
     mode_resolution = ModeResolutionDecision(
-        requested_mode="static_gaussian",
-        selected_mode="static_gaussian",
-        eligible_modes_in_order=["static_gaussian"],
-        ineligibility_action="mark_unavailable",
-        downgraded=False,
-        downgrade_reason=None,
+        requested_mode=requested_mode_value,
+        selected_mode=selected_mode,
+        eligible_modes_in_order=eligible_modes_in_order,
+        ineligibility_action="degrade_result" if selected_mode != requested_mode_value else "mark_unavailable",
+        downgraded=selected_mode != requested_mode_value,
+        downgrade_reason=downgrade_reason,
     )
     return DistributionModelState(
-        simulation_mode="static_gaussian",
-        selected_mode="static_gaussian",
-        tail_model=None,
-        regime_sensitive=False,
-        jump_overlay_enabled=False,
+        simulation_mode=requested_mode_value,
+        selected_mode=selected_mode,
+        tail_model=(
+            "student_t"
+            if selected_mode in {SimulationMode.STUDENT_T.value, SimulationMode.GARCH_T.value, SimulationMode.GARCH_T_DCC.value, SimulationMode.GARCH_T_DCC_JUMP.value}
+            else "historical_empirical"
+        ),
+        regime_sensitive=regime_sensitive,
+        jump_overlay_enabled=selected_mode == SimulationMode.GARCH_T_DCC_JUMP.value,
         eligibility_decision=eligibility,
         mode_resolution_decision=mode_resolution,
         calibration_summary=calibration_summary,
-        source_ref=f"{bundle_id or 'unknown'}::static_gaussian",
+        source_ref=f"{bundle_id or 'unknown'}::{selected_mode}",
         as_of=_utc(created_at).isoformat().replace("+00:00", "Z"),
         data_status="observed",
     )
@@ -795,6 +1117,9 @@ def run_calibration(
 
     market_state = interpret_market_state(bundle_data)
     prior_data = _obj(prior_calibration or {})
+    historical_dataset = build_historical_dataset_snapshot(
+        _obj(bundle_data.get("historical_dataset_metadata") or _obj(bundle_data.get("market", {})).get("historical_dataset"))
+    )
     behavior_state, notes = interpret_behavior_state(
         bundle_data,
         prior_behavior=prior_data.get("behavior_state"),
@@ -807,11 +1132,6 @@ def run_calibration(
     ):
         notes.append("market assumptions reused from prior due degraded market input")
 
-    goal_solver_params = update_goal_solver_params(
-        market_assumptions,
-        default_goal_solver_params or prior_data.get("goal_solver_params"),
-        created_at=created_at,
-    )
     runtime_optimizer_params = update_runtime_optimizer_params(
         market_state,
         constraint_state,
@@ -882,11 +1202,29 @@ def run_calibration(
             f"lookback_months={market_assumptions.lookback_months or 0}"
         )
 
-    calibration_summary = _build_calibration_summary(bundle_id, calibration_quality)
+    requested_mode = SimulationMode.HISTORICAL_BLOCK_BOOTSTRAP
+    requested_params = _obj(default_goal_solver_params or prior_data.get("goal_solver_params") or {})
+    if requested_params.get("simulation_mode"):
+        requested_mode = SimulationMode(str(getattr(requested_params.get("simulation_mode"), "value", requested_params.get("simulation_mode"))))
+    distribution_input = _distribution_input_from_historical_dataset(historical_dataset)
+    calibration_summary = _build_calibration_summary(bundle_id, calibration_quality, historical_dataset)
     distribution_model_state = _build_distribution_model_state(
         bundle_id=bundle_id,
         created_at=created_at,
         calibration_summary=calibration_summary,
+        requested_mode=requested_mode,
+        distribution_input=distribution_input,
+    )
+    calibration_summary.source_ref = (
+        f"{getattr(historical_dataset, 'source_ref', '') or bundle_id or 'unknown'}::{distribution_model_state.selected_mode}"
+    )
+    distribution_model_state.calibration_summary = calibration_summary
+    goal_solver_params = update_goal_solver_params(
+        market_assumptions,
+        distribution_model_state,
+        distribution_input,
+        default_goal_solver_params or prior_data.get("goal_solver_params"),
+        created_at=created_at,
     )
 
     reason = _derive_updated_reason(

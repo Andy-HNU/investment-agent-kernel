@@ -13,8 +13,29 @@ class RankingMode(str, Enum):
     BALANCED = "balanced"
 
 
+class SimulationMode(str, Enum):
+    STATIC_GAUSSIAN = "static_gaussian"
+    HISTORICAL_BLOCK_BOOTSTRAP = "historical_block_bootstrap"
+    STUDENT_T = "student_t"
+    REGIME_SWITCHING_BOOTSTRAP = "regime_switching_bootstrap"
+    GARCH_T = "garch_t"
+    GARCH_T_DCC = "garch_t_dcc"
+    GARCH_T_DCC_JUMP = "garch_t_dcc_jump"
+
+
 def _normalize_profile_label(value: Any) -> str:
     return str(getattr(value, "value", value)).strip().lower()
+
+
+def _normalize_text_list(values: Any, *, lower: bool = False) -> list[str]:
+    items: list[str] = []
+    for value in list(values or []):
+        rendered = str(getattr(value, "value", value) or "").strip()
+        if lower:
+            rendered = rendered.lower()
+        if rendered and rendered not in items:
+            items.append(rendered)
+    return items
 
 
 _CONFIDENCE_LEVELS = {"high", "medium", "low"}
@@ -70,6 +91,11 @@ def normalize_product_probability_method(value: Any) -> str:
 
 def _coerce_product_probability_method_label(value: Any) -> str:
     return normalize_product_probability_method(value)
+
+
+def _normalize_simulation_mode(value: Any) -> SimulationMode:
+    raw = str(getattr(value, "value", value) or "").strip().lower()
+    return SimulationMode(raw)
 
 
 def _normalize_coverage_summary(value: Any) -> dict[str, Any]:
@@ -248,6 +274,41 @@ class StrategicAllocation:
 
 
 @dataclass
+class DistributionInput:
+    frequency: str = "monthly"
+    historical_return_series: dict[str, list[float]] = field(default_factory=dict)
+    regime_series: list[str] = field(default_factory=list)
+    tail_df: float | None = None
+    block_size: int = 3
+    source_ref: str | None = None
+    audit_window: dict[str, Any] | None = None
+    garch_t_state: dict[str, dict[str, float]] = field(default_factory=dict)
+    dcc_state: dict[str, Any] = field(default_factory=dict)
+    jump_state: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.frequency = str(self.frequency or "monthly").strip().lower()
+        self.historical_return_series = {
+            str(bucket): [float(value) for value in list(series or [])]
+            for bucket, series in dict(self.historical_return_series or {}).items()
+        }
+        self.regime_series = _normalize_text_list(self.regime_series, lower=True)
+        self.tail_df = None if self.tail_df is None else float(self.tail_df)
+        self.block_size = max(int(self.block_size or 3), 1)
+        self.source_ref = None if self.source_ref is None else str(self.source_ref).strip()
+        self.audit_window = None if self.audit_window is None else dict(self.audit_window)
+        self.garch_t_state = {
+            str(bucket): {str(key): float(value) for key, value in dict(state or {}).items()}
+            for bucket, state in dict(self.garch_t_state or {}).items()
+        }
+        self.dcc_state = dict(self.dcc_state or {})
+        self.jump_state = dict(self.jump_state or {})
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class ProductHistoryProfile:
     product_id: str
     source_ref: str | None = None
@@ -350,9 +411,33 @@ class GoalSolverParams:
     market_assumptions: MarketAssumptions
     shrinkage_factor: float = 0.85
     ranking_mode_default: RankingMode = RankingMode.SUFFICIENCY_FIRST
+    simulation_mode: SimulationMode = SimulationMode.STATIC_GAUSSIAN
+    distribution_input: DistributionInput | None = None
+
+    def __post_init__(self) -> None:
+        self.version = str(self.version)
+        self.n_paths = int(self.n_paths)
+        self.n_paths_lightweight = int(self.n_paths_lightweight)
+        self.seed = int(self.seed)
+        self.market_assumptions = (
+            self.market_assumptions
+            if isinstance(self.market_assumptions, MarketAssumptions)
+            else MarketAssumptions(**dict(self.market_assumptions))
+        )
+        self.shrinkage_factor = float(self.shrinkage_factor)
+        self.ranking_mode_default = RankingMode(str(getattr(self.ranking_mode_default, "value", self.ranking_mode_default)))
+        self.simulation_mode = _normalize_simulation_mode(self.simulation_mode)
+        if isinstance(self.distribution_input, dict):
+            self.distribution_input = DistributionInput(**dict(self.distribution_input))
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["ranking_mode_default"] = self.ranking_mode_default.value
+        data["simulation_mode"] = self.simulation_mode.value
+        data["distribution_input"] = (
+            None if self.distribution_input is None else self.distribution_input.to_dict()
+        )
+        return data
 
 
 @dataclass
@@ -369,7 +454,22 @@ class GoalSolverInput:
     candidate_product_contexts: dict[str, CandidateProductContext] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "snapshot_id": self.snapshot_id,
+            "account_profile_id": self.account_profile_id,
+            "goal": self.goal.to_dict(),
+            "cashflow_plan": self.cashflow_plan.to_dict(),
+            "current_portfolio_value": self.current_portfolio_value,
+            "candidate_allocations": [item.to_dict() for item in self.candidate_allocations],
+            "constraints": self.constraints.to_dict(),
+            "solver_params": self.solver_params.to_dict(),
+            "ranking_mode_override": (
+                None if self.ranking_mode_override is None else self.ranking_mode_override.value
+            ),
+            "candidate_product_contexts": {
+                key: value.to_dict() for key, value in self.candidate_product_contexts.items()
+            },
+        }
 
 
 @dataclass
@@ -582,6 +682,7 @@ class GoalSolverOutput:
     ranking_mode_used: RankingMode
     structure_budget: StructureBudget
     risk_budget: RiskBudget
+    simulation_mode_used: SimulationMode = SimulationMode.STATIC_GAUSSIAN
     solver_notes: list[str] = field(default_factory=list)
     params_version: str = ""
     frontier_analysis: FrontierAnalysis | None = None
@@ -599,4 +700,5 @@ class GoalSolverOutput:
         data["structure_budget"] = self.structure_budget.to_dict()
         data["risk_budget"] = self.risk_budget.to_dict()
         data["ranking_mode_used"] = self.ranking_mode_used.value
+        data["simulation_mode_used"] = self.simulation_mode_used.value
         return data

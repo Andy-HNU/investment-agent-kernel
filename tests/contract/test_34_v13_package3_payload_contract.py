@@ -76,12 +76,28 @@ def _estimated_candidate_context() -> dict[str, object]:
     }
 
 
+def _historical_distribution_input() -> dict[str, object]:
+    return {
+        "frequency": "monthly",
+        "historical_return_series": {
+            "equity_cn": [0.012, -0.015, 0.011, 0.009, -0.006, 0.014, -0.012, 0.010, 0.008, -0.004, 0.013, -0.009],
+            "bond_cn": [0.002, 0.001, 0.002, 0.001, 0.001, 0.002, 0.001, 0.002, 0.001, 0.001, 0.002, 0.001],
+            "gold": [0.004, -0.002, 0.003, 0.002, -0.001, 0.004, -0.002, 0.003, 0.002, -0.001, 0.004, -0.002],
+            "satellite": [0.020, -0.026, 0.018, 0.013, -0.010, 0.022, -0.019, 0.016, 0.011, -0.008, 0.020, -0.014],
+        },
+        "regime_series": ["normal", "stress", "normal", "normal", "stress", "normal", "stress", "normal", "normal", "stress", "normal", "normal"],
+        "tail_df": 7.0,
+    }
+
+
 @pytest.mark.contract
 def test_run_goal_solver_surfaces_success_event_spec_formal_estimated_result_spec_and_expected_return_decomposition(
     goal_solver_input_base,
     monkeypatch,
 ):
     solver_input = deepcopy(goal_solver_input_base)
+    solver_input["solver_params"]["simulation_mode"] = "historical_block_bootstrap"
+    solver_input["solver_params"]["distribution_input"] = _historical_distribution_input()
     solver_input["candidate_product_contexts"] = {
         "base_allocation": _estimated_candidate_context(),
     }
@@ -94,7 +110,12 @@ def test_run_goal_solver_surfaces_success_event_spec_formal_estimated_result_spe
         _market_state,
         _n_paths: int,
         _seed: int,
+        *,
+        mode: str = "static_gaussian",
+        distribution_input=None,
     ):
+        assert mode == "historical_block_bootstrap"
+        assert distribution_input is not None
         return (
             0.61,
             {"expected_terminal_value": 2_750_000.0},
@@ -127,6 +148,7 @@ def test_run_goal_solver_surfaces_success_event_spec_formal_estimated_result_spe
     assert recommended.expected_return_decomposition is not None
     decomposition = recommended.expected_return_decomposition.to_dict()
     component_total = sum(float(value) for value in decomposition["component_contributions"].values())
+    assert result.simulation_mode_used == "historical_block_bootstrap"
     assert decomposition["decomposition_basis"] == "weighted_bucket_expected_return"
     assert decomposition["additivity_convention"] == "simple_sum"
     assert decomposition["residual"] == pytest.approx(recommended.expected_annual_return - component_total)
@@ -150,7 +172,12 @@ def test_run_orchestrator_serializes_goal_solver_payload_contract_fields_through
         _market_state,
         _n_paths: int,
         _seed: int,
+        *,
+        mode: str = "static_gaussian",
+        distribution_input=None,
     ):
+        assert mode == "historical_block_bootstrap"
+        assert distribution_input is not None
         return (
             0.61,
             {"expected_terminal_value": 2_750_000.0},
@@ -166,6 +193,11 @@ def test_run_orchestrator_serializes_goal_solver_payload_contract_fields_through
 
     solver_input = {
         **deepcopy(goal_solver_input_base),
+        "solver_params": {
+            **deepcopy(goal_solver_input_base["solver_params"]),
+            "simulation_mode": "historical_block_bootstrap",
+            "distribution_input": _historical_distribution_input(),
+        },
         "candidate_product_contexts": {
             "base_allocation": _estimated_candidate_context(),
         },
@@ -221,10 +253,12 @@ def test_run_orchestrator_serializes_goal_solver_payload_contract_fields_through
     assert result.resolved_result_category == "degraded_formal_result"
     assert result.disclosure_decision["disclosure_level"] == "range_only"
     assert result.goal_solver_output is not None
+    assert result.goal_solver_output.simulation_mode_used == "historical_block_bootstrap"
     assert result.goal_solver_output.recommended_result.success_event_spec is not None
     assert result.goal_solver_output.recommended_result.formal_estimated_result_spec is not None
     assert result.goal_solver_output.recommended_result.expected_return_decomposition is not None
     assert payload["goal_solver_output"]["recommended_result"]["success_event_spec"]["horizon_months"] == goal_solver_input_base["goal"]["horizon_months"]
     assert payload["goal_solver_output"]["recommended_result"]["formal_estimated_result_spec"]["estimation_basis"] == "proxy_path"
     assert payload["goal_solver_output"]["recommended_result"]["expected_return_decomposition"]["additivity_convention"] == "simple_sum"
+    assert payload["goal_solver_output"]["simulation_mode_used"] == "historical_block_bootstrap"
     assert payload["goal_solver_output"]["frontier_analysis"]["recommended"]["success_event_spec"]["horizon_months"] == goal_solver_input_base["goal"]["horizon_months"]
