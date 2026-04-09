@@ -5,49 +5,61 @@
     {
       "product_id": "cn_equity_balanced_fund",
       "product_name": "CN Equity Balanced Fund",
-      "cluster": "cn_equity",
+      "asset_class": "equity",
+      "region": "CN",
+      "style": "balanced",
+      "benchmark": "CSI300",
+      "wrapper_type": "fund",
+      "category": "cn_equity",
+      "cluster_id": "cn_equity_cluster",
       "history_days": 252,
       "holdings_coverage": 0.88,
-      "regression_stability": 0.92,
-      "prior_factor_betas": {
-        "CN_EQ_BROAD": 0.62,
-        "CN_EQ_GROWTH": 0.12,
-        "CN_EQ_VALUE": 0.10,
-        "US_EQ_BROAD": 0.03,
-        "US_EQ_GROWTH": 0.01,
-        "HK_EQ_BROAD": 0.01,
-        "CN_RATE_DURATION": 0.02,
-        "CN_CREDIT_SPREAD": 0.01,
-        "GOLD_GLOBAL": 0.04,
-        "USD_CNH": 0.02
-      },
-      "holdings_factor_betas": {
-        "CN_EQ_BROAD": 0.86,
-        "CN_EQ_GROWTH": 0.10,
-        "CN_EQ_VALUE": 0.07,
-        "US_EQ_BROAD": 0.00,
-        "US_EQ_GROWTH": 0.00,
-        "HK_EQ_BROAD": 0.00,
-        "CN_RATE_DURATION": 0.02,
-        "CN_CREDIT_SPREAD": 0.01,
-        "GOLD_GLOBAL": 0.03,
-        "USD_CNH": 0.01
-      },
-      "returns_factor_betas": {
-        "CN_EQ_BROAD": 0.91,
-        "CN_EQ_GROWTH": 0.08,
-        "CN_EQ_VALUE": 0.05,
-        "US_EQ_BROAD": 0.01,
-        "US_EQ_GROWTH": 0.00,
-        "HK_EQ_BROAD": 0.00,
-        "CN_RATE_DURATION": 0.01,
-        "CN_CREDIT_SPREAD": 0.00,
-        "GOLD_GLOBAL": 0.02,
-        "USD_CNH": 0.01
-      },
+      "holdings_freshness": 0.92,
+      "holdings": [
+        {
+          "security_id": "000001.SZ",
+          "security_name": "Ping An Bank",
+          "weight": 0.38,
+          "factor_exposures": {
+            "CN_EQ_BROAD": 0.92,
+            "CN_EQ_VALUE": 0.12
+          }
+        },
+        {
+          "security_id": "600519.SH",
+          "security_name": "Kweichow Moutai",
+          "weight": 0.30,
+          "factor_exposures": {
+            "CN_EQ_BROAD": 0.88,
+            "CN_EQ_GROWTH": 0.14
+          }
+        },
+        {
+          "security_id": "510300.SH",
+          "security_name": "CSI300 ETF",
+          "weight": 0.30,
+          "factor_exposures": {
+            "CN_EQ_BROAD": 0.97
+          }
+        }
+      ],
+      "return_series": [
+        {"date": "2026-03-20", "return": 0.0091},
+        {"date": "2026-03-23", "return": -0.0031},
+        {"date": "2026-03-24", "return": 0.0056},
+        {"date": "2026-03-25", "return": 0.0105},
+        {"date": "2026-03-26", "return": 0.0031},
+        {"date": "2026-03-27", "return": -0.0048},
+        {"date": "2026-03-30", "return": 0.0077},
+        {"date": "2026-03-31", "return": 0.0098},
+        {"date": "2026-04-01", "return": -0.0013},
+        {"date": "2026-04-02", "return": 0.0083},
+        {"date": "2026-04-07", "return": 0.0066},
+        {"date": "2026-04-08", "return": 0.0044}
+      ],
       "cluster_anchor_betas": {
-        "CN_EQ_BROAD": 0.71,
-        "CN_EQ_GROWTH": 0.10,
+        "CN_EQ_BROAD": 0.70,
+        "CN_EQ_GROWTH": 0.11,
         "CN_EQ_VALUE": 0.08,
         "US_EQ_BROAD": 0.02,
         "US_EQ_GROWTH": 0.01,
@@ -55,52 +67,37 @@
         "CN_RATE_DURATION": 0.02,
         "CN_CREDIT_SPREAD": 0.01,
         "GOLD_GLOBAL": 0.03,
-        "USD_CNH": 0.01
+        "USD_CNH": 0.02
       }
     },
     {
       "product_id": "cn_bond_short_history",
       "product_name": "CN Bond Short History",
-      "cluster": "cn_bond",
+      "asset_class": "bond",
+      "region": "CN",
+      "style": "core",
+      "benchmark": "CDBI",
+      "wrapper_type": "fund",
+      "category": "cn_bond",
+      "cluster_id": "cn_bond_cluster",
       "history_days": 42,
-      "holdings_coverage": 0.62,
-      "regression_stability": 0.40,
-      "prior_factor_betas": {
-        "CN_EQ_BROAD": 0.02,
-        "CN_EQ_GROWTH": 0.00,
-        "CN_EQ_VALUE": 0.00,
-        "US_EQ_BROAD": 0.00,
-        "US_EQ_GROWTH": 0.00,
-        "HK_EQ_BROAD": 0.00,
-        "CN_RATE_DURATION": 0.66,
-        "CN_CREDIT_SPREAD": 0.24,
-        "GOLD_GLOBAL": 0.04,
-        "USD_CNH": 0.04
-      },
-      "holdings_factor_betas": {
-        "CN_EQ_BROAD": 0.00,
-        "CN_EQ_GROWTH": 0.00,
-        "CN_EQ_VALUE": 0.00,
-        "US_EQ_BROAD": 0.00,
-        "US_EQ_GROWTH": 0.00,
-        "HK_EQ_BROAD": 0.00,
-        "CN_RATE_DURATION": 0.72,
-        "CN_CREDIT_SPREAD": 0.20,
-        "GOLD_GLOBAL": 0.05,
-        "USD_CNH": 0.03
-      },
-      "returns_factor_betas": {
-        "CN_EQ_BROAD": 0.00,
-        "CN_EQ_GROWTH": 0.00,
-        "CN_EQ_VALUE": 0.00,
-        "US_EQ_BROAD": 0.00,
-        "US_EQ_GROWTH": 0.00,
-        "HK_EQ_BROAD": 0.00,
-        "CN_RATE_DURATION": 0.80,
-        "CN_CREDIT_SPREAD": 0.12,
-        "GOLD_GLOBAL": 0.04,
-        "USD_CNH": 0.04
-      },
+      "holdings_coverage": 0.0,
+      "holdings_freshness": 0.0,
+      "holdings": [],
+      "return_series": [
+        {"date": "2026-03-20", "return": 0.0008},
+        {"date": "2026-03-23", "return": 0.0004},
+        {"date": "2026-03-24", "return": 0.0006},
+        {"date": "2026-03-25", "return": 0.0005},
+        {"date": "2026-03-26", "return": 0.0007},
+        {"date": "2026-03-27", "return": 0.0003},
+        {"date": "2026-03-30", "return": 0.0006},
+        {"date": "2026-03-31", "return": 0.0005},
+        {"date": "2026-04-01", "return": 0.0004},
+        {"date": "2026-04-02", "return": 0.0007},
+        {"date": "2026-04-07", "return": 0.0004},
+        {"date": "2026-04-08", "return": 0.0006}
+      ],
       "cluster_anchor_betas": {
         "CN_EQ_BROAD": 0.01,
         "CN_EQ_GROWTH": 0.00,

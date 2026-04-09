@@ -1,18 +1,6 @@
 {
   "snapshot_id": "v14_factor_library_snapshot_2026-04-09",
   "as_of": "2026-04-09",
-  "factor_ids": [
-    "CN_EQ_BROAD",
-    "CN_EQ_GROWTH",
-    "CN_EQ_VALUE",
-    "US_EQ_BROAD",
-    "US_EQ_GROWTH",
-    "HK_EQ_BROAD",
-    "CN_RATE_DURATION",
-    "CN_CREDIT_SPREAD",
-    "GOLD_GLOBAL",
-    "USD_CNH"
-  ],
   "factors": [
     {"factor_id": "CN_EQ_BROAD", "asset_class": "equity", "region": "CN", "style": "broad"},
     {"factor_id": "CN_EQ_GROWTH", "asset_class": "equity", "region": "CN", "style": "growth"},
@@ -24,5 +12,19 @@
     {"factor_id": "CN_CREDIT_SPREAD", "asset_class": "credit", "region": "CN", "style": "spread"},
     {"factor_id": "GOLD_GLOBAL", "asset_class": "commodity", "region": "GLOBAL", "style": "gold"},
     {"factor_id": "USD_CNH", "asset_class": "fx", "region": "GLOBAL", "style": "usd_cnh"}
+  ],
+  "factor_return_history": [
+    {"date": "2026-03-20", "CN_EQ_BROAD": 0.010, "CN_EQ_GROWTH": 0.008, "CN_EQ_VALUE": 0.006, "US_EQ_BROAD": 0.004, "US_EQ_GROWTH": 0.003, "HK_EQ_BROAD": 0.005, "CN_RATE_DURATION": -0.001, "CN_CREDIT_SPREAD": 0.000, "GOLD_GLOBAL": 0.002, "USD_CNH": -0.001},
+    {"date": "2026-03-23", "CN_EQ_BROAD": -0.004, "CN_EQ_GROWTH": -0.003, "CN_EQ_VALUE": -0.002, "US_EQ_BROAD": -0.001, "US_EQ_GROWTH": -0.001, "HK_EQ_BROAD": -0.002, "CN_RATE_DURATION": 0.001, "CN_CREDIT_SPREAD": 0.001, "GOLD_GLOBAL": 0.000, "USD_CNH": 0.001},
+    {"date": "2026-03-24", "CN_EQ_BROAD": 0.006, "CN_EQ_GROWTH": 0.005, "CN_EQ_VALUE": 0.004, "US_EQ_BROAD": 0.002, "US_EQ_GROWTH": 0.002, "HK_EQ_BROAD": 0.003, "CN_RATE_DURATION": -0.000, "CN_CREDIT_SPREAD": -0.001, "GOLD_GLOBAL": 0.001, "USD_CNH": 0.000},
+    {"date": "2026-03-25", "CN_EQ_BROAD": 0.012, "CN_EQ_GROWTH": 0.010, "CN_EQ_VALUE": 0.007, "US_EQ_BROAD": 0.004, "US_EQ_GROWTH": 0.003, "HK_EQ_BROAD": 0.005, "CN_RATE_DURATION": -0.002, "CN_CREDIT_SPREAD": 0.001, "GOLD_GLOBAL": 0.001, "USD_CNH": -0.001},
+    {"date": "2026-03-26", "CN_EQ_BROAD": 0.003, "CN_EQ_GROWTH": 0.002, "CN_EQ_VALUE": 0.001, "US_EQ_BROAD": 0.001, "US_EQ_GROWTH": 0.001, "HK_EQ_BROAD": 0.001, "CN_RATE_DURATION": 0.001, "CN_CREDIT_SPREAD": 0.000, "GOLD_GLOBAL": 0.000, "USD_CNH": 0.000},
+    {"date": "2026-03-27", "CN_EQ_BROAD": -0.006, "CN_EQ_GROWTH": -0.005, "CN_EQ_VALUE": -0.003, "US_EQ_BROAD": -0.002, "US_EQ_GROWTH": -0.002, "HK_EQ_BROAD": -0.003, "CN_RATE_DURATION": 0.002, "CN_CREDIT_SPREAD": 0.001, "GOLD_GLOBAL": 0.001, "USD_CNH": 0.001},
+    {"date": "2026-03-30", "CN_EQ_BROAD": 0.008, "CN_EQ_GROWTH": 0.007, "CN_EQ_VALUE": 0.004, "US_EQ_BROAD": 0.003, "US_EQ_GROWTH": 0.002, "HK_EQ_BROAD": 0.003, "CN_RATE_DURATION": -0.001, "CN_CREDIT_SPREAD": 0.000, "GOLD_GLOBAL": 0.002, "USD_CNH": -0.001},
+    {"date": "2026-03-31", "CN_EQ_BROAD": 0.011, "CN_EQ_GROWTH": 0.009, "CN_EQ_VALUE": 0.006, "US_EQ_BROAD": 0.004, "US_EQ_GROWTH": 0.003, "HK_EQ_BROAD": 0.004, "CN_RATE_DURATION": -0.001, "CN_CREDIT_SPREAD": -0.001, "GOLD_GLOBAL": 0.002, "USD_CNH": 0.000},
+    {"date": "2026-04-01", "CN_EQ_BROAD": -0.002, "CN_EQ_GROWTH": -0.001, "CN_EQ_VALUE": -0.001, "US_EQ_BROAD": -0.001, "US_EQ_GROWTH": -0.001, "HK_EQ_BROAD": -0.001, "CN_RATE_DURATION": 0.001, "CN_CREDIT_SPREAD": 0.000, "GOLD_GLOBAL": 0.000, "USD_CNH": 0.001},
+    {"date": "2026-04-02", "CN_EQ_BROAD": 0.009, "CN_EQ_GROWTH": 0.007, "CN_EQ_VALUE": 0.005, "US_EQ_BROAD": 0.003, "US_EQ_GROWTH": 0.002, "HK_EQ_BROAD": 0.004, "CN_RATE_DURATION": -0.001, "CN_CREDIT_SPREAD": 0.001, "GOLD_GLOBAL": 0.001, "USD_CNH": 0.000},
+    {"date": "2026-04-07", "CN_EQ_BROAD": 0.007, "CN_EQ_GROWTH": 0.006, "CN_EQ_VALUE": 0.004, "US_EQ_BROAD": 0.002, "US_EQ_GROWTH": 0.002, "HK_EQ_BROAD": 0.003, "CN_RATE_DURATION": 0.000, "CN_CREDIT_SPREAD": 0.001, "GOLD_GLOBAL": 0.001, "USD_CNH": -0.001},
+    {"date": "2026-04-08", "CN_EQ_BROAD": 0.005, "CN_EQ_GROWTH": 0.004, "CN_EQ_VALUE": 0.003, "US_EQ_BROAD": 0.002, "US_EQ_GROWTH": 0.001, "HK_EQ_BROAD": 0.002, "CN_RATE_DURATION": 0.000, "CN_CREDIT_SPREAD": 0.000, "GOLD_GLOBAL": 0.001, "USD_CNH": 0.000}
   ]
 }
