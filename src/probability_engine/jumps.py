@@ -36,6 +36,22 @@ def _select_fields(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key in allowed}
 
 
+def _regime_adjustment_value(
+    regime_state: RegimeStateSpec | dict[str, Any] | None,
+    regime_name: str | None,
+    key: str,
+    default: float,
+) -> float:
+    if regime_state is None:
+        return float(default)
+    regime = RegimeStateSpec.from_any(regime_state)
+    if regime is None:
+        raise ValueError("regime_state is required")
+    selected = str(regime_name or regime.current_regime).strip()
+    adjustments = regime_adjustments(regime, regime_name=selected)["jump"]
+    return float(adjustments.get(key, default))
+
+
 @dataclass
 class JumpStateSpec:
     systemic_jump_probability_1d: float
@@ -85,13 +101,27 @@ def systemic_jump_probability(
         raise ValueError("jump_state is required")
     probability = float(state.systemic_jump_probability_1d)
     if regime_state is not None:
-        regime = RegimeStateSpec.from_any(regime_state)
-        if regime is None:
-            raise ValueError("regime_state is required")
-        selected = str(regime_name or regime.current_regime).strip()
-        adjustments = regime_adjustments(regime, regime_name=selected)["jump"]
-        probability *= float(adjustments.get("systemic_jump_probability_multiplier", 1.0))
+        probability *= _regime_adjustment_value(regime_state, regime_name, "systemic_jump_probability_multiplier", 1.0)
     return max(0.0, min(1.0, probability))
+
+
+def regime_adjusted_systemic_jump_dispersion(
+    jump_state: JumpStateSpec | dict[str, Any],
+    regime_state: RegimeStateSpec | dict[str, Any] | None = None,
+    regime_name: str | None = None,
+) -> float:
+    state = JumpStateSpec.from_any(jump_state)
+    if state is None:
+        raise ValueError("jump_state is required")
+    dispersion = float(state.systemic_jump_dispersion)
+    if regime_state is not None:
+        dispersion *= _regime_adjustment_value(
+            regime_state,
+            regime_name,
+            "systemic_jump_dispersion_multiplier",
+            1.0,
+        )
+    return max(0.0, dispersion)
 
 
 def systemic_jump_impact_by_factor(

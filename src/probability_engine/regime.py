@@ -36,6 +36,8 @@ def _coerce_matrix(value: Any, *, context: str) -> list[list[float]]:
 
 
 def _normalize_row(row: list[float]) -> list[float]:
+    if any(float(value) < 0.0 for value in row):
+        raise ValueError("transition matrix rows must not contain negative probabilities")
     total = float(sum(row))
     if total <= 0.0:
         raise ValueError("transition matrix row must sum to a positive value")

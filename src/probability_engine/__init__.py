@@ -18,6 +18,7 @@ from probability_engine.dependence import FactorLevelDccProvider
 from probability_engine.jumps import (
     JumpStateSpec,
     idiosyncratic_jump_profile,
+    regime_adjusted_systemic_jump_dispersion,
     load_jump_state_snapshot,
     systemic_jump_probability,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "JumpStateSpec",
     "RegimeStateSpec",
     "idiosyncratic_jump_profile",
+    "regime_adjusted_systemic_jump_dispersion",
     "load_jump_state_snapshot",
     "load_regime_state_snapshot",
     "sample_next_regime",
