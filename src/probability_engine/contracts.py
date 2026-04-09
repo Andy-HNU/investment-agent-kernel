@@ -39,6 +39,15 @@ def _serialize(value: Any) -> Any:
     return value
 
 
+def _tuple_pair(value: Any) -> tuple[Any, Any] | None:
+    if value is None:
+        return None
+    pair = tuple(value)
+    if len(pair) != 2:
+        raise ValueError("expected a pair-like value")
+    return pair  # type: ignore[return-value]
+
+
 @dataclass(frozen=True)
 class SuccessEventSpec:
     horizon_days: int
@@ -95,7 +104,17 @@ class ProbabilityDisclosurePayload:
     ) -> "ProbabilityDisclosurePayload | None":
         if value is None or isinstance(value, cls):
             return value
-        return cls(**dict(value))
+        payload = dict(value)
+        return cls(
+            published_point=payload.get("published_point"),
+            published_range=_tuple_pair(payload.get("published_range")),
+            disclosure_level=str(payload.get("disclosure_level", "")),
+            confidence_level=str(payload.get("confidence_level", "")),
+            challenger_gap=payload.get("challenger_gap"),
+            stress_gap=payload.get("stress_gap"),
+            gap_total=payload.get("gap_total"),
+            widening_method=str(payload.get("widening_method", "")),
+        )
 
 
 @dataclass(frozen=True)
@@ -122,9 +141,9 @@ class RecipeSimulationResult:
             recipe_name=str(payload.get("recipe_name", "")),
             role=str(payload.get("role", "")),
             success_probability=float(payload.get("success_probability", 0.0)),
-            success_probability_range=tuple(payload.get("success_probability_range", (0.0, 0.0))),
-            cagr_range=tuple(payload.get("cagr_range", (0.0, 0.0))),
-            drawdown_range=tuple(payload.get("drawdown_range", (0.0, 0.0))),
+            success_probability_range=_tuple_pair(payload.get("success_probability_range")) or (0.0, 0.0),
+            cagr_range=_tuple_pair(payload.get("cagr_range")) or (0.0, 0.0),
+            drawdown_range=_tuple_pair(payload.get("drawdown_range")) or (0.0, 0.0),
             sample_count=int(payload.get("sample_count", 0)),
             path_stats=PathStatsSummary.from_any(payload.get("path_stats")),
             calibration_link_ref=payload.get("calibration_link_ref"),

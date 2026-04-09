@@ -86,9 +86,9 @@ def test_decision_card_build_input_from_any_rehydrates_success_probability_engin
                         "recipe_name": "scheme_b_primary",
                         "role": "primary",
                         "success_probability": 0.71,
-                        "success_probability_range": (0.68, 0.74),
-                        "cagr_range": (0.05, 0.11),
-                        "drawdown_range": (0.08, 0.16),
+                        "success_probability_range": [0.68, 0.74],
+                        "cagr_range": [0.05, 0.11],
+                        "drawdown_range": [0.08, 0.16],
                         "sample_count": 2000,
                         "path_stats": {
                             "terminal_value_mean": 125000.0,
@@ -111,7 +111,7 @@ def test_decision_card_build_input_from_any_rehydrates_success_probability_engin
                     "model_disagreement": {"gap": 0.03},
                     "probability_disclosure_payload": {
                         "published_point": 0.71,
-                        "published_range": (0.68, 0.74),
+                        "published_range": [0.68, 0.74],
                         "disclosure_level": "point_and_range",
                         "confidence_level": "medium",
                         "challenger_gap": 0.02,
@@ -131,6 +131,13 @@ def test_decision_card_build_input_from_any_rehydrates_success_probability_engin
     assert build_input.probability_engine_result.output is not None
     assert build_input.probability_engine_result.output.primary_result.recipe_name == "scheme_b_primary"
     assert build_input.probability_engine_result.output.primary_result.path_stats.path_count == 2000
+    assert isinstance(build_input.probability_engine_result.output.primary_result.success_probability_range, tuple)
+    assert isinstance(build_input.probability_engine_result.output.primary_result.cagr_range, tuple)
+    assert isinstance(build_input.probability_engine_result.output.primary_result.drawdown_range, tuple)
+    assert isinstance(
+        build_input.probability_engine_result.output.probability_disclosure_payload.published_range,
+        tuple,
+    )
 
 
 def test_enum_order_helpers_are_ordinal_not_string_based() -> None:
