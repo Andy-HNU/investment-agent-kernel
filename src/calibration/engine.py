@@ -305,6 +305,40 @@ def _factor_correlation(factor_a: str, factor_b: str) -> float:
     return 0.10
 
 
+def _calibration_window_days_from_frequency(
+    *,
+    historical_dataset: Any | None,
+    distribution_input: DistributionInput | None,
+) -> int:
+    audit_window = None
+    if historical_dataset is not None:
+        audit_window = getattr(historical_dataset, "audit_window", None)
+    if audit_window is None and distribution_input is not None:
+        audit_window = distribution_input.audit_window
+    if audit_window is not None:
+        payload = _obj(audit_window)
+        for key in ("observed_days", "trading_days"):
+            value = payload.get(key)
+            if value is not None:
+                days = int(value)
+                if days > 0:
+                    return days
+    if distribution_input is not None:
+        frequency = str(distribution_input.frequency or "monthly").strip().lower()
+    elif historical_dataset is not None:
+        frequency = str(getattr(historical_dataset, "frequency", "monthly") or "monthly").strip().lower()
+    else:
+        frequency = "monthly"
+    step_days = {"daily": 1, "weekly": 5, "monthly": 21, "quarterly": 63}.get(frequency, 21)
+    if distribution_input is not None and distribution_input.historical_return_series:
+        sample_count = len(next(iter(distribution_input.historical_return_series.values())))
+    elif historical_dataset is not None:
+        sample_count = len(_portfolio_return_series_from_dataset(historical_dataset))
+    else:
+        sample_count = 0
+    return max(sample_count * step_days, step_days if sample_count <= 0 else sample_count * step_days)
+
+
 def _build_factor_dynamics_spec(
     *,
     bundle_id: str,
@@ -316,13 +350,10 @@ def _build_factor_dynamics_spec(
 ) -> FactorDynamicsSpec:
     factor_names = _fixed_factor_names()
     factor_series_ref = f"{bundle_id or 'unknown'}::{_stamp(created_at)}::factor_series"
-    calibration_window_days = 0
-    if distribution_input is not None and distribution_input.historical_return_series:
-        calibration_window_days = len(next(iter(distribution_input.historical_return_series.values())))
-    elif historical_dataset is not None:
-        calibration_window_days = len(_portfolio_return_series_from_dataset(historical_dataset))
-    if calibration_window_days <= 0 and historical_dataset is not None:
-        calibration_window_days = len(_portfolio_return_series_from_dataset(historical_dataset))
+    calibration_window_days = _calibration_window_days_from_frequency(
+        historical_dataset=historical_dataset,
+        distribution_input=distribution_input,
+    )
 
     garch_params_by_factor: dict[str, dict[str, float]] = {}
     long_run_covariance: dict[str, dict[str, float]] = {}
@@ -452,6 +483,14 @@ def _build_jump_state_spec(
     )
 
 
+def _bundle_v14_state_artifacts(bundle_data: dict[str, Any]) -> tuple[FactorDynamicsSpec | None, RegimeStateSpec | None, JumpStateSpec | None]:
+    v14_artifacts = _obj(bundle_data.get("probability_engine_v14") or bundle_data.get("v14_probability_engine") or {})
+    factor_dynamics = FactorDynamicsSpec.from_any(v14_artifacts.get("factor_dynamics"))
+    regime_state = RegimeStateSpec.from_any(v14_artifacts.get("regime_state"))
+    jump_state = JumpStateSpec.from_any(v14_artifacts.get("jump_state"))
+    return factor_dynamics, regime_state, jump_state
+
+
 def _build_probability_engine_state_artifacts(
     *,
     bundle_data: dict[str, Any],
@@ -464,7 +503,8 @@ def _build_probability_engine_state_artifacts(
     prior_calibration: CalibrationResult | dict[str, Any] | None,
 ) -> tuple[FactorDynamicsSpec, RegimeStateSpec, JumpStateSpec]:
     _ = prior_calibration
-    factor_dynamics = _build_factor_dynamics_spec(
+    bundle_factor_dynamics, bundle_regime_state, bundle_jump_state = _bundle_v14_state_artifacts(bundle_data)
+    factor_dynamics = bundle_factor_dynamics or _build_factor_dynamics_spec(
         bundle_id=str(bundle_data.get("bundle_id", "")),
         distribution_input=distribution_input,
         market_assumptions=market_assumptions,
@@ -472,12 +512,12 @@ def _build_probability_engine_state_artifacts(
         created_at=created_at,
         calibration_quality=calibration_quality,
     )
-    regime_state = _build_regime_state_spec(
+    regime_state = bundle_regime_state or _build_regime_state_spec(
         market_state=market_state,
         calibration_quality=calibration_quality,
         historical_dataset=historical_dataset,
     )
-    jump_state = _build_jump_state_spec(
+    jump_state = bundle_jump_state or _build_jump_state_spec(
         market_state=market_state,
         factor_dynamics=factor_dynamics,
         regime_state=regime_state,

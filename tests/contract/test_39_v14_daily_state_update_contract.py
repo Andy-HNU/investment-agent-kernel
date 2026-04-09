@@ -146,4 +146,120 @@ def test_run_calibration_exposes_typed_v14_state_artifacts() -> None:
     assert tuple(result.factor_dynamics.factor_names) == tuple(FIXED_FACTOR_DICTIONARY.keys())
     assert result.regime_state.current_regime in {"normal", "risk_off", "stress"}
     assert result.jump_state.systemic_jump_probability_1d > 0.0
-    assert result.jump_state.idio_jump_profile_by_product == {}
+    assert isinstance(result.jump_state.idio_jump_profile_by_product, dict)
+    assert all(str(key).strip() for key in result.jump_state.idio_jump_profile_by_product)
+    assert set(result.jump_state.idio_jump_profile_by_product).isdisjoint(FIXED_FACTOR_DICTIONARY)
+
+
+@pytest.mark.contract
+def test_run_calibration_prefers_explicit_bundle_v14_artifacts_over_prior_calibration() -> None:
+    result = run_calibration(
+        {
+            "bundle_id": "bundle_v14_explicit_state",
+            "created_at": datetime(2026, 4, 10, tzinfo=timezone.utc),
+            "account_profile_id": "acct_v14",
+            "bundle_quality": "full",
+            "market": {
+                "raw_volatility": {"equity_cn": 0.18},
+                "liquidity_scores": {"equity_cn": 0.9},
+                "valuation_z_scores": {"equity_cn": 0.2},
+                "historical_dataset": {
+                    "dataset_id": "explicit_state_history",
+                    "version_id": "explicit_state_history_v1",
+                    "as_of": "2026-04-10T00:00:00Z",
+                    "source_name": "explicit_state_history",
+                    "source_ref": "historical://explicit_state",
+                    "lookback_months": 12,
+                    "frequency": "monthly",
+                    "coverage_status": "verified",
+                    "return_series": {
+                        "equity_cn": [0.01, -0.02, 0.015, 0.01],
+                        "bond_cn": [0.002, 0.001, 0.0025, 0.0015],
+                    },
+                    "audit_window": {
+                        "start_date": "2025-01-01",
+                        "end_date": "2026-04-10",
+                        "trading_days": 252,
+                        "observed_days": 252,
+                        "inferred_days": 0,
+                    },
+                },
+            },
+            "account": {
+                "weights": {"equity_cn": 1.0},
+                "total_value": 100000.0,
+                "available_cash": 5000.0,
+                "remaining_horizon_months": 12,
+            },
+            "goal": {
+                "goal_amount": 120000.0,
+                "horizon_months": 12,
+                "goal_description": "v14 explicit state artifact contract",
+                "success_prob_threshold": 0.6,
+            },
+            "constraint": {
+                "ips_bucket_boundaries": {"equity_cn": (0.0, 1.0)},
+                "satellite_cap": 0.15,
+                "theme_caps": {},
+                "qdii_cap": 0.2,
+                "liquidity_reserve_min": 0.05,
+                "max_drawdown_tolerance": 0.2,
+                "bucket_category": {"equity_cn": "core"},
+                "bucket_to_theme": {"equity_cn": None},
+            },
+            "behavior": None,
+            "remaining_horizon_months": 12,
+            "probability_engine_v14": {
+                "factor_dynamics": {
+                    "factor_names": list(FIXED_FACTOR_DICTIONARY.keys()),
+                    "factor_series_ref": "bundle://explicit_factor_series",
+                    "innovation_family": "student_t",
+                    "tail_df": 9.0,
+                    "garch_params_by_factor": {
+                        factor_id: {
+                            "omega": 0.00001,
+                            "alpha": 0.05,
+                            "beta": 0.91,
+                            "nu": 9.0,
+                            "long_run_variance": 0.0004,
+                        }
+                        for factor_id in FIXED_FACTOR_DICTIONARY
+                    },
+                    "dcc_params": {"alpha": 0.05, "beta": 0.9},
+                    "long_run_covariance": {
+                        factor_id: {
+                            peer_id: (0.0004 if factor_id == peer_id else 0.0001)
+                            for peer_id in FIXED_FACTOR_DICTIONARY
+                        }
+                        for factor_id in FIXED_FACTOR_DICTIONARY
+                    },
+                    "covariance_shrinkage": 0.2,
+                    "calibration_window_days": 252,
+                },
+                "regime_state": {
+                    "regime_names": ["normal", "risk_off", "stress"],
+                    "current_regime": "risk_off",
+                    "transition_matrix": [[0.8, 0.15, 0.05], [0.2, 0.6, 0.2], [0.1, 0.2, 0.7]],
+                    "regime_mean_adjustments": {"normal": {}, "risk_off": {}, "stress": {}},
+                    "regime_vol_adjustments": {"normal": {}, "risk_off": {}, "stress": {}},
+                    "regime_jump_adjustments": {"normal": {}, "risk_off": {}, "stress": {}},
+                },
+                "jump_state": {
+                    "systemic_jump_probability_1d": 0.02,
+                    "systemic_jump_impact_by_factor": {factor_id: -0.01 for factor_id in FIXED_FACTOR_DICTIONARY},
+                    "systemic_jump_dispersion": 0.03,
+                    "idio_jump_profile_by_product": {"explicit_product": {"probability_1d": 0.05, "loss_mean": -0.02, "loss_std": 0.01}},
+                },
+            },
+        },
+        prior_calibration={
+            "factor_dynamics": {"factor_names": ["stale_factor"], "factor_series_ref": "stale", "innovation_family": "student_t", "tail_df": 5.0, "garch_params_by_factor": {"stale_factor": {"omega": 0.1, "alpha": 0.1, "beta": 0.8, "nu": 5.0, "long_run_variance": 0.1}}, "dcc_params": {"alpha": 0.1, "beta": 0.8}, "long_run_covariance": {"stale_factor": {"stale_factor": 0.1}}, "covariance_shrinkage": 0.5, "calibration_window_days": 999},
+            "regime_state": {"regime_names": ["stale"], "current_regime": "stale", "transition_matrix": [[1.0]], "regime_mean_adjustments": {"stale": {}}, "regime_vol_adjustments": {"stale": {}}, "regime_jump_adjustments": {"stale": {}}},
+            "jump_state": {"systemic_jump_probability_1d": 0.9, "systemic_jump_impact_by_factor": {"stale_factor": -0.9}, "systemic_jump_dispersion": 0.9, "idio_jump_profile_by_product": {"stale_product": {"probability_1d": 0.9, "loss_mean": -0.9, "loss_std": 0.9}}},
+        },
+    )
+
+    assert result.factor_dynamics.factor_series_ref == "bundle://explicit_factor_series"
+    assert result.regime_state.current_regime == "risk_off"
+    assert result.jump_state.systemic_jump_probability_1d == pytest.approx(0.02)
+    assert "explicit_product" in result.jump_state.idio_jump_profile_by_product
