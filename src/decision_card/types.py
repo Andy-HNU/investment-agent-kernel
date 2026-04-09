@@ -83,6 +83,7 @@ class DecisionCardBuildInput:
         card_type = data.get("card_type", DecisionCardType.GOAL_BASELINE)
         if not isinstance(card_type, DecisionCardType):
             card_type = DecisionCardType(str(getattr(card_type, "value", card_type)))
+        probability_engine_result = ProbabilityEngineRunResult.from_any(data.get("probability_engine_result"))
         return cls(
             card_type=card_type,
             workflow_type=str(data.get("workflow_type", "")),
@@ -93,7 +94,7 @@ class DecisionCardBuildInput:
             goal_solver_output=data.get("goal_solver_output"),
             goal_solver_input=data.get("goal_solver_input"),
             runtime_result=data.get("runtime_result"),
-            probability_engine_result=data.get("probability_engine_result"),
+            probability_engine_result=probability_engine_result,
             workflow_decision=data.get("workflow_decision"),
             runtime_restriction=data.get("runtime_restriction"),
             audit_record=data.get("audit_record"),

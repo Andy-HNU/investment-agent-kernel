@@ -145,6 +145,12 @@ class FailureArtifact:
         )
         object.__setattr__(self, "trustworthy_partial_diagnostics", bool(self.trustworthy_partial_diagnostics))
 
+    @classmethod
+    def from_any(cls, value: "FailureArtifact | dict[str, Any] | None") -> "FailureArtifact | None":
+        if value is None or isinstance(value, cls):
+            return value
+        return cls(**dict(value))
+
 
 @dataclass(frozen=True)
 class ProbabilityEngineRunResult:
@@ -160,10 +166,29 @@ class ProbabilityEngineRunResult:
             raise ValueError("either output or failure_artifact is required")
         if self.output is not None and self.failure_artifact is not None:
             raise ValueError("output and failure_artifact are mutually exclusive")
+        if self.output is None and self.run_outcome_status != "failure":
+            raise ValueError("failure branch requires run_outcome_status='failure'")
+        if self.output is not None and self.run_outcome_status == "failure":
+            raise ValueError("success/degraded branch requires non-failure run_outcome_status")
         if self.output is None and self.resolved_result_category != "null":
             raise ValueError("failure path requires resolved_result_category='null'")
         if self.output is not None and self.resolved_result_category == "null":
             raise ValueError("null category requires failure_artifact")
+
+    @classmethod
+    def from_any(
+        cls,
+        value: "ProbabilityEngineRunResult | dict[str, Any] | None",
+    ) -> "ProbabilityEngineRunResult | None":
+        if value is None or isinstance(value, cls):
+            return value
+        payload = dict(value)
+        return cls(
+            run_outcome_status=payload.get("run_outcome_status", ""),
+            resolved_result_category=payload.get("resolved_result_category", ""),
+            output=payload.get("output"),
+            failure_artifact=FailureArtifact.from_any(payload.get("failure_artifact")),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
