@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Any
 
 from decision_card.types import DecisionCard, DecisionCardBuildInput
+from probability_engine.contracts import ProbabilityEngineRunResult
 
 
 class WorkflowType(str, Enum):
@@ -116,6 +117,7 @@ class OrchestratorResult:
     calibration_result: Any | None = None
     goal_solver_output: Any | None = None
     runtime_result: Any | None = None
+    probability_engine_result: ProbabilityEngineRunResult | None = None
     execution_plan: Any | None = None
     card_build_input: DecisionCardBuildInput | None = None
     decision_card: DecisionCard | dict[str, Any] | None = None
@@ -148,6 +150,7 @@ class OrchestratorResult:
             "calibration_result": _serialize(self.calibration_result),
             "goal_solver_output": _serialize(self.goal_solver_output),
             "runtime_result": _serialize(self.runtime_result),
+            "probability_engine_result": _serialize(self.probability_engine_result),
             "execution_plan": _serialize(self.execution_plan),
             "card_build_input": _serialize(self.card_build_input),
             "decision_card": _serialize(self.decision_card),

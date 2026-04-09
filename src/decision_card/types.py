@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
 from typing import Any
 
+from probability_engine.contracts import ProbabilityEngineRunResult
+
 
 class DecisionCardType(str, Enum):
     GOAL_BASELINE = "goal_baseline"
@@ -58,6 +60,7 @@ class DecisionCardBuildInput:
     goal_solver_output: Any | None = None
     goal_solver_input: Any | None = None
     runtime_result: Any | None = None
+    probability_engine_result: ProbabilityEngineRunResult | None = None
     workflow_decision: Any | None = None
     runtime_restriction: Any | None = None
     audit_record: Any | None = None
@@ -90,6 +93,7 @@ class DecisionCardBuildInput:
             goal_solver_output=data.get("goal_solver_output"),
             goal_solver_input=data.get("goal_solver_input"),
             runtime_result=data.get("runtime_result"),
+            probability_engine_result=data.get("probability_engine_result"),
             workflow_decision=data.get("workflow_decision"),
             runtime_restriction=data.get("runtime_restriction"),
             audit_record=data.get("audit_record"),
