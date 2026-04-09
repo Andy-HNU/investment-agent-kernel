@@ -1,0 +1,28 @@
+{
+  "snapshot_id": "v14_factor_library_snapshot_2026-04-09",
+  "as_of": "2026-04-09",
+  "factor_ids": [
+    "CN_EQ_BROAD",
+    "CN_EQ_GROWTH",
+    "CN_EQ_VALUE",
+    "US_EQ_BROAD",
+    "US_EQ_GROWTH",
+    "HK_EQ_BROAD",
+    "CN_RATE_DURATION",
+    "CN_CREDIT_SPREAD",
+    "GOLD_GLOBAL",
+    "USD_CNH"
+  ],
+  "factors": [
+    {"factor_id": "CN_EQ_BROAD", "asset_class": "equity", "region": "CN", "style": "broad"},
+    {"factor_id": "CN_EQ_GROWTH", "asset_class": "equity", "region": "CN", "style": "growth"},
+    {"factor_id": "CN_EQ_VALUE", "asset_class": "equity", "region": "CN", "style": "value"},
+    {"factor_id": "US_EQ_BROAD", "asset_class": "equity", "region": "US", "style": "broad"},
+    {"factor_id": "US_EQ_GROWTH", "asset_class": "equity", "region": "US", "style": "growth"},
+    {"factor_id": "HK_EQ_BROAD", "asset_class": "equity", "region": "HK", "style": "broad"},
+    {"factor_id": "CN_RATE_DURATION", "asset_class": "rates", "region": "CN", "style": "duration"},
+    {"factor_id": "CN_CREDIT_SPREAD", "asset_class": "credit", "region": "CN", "style": "spread"},
+    {"factor_id": "GOLD_GLOBAL", "asset_class": "commodity", "region": "GLOBAL", "style": "gold"},
+    {"factor_id": "USD_CNH", "asset_class": "fx", "region": "GLOBAL", "style": "usd_cnh"}
+  ]
+}

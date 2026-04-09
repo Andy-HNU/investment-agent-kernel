@@ -1,0 +1,118 @@
+{
+  "bundle_id": "v14_product_mapping_bundle_2026-04-09",
+  "as_of": "2026-04-09",
+  "products": [
+    {
+      "product_id": "cn_equity_balanced_fund",
+      "product_name": "CN Equity Balanced Fund",
+      "cluster": "cn_equity",
+      "history_days": 252,
+      "holdings_coverage": 0.88,
+      "regression_stability": 0.92,
+      "prior_factor_betas": {
+        "CN_EQ_BROAD": 0.62,
+        "CN_EQ_GROWTH": 0.12,
+        "CN_EQ_VALUE": 0.10,
+        "US_EQ_BROAD": 0.03,
+        "US_EQ_GROWTH": 0.01,
+        "HK_EQ_BROAD": 0.01,
+        "CN_RATE_DURATION": 0.02,
+        "CN_CREDIT_SPREAD": 0.01,
+        "GOLD_GLOBAL": 0.04,
+        "USD_CNH": 0.02
+      },
+      "holdings_factor_betas": {
+        "CN_EQ_BROAD": 0.86,
+        "CN_EQ_GROWTH": 0.10,
+        "CN_EQ_VALUE": 0.07,
+        "US_EQ_BROAD": 0.00,
+        "US_EQ_GROWTH": 0.00,
+        "HK_EQ_BROAD": 0.00,
+        "CN_RATE_DURATION": 0.02,
+        "CN_CREDIT_SPREAD": 0.01,
+        "GOLD_GLOBAL": 0.03,
+        "USD_CNH": 0.01
+      },
+      "returns_factor_betas": {
+        "CN_EQ_BROAD": 0.91,
+        "CN_EQ_GROWTH": 0.08,
+        "CN_EQ_VALUE": 0.05,
+        "US_EQ_BROAD": 0.01,
+        "US_EQ_GROWTH": 0.00,
+        "HK_EQ_BROAD": 0.00,
+        "CN_RATE_DURATION": 0.01,
+        "CN_CREDIT_SPREAD": 0.00,
+        "GOLD_GLOBAL": 0.02,
+        "USD_CNH": 0.01
+      },
+      "cluster_anchor_betas": {
+        "CN_EQ_BROAD": 0.71,
+        "CN_EQ_GROWTH": 0.10,
+        "CN_EQ_VALUE": 0.08,
+        "US_EQ_BROAD": 0.02,
+        "US_EQ_GROWTH": 0.01,
+        "HK_EQ_BROAD": 0.01,
+        "CN_RATE_DURATION": 0.02,
+        "CN_CREDIT_SPREAD": 0.01,
+        "GOLD_GLOBAL": 0.03,
+        "USD_CNH": 0.01
+      }
+    },
+    {
+      "product_id": "cn_bond_short_history",
+      "product_name": "CN Bond Short History",
+      "cluster": "cn_bond",
+      "history_days": 42,
+      "holdings_coverage": 0.62,
+      "regression_stability": 0.40,
+      "prior_factor_betas": {
+        "CN_EQ_BROAD": 0.02,
+        "CN_EQ_GROWTH": 0.00,
+        "CN_EQ_VALUE": 0.00,
+        "US_EQ_BROAD": 0.00,
+        "US_EQ_GROWTH": 0.00,
+        "HK_EQ_BROAD": 0.00,
+        "CN_RATE_DURATION": 0.66,
+        "CN_CREDIT_SPREAD": 0.24,
+        "GOLD_GLOBAL": 0.04,
+        "USD_CNH": 0.04
+      },
+      "holdings_factor_betas": {
+        "CN_EQ_BROAD": 0.00,
+        "CN_EQ_GROWTH": 0.00,
+        "CN_EQ_VALUE": 0.00,
+        "US_EQ_BROAD": 0.00,
+        "US_EQ_GROWTH": 0.00,
+        "HK_EQ_BROAD": 0.00,
+        "CN_RATE_DURATION": 0.72,
+        "CN_CREDIT_SPREAD": 0.20,
+        "GOLD_GLOBAL": 0.05,
+        "USD_CNH": 0.03
+      },
+      "returns_factor_betas": {
+        "CN_EQ_BROAD": 0.00,
+        "CN_EQ_GROWTH": 0.00,
+        "CN_EQ_VALUE": 0.00,
+        "US_EQ_BROAD": 0.00,
+        "US_EQ_GROWTH": 0.00,
+        "HK_EQ_BROAD": 0.00,
+        "CN_RATE_DURATION": 0.80,
+        "CN_CREDIT_SPREAD": 0.12,
+        "GOLD_GLOBAL": 0.04,
+        "USD_CNH": 0.04
+      },
+      "cluster_anchor_betas": {
+        "CN_EQ_BROAD": 0.01,
+        "CN_EQ_GROWTH": 0.00,
+        "CN_EQ_VALUE": 0.00,
+        "US_EQ_BROAD": 0.00,
+        "US_EQ_GROWTH": 0.00,
+        "HK_EQ_BROAD": 0.00,
+        "CN_RATE_DURATION": 0.74,
+        "CN_CREDIT_SPREAD": 0.17,
+        "GOLD_GLOBAL": 0.05,
+        "USD_CNH": 0.04
+      }
+    }
+  ]
+}
