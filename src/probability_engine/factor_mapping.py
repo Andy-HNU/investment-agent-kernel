@@ -190,7 +190,7 @@ def _coerce_product(value: Any) -> ProductMappingProduct:
         category=str(payload["category"]),
         cluster_id=str(payload["cluster_id"]),
         history_days=int(payload["history_days"]),
-        holdings_coverage=_clamp(float(payload["holdings_coverage"])),
+        holdings_coverage=max(0.0, float(payload["holdings_coverage"])),
         holdings_freshness=_clamp(float(payload["holdings_freshness"])),
         holdings=_coerce_holdings(payload["holdings"]),
         return_series=_coerce_return_series(payload["return_series"]),
@@ -223,6 +223,10 @@ def _coerce_factor_library(factor_library: FactorLibrarySnapshot | Mapping[str, 
         raise ValueError("factor library must include factors list")
     if not isinstance(history_payload, list):
         raise ValueError("factor library must include factor_return_history list")
+    if not factors_payload:
+        raise ValueError("factor library must include at least one factor")
+    if not history_payload:
+        raise ValueError("factor library must include non-empty factor_return_history")
     factors = tuple(
         FactorDefinition(
             factor_id=str(item["factor_id"]),
@@ -233,18 +237,29 @@ def _coerce_factor_library(factor_library: FactorLibrarySnapshot | Mapping[str, 
         for item in factors_payload
     )
     factor_ids = tuple(factor.factor_id for factor in factors)
-    factor_return_history = tuple(
-        FactorReturnObservation(
-            date=str(item["date"]),
-            factor_returns={factor_id: float(item[factor_id]) for factor_id in factor_ids},
+    factor_return_history: list[FactorReturnObservation] = []
+    for item in history_payload:
+        if not isinstance(item, dict):
+            raise ValueError("factor return observation must be an object")
+        if "date" not in item:
+            raise ValueError("factor return observation missing date")
+        missing = [factor_id for factor_id in factor_ids if factor_id not in item]
+        extra = [key for key in item if key not in {"date", *factor_ids}]
+        if missing:
+            raise ValueError(f"factor return observation missing factors: {missing}")
+        if extra:
+            raise ValueError(f"factor return observation has unexpected fields: {extra}")
+        factor_return_history.append(
+            FactorReturnObservation(
+                date=str(item["date"]),
+                factor_returns={factor_id: float(item[factor_id]) for factor_id in factor_ids},
+            )
         )
-        for item in history_payload
-    )
     return FactorLibrarySnapshot(
         snapshot_id=str(payload.get("snapshot_id", "")),
         as_of=str(payload.get("as_of", "")),
         factors=factors,
-        factor_return_history=factor_return_history,
+        factor_return_history=tuple(factor_return_history),
     )
 
 
@@ -387,10 +402,7 @@ def build_holdings_beta(product: ProductMappingProduct, factor_library: FactorLi
             exposure = _clamp(holding.factor_exposures.get(factor_id, 0.0), 0.0, 10.0)
             beta[factor_id] += holding_weight * exposure
 
-    coverage = _clamp(product.holdings_coverage)
-    if total_weight > 0.0 and coverage <= 0.0:
-        coverage = _clamp(total_weight)
-    return beta, coverage
+    return beta, _clamp(total_weight)
 
 
 def build_returns_beta(product: ProductMappingProduct, factor_library: FactorLibrarySnapshot) -> ReturnsRegressionResult:
@@ -423,12 +435,12 @@ def build_returns_beta(product: ProductMappingProduct, factor_library: FactorLib
     )
 
 
-def _history_band_max(history_days: int) -> float:
-    if history_days < 63:
+def _history_band_max(sample_count: int) -> float:
+    if sample_count < 63:
         return 0.0
-    if history_days < 126:
+    if sample_count < 126:
         return 0.20
-    if history_days < 252:
+    if sample_count < 252:
         return 0.40
     return 1.0
 
@@ -443,15 +455,20 @@ def _holdings_band_max(coverage: float) -> float:
     return 0.60
 
 
-def _stage_weights(product: ProductMappingProduct, returns_r_squared: float) -> dict[str, float]:
-    holdings_quality = _clamp(product.holdings_coverage * product.holdings_freshness)
-    holdings_weight = min(_holdings_band_max(product.holdings_coverage), 0.5 * holdings_quality)
-    returns_weight = min(_history_band_max(product.history_days), 0.5 * _clamp(returns_r_squared))
-    if product.history_days < 63:
+def _stage_weights(
+    product: ProductMappingProduct,
+    actual_holdings_coverage: float,
+    returns_sample_count: int,
+    returns_r_squared: float,
+) -> dict[str, float]:
+    holdings_quality = _clamp(actual_holdings_coverage * product.holdings_freshness)
+    holdings_weight = min(_holdings_band_max(actual_holdings_coverage), 0.6 * holdings_quality)
+    returns_weight = min(_history_band_max(returns_sample_count), 0.6 * _clamp(returns_r_squared))
+    if returns_sample_count < 63:
         returns_weight = 0.0
-    if product.holdings_coverage <= 0.0:
+    if actual_holdings_coverage <= 0.0:
         holdings_weight = 0.0
-    if product.history_days < 63 and product.holdings_coverage <= 0.0:
+    if returns_sample_count < 63 and actual_holdings_coverage <= 0.0:
         holdings_weight = 0.0
     prior_weight = max(0.0, 1.0 - holdings_weight - returns_weight)
     total = prior_weight + holdings_weight + returns_weight
@@ -464,9 +481,9 @@ def _stage_weights(product: ProductMappingProduct, returns_r_squared: float) -> 
     }
 
 
-def _shrinkage_lambda(product: ProductMappingProduct, stage_weights: dict[str, float]) -> float:
+def _shrinkage_lambda(product: ProductMappingProduct, stage_weights: dict[str, float], returns_sample_count: int) -> float:
     stage_strength = stage_weights["holdings"] + stage_weights["returns"]
-    if product.history_days < 63 and product.holdings_coverage <= 0.0:
+    if returns_sample_count < 63 and stage_weights["holdings"] <= 0.0:
         return 0.25
     return min(0.95, 0.55 + 0.35 * stage_strength)
 
@@ -474,10 +491,11 @@ def _shrinkage_lambda(product: ProductMappingProduct, stage_weights: dict[str, f
 def _resolve_anchor_beta(
     product: ProductMappingProduct,
     prior_beta: dict[str, float],
+    actual_holdings_coverage: float,
     factor_library: FactorLibrarySnapshot,
 ) -> tuple[dict[str, float], str]:
     factor_ids = factor_library.factor_ids
-    if product.history_days < 63 and product.holdings_coverage <= 0.0 and product.cluster_anchor_betas:
+    if product.history_days < 63 and actual_holdings_coverage <= 0.0 and product.cluster_anchor_betas:
         return _vector_for_factor_ids(product.cluster_anchor_betas, factor_ids), "cluster_mean"
     return prior_beta, "prior"
 
@@ -511,11 +529,11 @@ def _mapping_confidence(product: ProductMappingProduct, stage_weights: dict[str,
         score += 1
     if stage_weights["returns"] > 0.0:
         score += 1
-    if product.holdings_coverage >= 0.70:
+    if stage_weights["holdings"] >= 0.40:
         score += 1
-    if product.history_days >= 252 and returns_r_squared >= 0.60:
+    if returns_r_squared >= 0.60 and stage_weights["returns"] >= 0.20:
         score += 1
-    if product.history_days < 63 and product.holdings_coverage <= 0.0:
+    if product.history_days < 63 and stage_weights["holdings"] <= 0.0:
         score = 0
     if score >= 3:
         return "high"
@@ -544,9 +562,9 @@ def build_factor_mapping(
         holdings_beta, holdings_coverage = build_holdings_beta(product, library)
         returns_result = build_returns_beta(product, library)
         returns_beta = returns_result.factor_betas
-        stage_weights = _stage_weights(product, returns_result.r_squared)
-        anchor_beta, anchor_source = _resolve_anchor_beta(product, prior_beta, library)
-        shrinkage_lambda = _shrinkage_lambda(product, stage_weights)
+        stage_weights = _stage_weights(product, holdings_coverage, returns_result.sample_count, returns_result.r_squared)
+        anchor_beta, anchor_source = _resolve_anchor_beta(product, prior_beta, holdings_coverage, library)
+        shrinkage_lambda = _shrinkage_lambda(product, stage_weights, returns_result.sample_count)
         raw_beta = {}
         for factor_id in factor_ids:
             raw_beta[factor_id] = (
