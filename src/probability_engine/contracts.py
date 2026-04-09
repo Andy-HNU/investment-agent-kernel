@@ -70,6 +70,12 @@ class PathStatsSummary:
     success_count: int
     path_count: int
 
+    @classmethod
+    def from_any(cls, value: "PathStatsSummary | dict[str, Any] | None") -> "PathStatsSummary | None":
+        if value is None or isinstance(value, cls):
+            return value
+        return cls(**dict(value))
+
 
 @dataclass(frozen=True)
 class ProbabilityDisclosurePayload:
@@ -81,6 +87,15 @@ class ProbabilityDisclosurePayload:
     stress_gap: float | None
     gap_total: float | None
     widening_method: str
+
+    @classmethod
+    def from_any(
+        cls,
+        value: "ProbabilityDisclosurePayload | dict[str, Any] | None",
+    ) -> "ProbabilityDisclosurePayload | None":
+        if value is None or isinstance(value, cls):
+            return value
+        return cls(**dict(value))
 
 
 @dataclass(frozen=True)
@@ -94,6 +109,26 @@ class RecipeSimulationResult:
     sample_count: int
     path_stats: PathStatsSummary
     calibration_link_ref: str | None
+
+    @classmethod
+    def from_any(
+        cls,
+        value: "RecipeSimulationResult | dict[str, Any] | None",
+    ) -> "RecipeSimulationResult | None":
+        if value is None or isinstance(value, cls):
+            return value
+        payload = dict(value)
+        return cls(
+            recipe_name=str(payload.get("recipe_name", "")),
+            role=str(payload.get("role", "")),
+            success_probability=float(payload.get("success_probability", 0.0)),
+            success_probability_range=tuple(payload.get("success_probability_range", (0.0, 0.0))),
+            cagr_range=tuple(payload.get("cagr_range", (0.0, 0.0))),
+            drawdown_range=tuple(payload.get("drawdown_range", (0.0, 0.0))),
+            sample_count=int(payload.get("sample_count", 0)),
+            path_stats=PathStatsSummary.from_any(payload.get("path_stats")),
+            calibration_link_ref=payload.get("calibration_link_ref"),
+        )
 
 
 @dataclass(frozen=True)
@@ -121,6 +156,33 @@ class ProbabilityEngineOutput:
     model_disagreement: dict[str, Any]
     probability_disclosure_payload: ProbabilityDisclosurePayload
     evidence_refs: list[str]
+
+    @classmethod
+    def from_any(
+        cls,
+        value: "ProbabilityEngineOutput | dict[str, Any] | None",
+    ) -> "ProbabilityEngineOutput | None":
+        if value is None or isinstance(value, cls):
+            return value
+        payload = dict(value)
+        return cls(
+            primary_result=RecipeSimulationResult.from_any(payload.get("primary_result")),
+            challenger_results=[
+                result
+                for result in (RecipeSimulationResult.from_any(item) for item in list(payload.get("challenger_results") or []))
+                if result is not None
+            ],
+            stress_results=[
+                result
+                for result in (RecipeSimulationResult.from_any(item) for item in list(payload.get("stress_results") or []))
+                if result is not None
+            ],
+            model_disagreement=dict(payload.get("model_disagreement") or {}),
+            probability_disclosure_payload=ProbabilityDisclosurePayload.from_any(
+                payload.get("probability_disclosure_payload")
+            ),
+            evidence_refs=[str(item) for item in list(payload.get("evidence_refs") or [])],
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -186,7 +248,7 @@ class ProbabilityEngineRunResult:
         return cls(
             run_outcome_status=payload.get("run_outcome_status", ""),
             resolved_result_category=payload.get("resolved_result_category", ""),
-            output=payload.get("output"),
+            output=ProbabilityEngineOutput.from_any(payload.get("output")),
             failure_artifact=FailureArtifact.from_any(payload.get("failure_artifact")),
         )
 
