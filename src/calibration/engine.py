@@ -336,7 +336,9 @@ def _calibration_window_days_from_frequency(
         sample_count = len(_portfolio_return_series_from_dataset(historical_dataset))
     else:
         sample_count = 0
-    return max(sample_count * step_days, step_days if sample_count <= 0 else sample_count * step_days)
+    if sample_count <= 0:
+        return 0
+    return sample_count * step_days
 
 
 def _build_factor_dynamics_spec(

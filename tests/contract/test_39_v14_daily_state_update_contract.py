@@ -263,3 +263,47 @@ def test_run_calibration_prefers_explicit_bundle_v14_artifacts_over_prior_calibr
     assert result.regime_state.current_regime == "risk_off"
     assert result.jump_state.systemic_jump_probability_1d == pytest.approx(0.02)
     assert "explicit_product" in result.jump_state.idio_jump_profile_by_product
+
+
+@pytest.mark.contract
+def test_run_calibration_uses_zero_calibration_window_days_without_history() -> None:
+    result = run_calibration(
+        {
+            "bundle_id": "bundle_v14_no_history",
+            "created_at": datetime(2026, 4, 11, tzinfo=timezone.utc),
+            "account_profile_id": "acct_v14",
+            "bundle_quality": "full",
+            "market": {
+                "raw_volatility": {"equity_cn": 0.18},
+                "liquidity_scores": {"equity_cn": 0.9},
+                "valuation_z_scores": {"equity_cn": 0.2},
+            },
+            "account": {
+                "weights": {"equity_cn": 1.0},
+                "total_value": 100000.0,
+                "available_cash": 5000.0,
+                "remaining_horizon_months": 12,
+            },
+            "goal": {
+                "goal_amount": 120000.0,
+                "horizon_months": 12,
+                "goal_description": "v14 zero history contract",
+                "success_prob_threshold": 0.6,
+            },
+            "constraint": {
+                "ips_bucket_boundaries": {"equity_cn": (0.0, 1.0)},
+                "satellite_cap": 0.15,
+                "theme_caps": {},
+                "qdii_cap": 0.2,
+                "liquidity_reserve_min": 0.05,
+                "max_drawdown_tolerance": 0.2,
+                "bucket_category": {"equity_cn": "core"},
+                "bucket_to_theme": {"equity_cn": None},
+            },
+            "behavior": None,
+            "remaining_horizon_months": 12,
+        },
+        prior_calibration=None,
+    )
+
+    assert result.factor_dynamics.calibration_window_days == 0
