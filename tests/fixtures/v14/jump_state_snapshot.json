@@ -1,0 +1,35 @@
+{
+  "snapshot_id": "v14_jump_state_snapshot_2026-04-09",
+  "as_of": "2026-04-09",
+  "systemic_jump_probability_1d": 0.012,
+  "systemic_jump_impact_by_factor": {
+    "CN_EQ_BROAD": -0.016,
+    "CN_EQ_GROWTH": -0.014,
+    "CN_EQ_VALUE": -0.013,
+    "US_EQ_BROAD": -0.012,
+    "US_EQ_GROWTH": -0.011,
+    "HK_EQ_BROAD": -0.0125,
+    "CN_RATE_DURATION": 0.004,
+    "CN_CREDIT_SPREAD": -0.009,
+    "GOLD_GLOBAL": -0.003,
+    "USD_CNH": 0.002
+  },
+  "systemic_jump_dispersion": 0.018,
+  "idio_jump_profile_by_product": {
+    "cn_equity_balanced_fund": {
+      "probability_1d": 0.018,
+      "loss_mean": -0.022,
+      "loss_std": 0.011
+    },
+    "cn_bond_short_history": {
+      "probability_1d": 0.011,
+      "loss_mean": -0.009,
+      "loss_std": 0.004
+    },
+    "cn_equity_empty_holdings": {
+      "probability_1d": 0.014,
+      "loss_mean": -0.017,
+      "loss_std": 0.009
+    }
+  }
+}

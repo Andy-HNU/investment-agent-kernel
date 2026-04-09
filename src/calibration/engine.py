@@ -25,6 +25,9 @@ from goal_solver.types import (
     RankingMode,
     SimulationMode,
 )
+from probability_engine.jumps import JumpStateSpec
+from probability_engine.regime import RegimeStateSpec
+from probability_engine.volatility import FactorDynamicsSpec
 from snapshot_ingestion.historical import build_historical_dataset_snapshot, summarize_historical_dataset
 from snapshot_ingestion.types import CompletenessLevel, SnapshotBundle
 from snapshot_ingestion.valuation import build_valuation_percentile_results
@@ -230,6 +233,270 @@ def _build_distribution_input_from_dataset(dataset: Any | None) -> DistributionI
         source_ref=str(dataset.source_ref or dataset.version_id or dataset.dataset_id),
         audit_window=None if dataset.audit_window is None else dataset.audit_window.to_dict(),
     )
+
+
+def _current_regime_name(market_state: MarketState) -> str:
+    if market_state.risk_environment == "high":
+        return "stress"
+    if market_state.risk_environment == "elevated":
+        return "risk_off"
+    return "normal"
+
+
+def _build_factor_dynamics_spec(
+    *,
+    bundle_id: str,
+    distribution_input: DistributionInput | None,
+    market_assumptions: MarketAssumptions,
+    historical_dataset: Any | None,
+    created_at: Any,
+    calibration_quality: str,
+) -> FactorDynamicsSpec:
+    factor_names = list(market_assumptions.correlation_matrix.keys()) or list(
+        (distribution_input.historical_return_series if distribution_input is not None else {}).keys()
+    )
+    if not factor_names and historical_dataset is not None:
+        factor_names = list(dict(getattr(historical_dataset, "return_series", {}) or {}).keys())
+    if not factor_names:
+        factor_names = [f"factor_{idx + 1}" for idx in range(3)]
+
+    if distribution_input is not None and distribution_input.garch_t_state:
+        garch_params_by_factor = {
+            factor: {
+                "omega": float(
+                    state.get("long_run_variance", 1e-4)
+                    * max(1.0 - float(state.get("alpha", 0.06)) - float(state.get("beta", 0.90)), 0.01)
+                ),
+                "alpha": float(state.get("alpha", 0.06)),
+                "beta": float(state.get("beta", 0.90)),
+                "nu": float(state.get("nu", 7.0)),
+                "long_run_variance": float(state.get("long_run_variance", 1e-4)),
+            }
+            for factor, state in distribution_input.garch_t_state.items()
+            if factor in factor_names
+        }
+    else:
+        garch_params_by_factor = {
+            factor: {
+                "omega": 0.00002,
+                "alpha": 0.06,
+                "beta": 0.90,
+                "nu": 7.0,
+                "long_run_variance": float(max(market_assumptions.volatility.get(factor, 0.15) ** 2 / 252.0, 1e-6)),
+            }
+            for factor in factor_names
+        }
+
+    summary_returns: dict[str, float] = {}
+    summary_volatility: dict[str, float] = {}
+    summary_corr: dict[str, dict[str, float]] = {}
+    if historical_dataset is not None:
+        summary_returns, summary_volatility, summary_corr = summarize_historical_dataset(historical_dataset, buckets=factor_names)
+    if not summary_corr:
+        for factor in factor_names:
+            summary_corr[factor] = {peer: (1.0 if peer == factor else 0.15) for peer in factor_names}
+
+    long_run_covariance: dict[str, dict[str, float]] = {}
+    for factor in factor_names:
+        row: dict[str, float] = {}
+        for peer in factor_names:
+            corr = float(summary_corr.get(factor, {}).get(peer, 1.0 if factor == peer else 0.15))
+            vol_a = float(summary_volatility.get(factor, market_assumptions.volatility.get(factor, 0.15)))
+            vol_b = float(summary_volatility.get(peer, market_assumptions.volatility.get(peer, 0.15)))
+            row[peer] = corr * vol_a * vol_b
+        long_run_covariance[factor] = row
+
+    dcc_state = distribution_input.dcc_state if distribution_input is not None else {}
+    dcc_params = {
+        "alpha": float(dcc_state.get("alpha", 0.04) or 0.04),
+        "beta": float(dcc_state.get("beta", 0.93) or 0.93),
+    }
+    if calibration_quality in {"weak", "insufficient_sample"}:
+        covariance_shrinkage = 0.30
+    elif calibration_quality == "acceptable":
+        covariance_shrinkage = 0.20
+    else:
+        covariance_shrinkage = 0.12
+
+    if distribution_input is not None and distribution_input.tail_df is not None:
+        tail_df = float(distribution_input.tail_df)
+    else:
+        tail_df = 7.0 if len(factor_names) >= 3 else 5.0
+    calibration_window_days = 0
+    if distribution_input is not None and distribution_input.historical_return_series:
+        calibration_window_days = len(next(iter(distribution_input.historical_return_series.values())))
+    elif summary_returns:
+        calibration_window_days = len(summary_returns)
+
+    return FactorDynamicsSpec(
+        factor_names=factor_names,
+        factor_series_ref=f"{bundle_id or 'unknown'}::{_stamp(created_at)}::factor_series",
+        innovation_family="student_t" if tail_df < 30 else "gaussian",
+        tail_df=tail_df,
+        garch_params_by_factor=garch_params_by_factor,
+        dcc_params=dcc_params,
+        long_run_covariance=long_run_covariance,
+        covariance_shrinkage=covariance_shrinkage,
+        calibration_window_days=calibration_window_days,
+    )
+
+
+def _build_regime_state_spec(
+    *,
+    market_state: MarketState,
+    calibration_quality: str,
+    historical_dataset: Any | None,
+) -> RegimeStateSpec:
+    current_regime = _current_regime_name(market_state)
+    transition_matrix = [
+        [0.86, 0.11, 0.03],
+        [0.14, 0.72, 0.14],
+        [0.06, 0.18, 0.76],
+    ]
+    if calibration_quality in {"weak", "insufficient_sample"}:
+        transition_matrix = [
+            [0.82, 0.13, 0.05],
+            [0.15, 0.68, 0.17],
+            [0.06, 0.24, 0.70],
+        ]
+    if historical_dataset is not None and len(_portfolio_return_series_from_dataset(historical_dataset)) >= 60:
+        transition_matrix[0] = [0.88, 0.09, 0.03]
+
+    return RegimeStateSpec(
+        regime_names=["normal", "risk_off", "stress"],
+        current_regime=current_regime,
+        transition_matrix=transition_matrix,
+        regime_mean_adjustments={
+            "normal": {"mean_shift": 0.0},
+            "risk_off": {"mean_shift": -0.0005},
+            "stress": {"mean_shift": -0.0012},
+        },
+        regime_vol_adjustments={
+            "normal": {"volatility_multiplier": 1.0},
+            "risk_off": {"volatility_multiplier": 1.15},
+            "stress": {"volatility_multiplier": 1.35},
+        },
+        regime_jump_adjustments={
+            "normal": {
+                "systemic_jump_probability_multiplier": 1.0,
+                "idio_jump_probability_multiplier": 1.0,
+                "systemic_jump_dispersion_multiplier": 1.0,
+            },
+            "risk_off": {
+                "systemic_jump_probability_multiplier": 1.3,
+                "idio_jump_probability_multiplier": 1.15,
+                "systemic_jump_dispersion_multiplier": 1.05,
+            },
+            "stress": {
+                "systemic_jump_probability_multiplier": 1.8,
+                "idio_jump_probability_multiplier": 1.30,
+                "systemic_jump_dispersion_multiplier": 1.15,
+            },
+        },
+    )
+
+
+def _build_jump_state_spec(
+    *,
+    market_state: MarketState,
+    factor_dynamics: FactorDynamicsSpec,
+    regime_state: RegimeStateSpec,
+    historical_dataset: Any | None,
+) -> JumpStateSpec:
+    diagonal_covariances = [
+        float(factor_dynamics.long_run_covariance.get(factor, {}).get(factor, 0.0))
+        for factor in factor_dynamics.factor_names
+        if factor in factor_dynamics.long_run_covariance
+    ]
+    avg_factor_variance = sum(max(value, 0.0) for value in diagonal_covariances) / len(diagonal_covariances) if diagonal_covariances else 0.0004
+    systemic_jump_probability_1d = 0.012
+    if market_state.risk_environment == "elevated":
+        systemic_jump_probability_1d = 0.016
+    elif market_state.risk_environment == "high":
+        systemic_jump_probability_1d = 0.024
+    if historical_dataset is not None:
+        portfolio_returns = _portfolio_return_series_from_dataset(historical_dataset)
+        tail_hits = [abs(value) for value in portfolio_returns if value < -0.02]
+        if portfolio_returns:
+            systemic_jump_probability_1d = min(
+                max(systemic_jump_probability_1d, len(tail_hits) / len(portfolio_returns) * 0.5 + 0.008),
+                0.08,
+            )
+    current_regime_adjustments = regime_state.regime_jump_adjustments.get(regime_state.current_regime, {})
+    systemic_jump_probability_1d /= float(current_regime_adjustments.get("systemic_jump_probability_multiplier", 1.0))
+    systemic_jump_dispersion = float(
+        max(
+            0.01,
+            min(
+                0.08,
+                0.5 * np.sqrt(max(avg_factor_variance, 1e-8))
+                * float(current_regime_adjustments.get("systemic_jump_dispersion_multiplier", 1.0)),
+            ),
+        )
+    )
+    systemic_jump_impact_by_factor = {
+        factor: float(-0.35 * np.sqrt(max(factor_dynamics.long_run_covariance.get(factor, {}).get(factor, 0.0), 1e-8)))
+        for factor in factor_dynamics.factor_names
+    }
+    if market_state.risk_environment == "high":
+        systemic_jump_impact_by_factor = {factor: value * 1.25 for factor, value in systemic_jump_impact_by_factor.items()}
+    idio_jump_profile_by_product = {
+        factor: {
+            "probability_1d": float(min(0.25, systemic_jump_probability_1d * 1.15)),
+            "loss_mean": float(-0.9 * np.sqrt(max(factor_dynamics.long_run_covariance.get(factor, {}).get(factor, 0.0), 1e-8))),
+            "loss_std": float(max(0.001, systemic_jump_dispersion * 0.6)),
+        }
+        for factor in factor_dynamics.factor_names
+    }
+    return JumpStateSpec(
+        systemic_jump_probability_1d=systemic_jump_probability_1d,
+        systemic_jump_impact_by_factor=systemic_jump_impact_by_factor,
+        systemic_jump_dispersion=systemic_jump_dispersion,
+        idio_jump_profile_by_product=idio_jump_profile_by_product,
+    )
+
+
+def _build_probability_engine_state_artifacts(
+    *,
+    bundle_data: dict[str, Any],
+    market_state: MarketState,
+    market_assumptions: MarketAssumptions,
+    distribution_input: DistributionInput | None,
+    historical_dataset: Any | None,
+    created_at: Any,
+    calibration_quality: str,
+    prior_calibration: CalibrationResult | dict[str, Any] | None,
+) -> tuple[FactorDynamicsSpec, RegimeStateSpec, JumpStateSpec]:
+    prior_data = _obj(prior_calibration or {})
+    v14_artifacts = _obj(bundle_data.get("probability_engine_v14") or bundle_data.get("v14_probability_engine") or {})
+
+    factor_dynamics = FactorDynamicsSpec.from_any(prior_data.get("factor_dynamics") or v14_artifacts.get("factor_dynamics"))
+    regime_state = RegimeStateSpec.from_any(prior_data.get("regime_state") or v14_artifacts.get("regime_state"))
+    jump_state = JumpStateSpec.from_any(prior_data.get("jump_state") or v14_artifacts.get("jump_state"))
+
+    if factor_dynamics is None:
+        factor_dynamics = _build_factor_dynamics_spec(
+            bundle_id=str(bundle_data.get("bundle_id", "")),
+            distribution_input=distribution_input,
+            market_assumptions=market_assumptions,
+            historical_dataset=historical_dataset,
+            created_at=created_at,
+            calibration_quality=calibration_quality,
+        )
+    if regime_state is None:
+        regime_state = _build_regime_state_spec(
+            market_state=market_state,
+            calibration_quality=calibration_quality,
+            historical_dataset=historical_dataset,
+        )
+    if jump_state is None:
+        jump_state = _build_jump_state_spec(
+            market_state=market_state,
+            factor_dynamics=factor_dynamics,
+            regime_state=regime_state,
+            historical_dataset=historical_dataset,
+        )
+    return factor_dynamics, regime_state, jump_state
 
 
 def _default_expected_return(bucket: str) -> float:
@@ -1207,6 +1474,16 @@ def run_calibration(
     if requested_params.get("simulation_mode"):
         requested_mode = SimulationMode(str(getattr(requested_params.get("simulation_mode"), "value", requested_params.get("simulation_mode"))))
     distribution_input = _distribution_input_from_historical_dataset(historical_dataset)
+    factor_dynamics, regime_state_artifact, jump_state_artifact = _build_probability_engine_state_artifacts(
+        bundle_data=bundle_data,
+        market_state=market_state,
+        market_assumptions=market_assumptions,
+        distribution_input=distribution_input,
+        historical_dataset=historical_dataset,
+        created_at=created_at,
+        calibration_quality=calibration_quality,
+        prior_calibration=prior_calibration,
+    )
     calibration_summary = _build_calibration_summary(bundle_id, calibration_quality, historical_dataset)
     distribution_model_state = _build_distribution_model_state(
         bundle_id=bundle_id,
@@ -1262,6 +1539,9 @@ def run_calibration(
         goal_solver_params=goal_solver_params,
         runtime_optimizer_params=runtime_optimizer_params,
         ev_params=ev_params,
+        factor_dynamics=factor_dynamics,
+        regime_state=regime_state_artifact,
+        jump_state=jump_state_artifact,
         distribution_model_state=distribution_model_state,
         calibration_summary=calibration_summary,
         calibration_quality=calibration_quality,

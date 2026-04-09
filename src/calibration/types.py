@@ -4,6 +4,9 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 from datetime import datetime
 from typing import Any
 
+from probability_engine.jumps import JumpStateSpec
+from probability_engine.regime import RegimeStateSpec
+from probability_engine.volatility import FactorDynamicsSpec
 from shared.audit import AuditWindow, DataStatus
 
 
@@ -418,6 +421,9 @@ class CalibrationResult:
     goal_solver_params: Any
     runtime_optimizer_params: Any
     ev_params: Any
+    factor_dynamics: FactorDynamicsSpec | dict[str, Any] | None = None
+    regime_state: RegimeStateSpec | dict[str, Any] | None = None
+    jump_state: JumpStateSpec | dict[str, Any] | None = None
     distribution_model_state: DistributionModelState | dict[str, Any] | None = None
     calibration_summary: CalibrationSummary | dict[str, Any] | None = None
     calibration_quality: str = "full"
@@ -426,6 +432,33 @@ class CalibrationResult:
     param_version_meta: ParamVersionMeta | dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.factor_dynamics = (
+            None
+            if self.factor_dynamics is None
+            else (
+                self.factor_dynamics
+                if isinstance(self.factor_dynamics, FactorDynamicsSpec)
+                else FactorDynamicsSpec.from_any(self.factor_dynamics)
+            )
+        )
+        self.regime_state = (
+            None
+            if self.regime_state is None
+            else (
+                self.regime_state
+                if isinstance(self.regime_state, RegimeStateSpec)
+                else RegimeStateSpec.from_any(self.regime_state)
+            )
+        )
+        self.jump_state = (
+            None
+            if self.jump_state is None
+            else (
+                self.jump_state
+                if isinstance(self.jump_state, JumpStateSpec)
+                else JumpStateSpec.from_any(self.jump_state)
+            )
+        )
         self.distribution_model_state = (
             None
             if self.distribution_model_state is None

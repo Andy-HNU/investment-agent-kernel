@@ -1,0 +1,50 @@
+{
+  "snapshot_id": "v14_regime_state_snapshot_2026-04-09",
+  "as_of": "2026-04-09",
+  "regime_names": ["normal", "risk_off", "stress"],
+  "current_regime": "normal",
+  "transition_matrix": [
+    [0.86, 0.11, 0.03],
+    [0.14, 0.72, 0.14],
+    [0.06, 0.18, 0.76]
+  ],
+  "regime_mean_adjustments": {
+    "normal": {
+      "mean_shift": 0.0
+    },
+    "risk_off": {
+      "mean_shift": -0.0005
+    },
+    "stress": {
+      "mean_shift": -0.0012
+    }
+  },
+  "regime_vol_adjustments": {
+    "normal": {
+      "volatility_multiplier": 1.0
+    },
+    "risk_off": {
+      "volatility_multiplier": 1.15
+    },
+    "stress": {
+      "volatility_multiplier": 1.35
+    }
+  },
+  "regime_jump_adjustments": {
+    "normal": {
+      "systemic_jump_probability_multiplier": 1.0,
+      "idio_jump_probability_multiplier": 1.0,
+      "systemic_jump_dispersion_multiplier": 1.0
+    },
+    "risk_off": {
+      "systemic_jump_probability_multiplier": 1.3,
+      "idio_jump_probability_multiplier": 1.15,
+      "systemic_jump_dispersion_multiplier": 1.05
+    },
+    "stress": {
+      "systemic_jump_probability_multiplier": 1.8,
+      "idio_jump_probability_multiplier": 1.3,
+      "systemic_jump_dispersion_multiplier": 1.15
+    }
+  }
+}
