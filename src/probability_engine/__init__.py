@@ -14,14 +14,26 @@ from probability_engine.contracts import (
     distribution_readiness_at_least,
     factor_mapping_confidence_at_least,
 )
+from probability_engine.engine import run_probability_engine
 from probability_engine.dependence import FactorLevelDccProvider
 from probability_engine.jumps import (
     JumpStateSpec,
+    draw_systemic_jump,
     idiosyncratic_jump_profile,
     regime_adjusted_systemic_jump_dispersion,
     load_jump_state_snapshot,
     systemic_jump_probability,
 )
+from probability_engine.path_generator import DailyEngineRuntimeInput, ProductMarginalSpec
+from probability_engine.portfolio_policy import (
+    ContributionInstruction,
+    CurrentPosition,
+    RebalancingPolicySpec,
+    WithdrawalInstruction,
+    apply_daily_cashflows_and_rebalance,
+    initialize_portfolio_state,
+)
+from probability_engine.recipes import PRIMARY_RECIPE_V14, SimulationRecipe, primary_recipe, resolve_recipes
 from probability_engine.regime import RegimeStateSpec, load_regime_state_snapshot, sample_next_regime
 from probability_engine.volatility import FactorDynamicsSpec, update_garch_state
 
@@ -30,13 +42,22 @@ __all__ = [
     "DISTRIBUTION_READINESS_ORDER",
     "FACTOR_MAPPING_CONFIDENCE_ORDER",
     "DailyProbabilityEngineInput",
+    "DailyEngineRuntimeInput",
     "FailureArtifact",
     "PathStatsSummary",
+    "ProductMarginalSpec",
     "ProbabilityDisclosurePayload",
     "ProbabilityEngineOutput",
     "ProbabilityEngineRunResult",
+    "CurrentPosition",
+    "ContributionInstruction",
+    "WithdrawalInstruction",
+    "RebalancingPolicySpec",
     "RecipeSimulationResult",
+    "SimulationRecipe",
     "SuccessEventSpec",
+    "PRIMARY_RECIPE_V14",
+    "apply_daily_cashflows_and_rebalance",
     "calibration_quality_at_least",
     "distribution_readiness_at_least",
     "factor_mapping_confidence_at_least",
@@ -44,10 +65,15 @@ __all__ = [
     "FactorLevelDccProvider",
     "JumpStateSpec",
     "RegimeStateSpec",
+    "draw_systemic_jump",
     "idiosyncratic_jump_profile",
+    "initialize_portfolio_state",
+    "primary_recipe",
     "regime_adjusted_systemic_jump_dispersion",
     "load_jump_state_snapshot",
     "load_regime_state_snapshot",
+    "resolve_recipes",
+    "run_probability_engine",
     "sample_next_regime",
     "systemic_jump_probability",
     "update_garch_state",

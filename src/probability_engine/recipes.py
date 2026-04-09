@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True)
+class SimulationRecipe:
+    recipe_name: str
+    role: str
+    innovation_layer: str
+    volatility_layer: str
+    dependency_layer: str
+    jump_layer: str
+    regime_layer: str
+    estimation_basis: str
+    dependency_scope: str
+    path_count: int
+
+    @classmethod
+    def from_any(cls, value: "SimulationRecipe | dict[str, Any]") -> "SimulationRecipe":
+        if isinstance(value, cls):
+            return value
+        payload = dict(value)
+        recipe_name = str(payload.get("recipe_name", "")).strip()
+        if recipe_name in RECIPE_REGISTRY:
+            base = RECIPE_REGISTRY[recipe_name]
+            payload = {**base.__dict__, **payload}
+        return cls(
+            recipe_name=str(payload.get("recipe_name", "")).strip(),
+            role=str(payload.get("role", "")).strip(),
+            innovation_layer=str(payload.get("innovation_layer", "")).strip(),
+            volatility_layer=str(payload.get("volatility_layer", "")).strip(),
+            dependency_layer=str(payload.get("dependency_layer", "")).strip(),
+            jump_layer=str(payload.get("jump_layer", "")).strip(),
+            regime_layer=str(payload.get("regime_layer", "")).strip(),
+            estimation_basis=str(payload.get("estimation_basis", "")).strip(),
+            dependency_scope=str(payload.get("dependency_scope", "")).strip(),
+            path_count=int(payload.get("path_count", 0)),
+        )
+
+
+PRIMARY_RECIPE_V14 = SimulationRecipe(
+    recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+    role="primary",
+    innovation_layer="student_t",
+    volatility_layer="factor_and_product_garch",
+    dependency_layer="factor_level_dcc",
+    jump_layer="systemic_plus_idio",
+    regime_layer="markov_regime",
+    estimation_basis="daily_product_formal",
+    dependency_scope="factor",
+    path_count=4000,
+)
+
+
+RECIPE_REGISTRY: dict[str, SimulationRecipe] = {
+    PRIMARY_RECIPE_V14.recipe_name: PRIMARY_RECIPE_V14,
+}
+
+
+def resolve_recipes(values: list[Any] | None) -> list[SimulationRecipe]:
+    if not values:
+        return [PRIMARY_RECIPE_V14]
+    recipes = [SimulationRecipe.from_any(item) for item in values]
+    return recipes or [PRIMARY_RECIPE_V14]
+
+
+def primary_recipe(recipes: list[SimulationRecipe]) -> SimulationRecipe:
+    for recipe in recipes:
+        if recipe.role == "primary":
+            return recipe
+    return PRIMARY_RECIPE_V14

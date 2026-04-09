@@ -1,0 +1,369 @@
+{
+  "as_of": "2026-04-09",
+  "path_horizon_days": 20,
+  "random_seed": 17,
+  "products": [
+    {
+      "product_id": "cn_equity_balanced_fund",
+      "asset_bucket": "equity_cn",
+      "factor_betas": {
+        "CN_EQ_BROAD": 0.8369377128039492,
+        "CN_EQ_GROWTH": 0.017299175417060525,
+        "CN_EQ_VALUE": 0.01847188118952349,
+        "US_EQ_BROAD": 0.00012710258359400762,
+        "US_EQ_GROWTH": -0.0001413693535217432,
+        "HK_EQ_BROAD": -0.00016018738990317076,
+        "CN_RATE_DURATION": -0.000000371750684864235,
+        "CN_CREDIT_SPREAD": -0.00000011393523015718363,
+        "GOLD_GLOBAL": 0.016416944312721202,
+        "USD_CNH": 0.010938675976605382
+      },
+      "innovation_family": "student_t",
+      "tail_df": 7.0,
+      "volatility_process": "product_garch_11",
+      "garch_params": {
+        "omega": 0.0000034,
+        "alpha": 0.07,
+        "beta": 0.90,
+        "nu": 7.0,
+        "long_run_variance": 0.000113
+      },
+      "idiosyncratic_jump_profile": {
+        "probability_1d": 0.018,
+        "loss_mean": -0.022,
+        "loss_std": 0.011
+      },
+      "carry_profile": {
+        "carry_drag": -0.00002,
+        "tracking_drag": -0.00003
+      },
+      "valuation_profile": {
+        "valuation_drag": -0.00001
+      },
+      "mapping_confidence": "high",
+      "factor_mapping_source": "blended",
+      "factor_mapping_evidence": [
+        {
+          "source": "prior",
+          "weight": 0.40308190053318527
+        },
+        {
+          "source": "holdings",
+          "weight": 0.54096,
+          "coverage": 0.98
+        },
+        {
+          "source": "returns",
+          "weight": 0.05595809946681474,
+          "sample_count": 126,
+          "r_squared": 0.0932634991113579
+        }
+      ],
+      "observed_series_ref": "fixture://v14/cn_equity_balanced_fund"
+    },
+    {
+      "product_id": "cn_bond_short_history",
+      "asset_bucket": "bond_cn",
+      "factor_betas": {
+        "CN_EQ_BROAD": 0.0075,
+        "CN_EQ_GROWTH": 0.0,
+        "CN_EQ_VALUE": 0.0,
+        "US_EQ_BROAD": 0.0,
+        "US_EQ_GROWTH": 0.0,
+        "HK_EQ_BROAD": 0.0,
+        "CN_RATE_DURATION": 0.7349999999999999,
+        "CN_CREDIT_SPREAD": 0.1725,
+        "GOLD_GLOBAL": 0.045000000000000005,
+        "USD_CNH": 0.034999999999999996
+      },
+      "innovation_family": "student_t",
+      "tail_df": 7.0,
+      "volatility_process": "product_garch_11",
+      "garch_params": {
+        "omega": 0.0000005,
+        "alpha": 0.05,
+        "beta": 0.92,
+        "nu": 7.0,
+        "long_run_variance": 0.000016
+      },
+      "idiosyncratic_jump_profile": {
+        "probability_1d": 0.011,
+        "loss_mean": -0.009,
+        "loss_std": 0.004
+      },
+      "carry_profile": {
+        "carry_drag": -0.00001
+      },
+      "valuation_profile": {
+        "valuation_drag": -0.000005
+      },
+      "mapping_confidence": "low",
+      "factor_mapping_source": "prior",
+      "factor_mapping_evidence": [
+        {
+          "source": "prior",
+          "weight": 1.0
+        },
+        {
+          "source": "returns",
+          "weight": 0.0,
+          "sample_count": 42,
+          "r_squared": 0.00001808367461197946
+        }
+      ],
+      "observed_series_ref": "fixture://v14/cn_bond_short_history"
+    },
+    {
+      "product_id": "cn_equity_empty_holdings",
+      "asset_bucket": "equity_cn",
+      "factor_betas": {
+        "CN_EQ_BROAD": 0.8206568594301104,
+        "CN_EQ_GROWTH": -0.000042481032153819885,
+        "CN_EQ_VALUE": -0.00005469141917041822,
+        "US_EQ_BROAD": 0.000021132087752706757,
+        "US_EQ_GROWTH": -0.00004182598361732643,
+        "HK_EQ_BROAD": -0.000021080283929730738,
+        "CN_RATE_DURATION": -0.00000012480456345263396,
+        "CN_CREDIT_SPREAD": 0.00000001336228027983544,
+        "GOLD_GLOBAL": 0.028961651182263033,
+        "USD_CNH": 0.019305356260725777
+      },
+      "innovation_family": "student_t",
+      "tail_df": 7.0,
+      "volatility_process": "product_garch_11",
+      "garch_params": {
+        "omega": 0.0000038,
+        "alpha": 0.07,
+        "beta": 0.89,
+        "nu": 7.0,
+        "long_run_variance": 0.000127
+      },
+      "idiosyncratic_jump_profile": {
+        "probability_1d": 0.014,
+        "loss_mean": -0.017,
+        "loss_std": 0.009
+      },
+      "carry_profile": {
+        "carry_drag": -0.00002,
+        "tracking_drag": -0.00004
+      },
+      "valuation_profile": {
+        "valuation_drag": -0.000015
+      },
+      "mapping_confidence": "medium",
+      "factor_mapping_source": "blended",
+      "factor_mapping_evidence": [
+        {
+          "source": "prior",
+          "weight": 0.939224783657161
+        },
+        {
+          "source": "returns",
+          "weight": 0.06077521634283904,
+          "sample_count": 126,
+          "r_squared": 0.10129202723806507
+        }
+      ],
+      "observed_series_ref": "fixture://v14/cn_equity_empty_holdings"
+    }
+  ],
+  "factor_dynamics": {
+    "factor_names": [
+      "CN_EQ_BROAD",
+      "CN_EQ_GROWTH",
+      "CN_EQ_VALUE",
+      "US_EQ_BROAD",
+      "US_EQ_GROWTH",
+      "HK_EQ_BROAD",
+      "CN_RATE_DURATION",
+      "CN_CREDIT_SPREAD",
+      "GOLD_GLOBAL",
+      "USD_CNH"
+    ],
+    "factor_series_ref": "fixture://v14/factor_dynamics",
+    "innovation_family": "student_t",
+    "tail_df": 7.0,
+    "garch_params_by_factor": {
+      "CN_EQ_BROAD": {"omega": 0.000007714285714285714, "alpha": 0.06, "beta": 0.9, "nu": 7.0, "long_run_variance": 0.00012857142857142858},
+      "CN_EQ_GROWTH": {"omega": 0.000007714285714285714, "alpha": 0.06, "beta": 0.9, "nu": 7.0, "long_run_variance": 0.00012857142857142858},
+      "CN_EQ_VALUE": {"omega": 0.000007714285714285714, "alpha": 0.06, "beta": 0.9, "nu": 7.0, "long_run_variance": 0.00012857142857142858},
+      "US_EQ_BROAD": {"omega": 0.000007714285714285714, "alpha": 0.06, "beta": 0.9, "nu": 7.0, "long_run_variance": 0.00012857142857142858},
+      "US_EQ_GROWTH": {"omega": 0.000007714285714285714, "alpha": 0.06, "beta": 0.9, "nu": 7.0, "long_run_variance": 0.00012857142857142858},
+      "HK_EQ_BROAD": {"omega": 0.000007714285714285714, "alpha": 0.06, "beta": 0.9, "nu": 7.0, "long_run_variance": 0.00012857142857142858},
+      "CN_RATE_DURATION": {"omega": 0.00000038095238095238096, "alpha": 0.06, "beta": 0.9, "nu": 7.0, "long_run_variance": 0.000006349206349206349},
+      "CN_CREDIT_SPREAD": {"omega": 0.0000015238095238095238, "alpha": 0.06, "beta": 0.9, "nu": 7.0, "long_run_variance": 0.000025396825396825397},
+      "GOLD_GLOBAL": {"omega": 0.0000034285714285714285, "alpha": 0.06, "beta": 0.9, "nu": 7.0, "long_run_variance": 0.00005714285714285714},
+      "USD_CNH": {"omega": 0.000002380952380952381, "alpha": 0.06, "beta": 0.9, "nu": 7.0, "long_run_variance": 0.00003968253968253969}
+    },
+    "dcc_params": {
+      "alpha": 0.04,
+      "beta": 0.93
+    },
+    "long_run_covariance": {
+      "CN_EQ_BROAD": {"CN_EQ_BROAD": 0.00012857142857142858, "CN_EQ_GROWTH": 0.00007071428571428571, "CN_EQ_VALUE": 0.00007071428571428571, "US_EQ_BROAD": 0.00003857142857142857, "US_EQ_GROWTH": 0.00003857142857142857, "HK_EQ_BROAD": 0.00003857142857142857, "CN_RATE_DURATION": 0.000002857142857142857, "CN_CREDIT_SPREAD": 0.000005714285714285714, "GOLD_GLOBAL": 0.000010285714285714285, "USD_CNH": 0.0000057142857142857145},
+      "CN_EQ_GROWTH": {"CN_EQ_BROAD": 0.00007071428571428571, "CN_EQ_GROWTH": 0.00012857142857142858, "CN_EQ_VALUE": 0.00007071428571428571, "US_EQ_BROAD": 0.00003857142857142857, "US_EQ_GROWTH": 0.00003857142857142857, "HK_EQ_BROAD": 0.00003857142857142857, "CN_RATE_DURATION": 0.000002857142857142857, "CN_CREDIT_SPREAD": 0.000005714285714285714, "GOLD_GLOBAL": 0.000010285714285714285, "USD_CNH": 0.0000057142857142857145},
+      "CN_EQ_VALUE": {"CN_EQ_BROAD": 0.00007071428571428571, "CN_EQ_GROWTH": 0.00007071428571428571, "CN_EQ_VALUE": 0.00012857142857142858, "US_EQ_BROAD": 0.00003857142857142857, "US_EQ_GROWTH": 0.00003857142857142857, "HK_EQ_BROAD": 0.00003857142857142857, "CN_RATE_DURATION": 0.000002857142857142857, "CN_CREDIT_SPREAD": 0.000005714285714285714, "GOLD_GLOBAL": 0.000010285714285714285, "USD_CNH": 0.0000057142857142857145},
+      "US_EQ_BROAD": {"CN_EQ_BROAD": 0.00003857142857142857, "CN_EQ_GROWTH": 0.00003857142857142857, "CN_EQ_VALUE": 0.00003857142857142857, "US_EQ_BROAD": 0.00012857142857142858, "US_EQ_GROWTH": 0.00007071428571428571, "HK_EQ_BROAD": 0.00003857142857142857, "CN_RATE_DURATION": 0.000002857142857142857, "CN_CREDIT_SPREAD": 0.000005714285714285714, "GOLD_GLOBAL": 0.000010285714285714285, "USD_CNH": 0.0000057142857142857145},
+      "US_EQ_GROWTH": {"CN_EQ_BROAD": 0.00003857142857142857, "CN_EQ_GROWTH": 0.00003857142857142857, "CN_EQ_VALUE": 0.00003857142857142857, "US_EQ_BROAD": 0.00007071428571428571, "US_EQ_GROWTH": 0.00012857142857142858, "HK_EQ_BROAD": 0.00003857142857142857, "CN_RATE_DURATION": 0.000002857142857142857, "CN_CREDIT_SPREAD": 0.000005714285714285714, "GOLD_GLOBAL": 0.000010285714285714285, "USD_CNH": 0.0000057142857142857145},
+      "HK_EQ_BROAD": {"CN_EQ_BROAD": 0.00003857142857142857, "CN_EQ_GROWTH": 0.00003857142857142857, "CN_EQ_VALUE": 0.00003857142857142857, "US_EQ_BROAD": 0.00003857142857142857, "US_EQ_GROWTH": 0.00003857142857142857, "HK_EQ_BROAD": 0.00012857142857142858, "CN_RATE_DURATION": 0.000002857142857142857, "CN_CREDIT_SPREAD": 0.000005714285714285714, "GOLD_GLOBAL": 0.000010285714285714285, "USD_CNH": 0.0000057142857142857145},
+      "CN_RATE_DURATION": {"CN_EQ_BROAD": 0.000002857142857142857, "CN_EQ_GROWTH": 0.000002857142857142857, "CN_EQ_VALUE": 0.000002857142857142857, "US_EQ_BROAD": 0.000002857142857142857, "US_EQ_GROWTH": 0.000002857142857142857, "HK_EQ_BROAD": 0.000002857142857142857, "CN_RATE_DURATION": 0.000006349206349206349, "CN_CREDIT_SPREAD": 0.000002285714285714286, "GOLD_GLOBAL": 0.0000022857142857142856, "USD_CNH": 0.00000126984126984127},
+      "CN_CREDIT_SPREAD": {"CN_EQ_BROAD": 0.000005714285714285714, "CN_EQ_GROWTH": 0.000005714285714285714, "CN_EQ_VALUE": 0.000005714285714285714, "US_EQ_BROAD": 0.000005714285714285714, "US_EQ_GROWTH": 0.000005714285714285714, "HK_EQ_BROAD": 0.000005714285714285714, "CN_RATE_DURATION": 0.000002285714285714286, "CN_CREDIT_SPREAD": 0.000025396825396825397, "GOLD_GLOBAL": 0.000004571428571428571, "USD_CNH": 0.00000253968253968254},
+      "GOLD_GLOBAL": {"CN_EQ_BROAD": 0.000010285714285714285, "CN_EQ_GROWTH": 0.000010285714285714285, "CN_EQ_VALUE": 0.000010285714285714285, "US_EQ_BROAD": 0.000010285714285714285, "US_EQ_GROWTH": 0.000010285714285714285, "HK_EQ_BROAD": 0.000010285714285714285, "CN_RATE_DURATION": 0.000002285714285714286, "CN_CREDIT_SPREAD": 0.000004571428571428572, "GOLD_GLOBAL": 0.00005714285714285714, "USD_CNH": 0.0000038095238095238094},
+      "USD_CNH": {"CN_EQ_BROAD": 0.0000057142857142857145, "CN_EQ_GROWTH": 0.0000057142857142857145, "CN_EQ_VALUE": 0.0000057142857142857145, "US_EQ_BROAD": 0.0000057142857142857145, "US_EQ_GROWTH": 0.0000057142857142857145, "HK_EQ_BROAD": 0.0000057142857142857145, "CN_RATE_DURATION": 0.00000126984126984127, "CN_CREDIT_SPREAD": 0.00000253968253968254, "GOLD_GLOBAL": 0.00000380952380952381, "USD_CNH": 0.00003968253968253969}
+    },
+    "covariance_shrinkage": 0.12,
+    "calibration_window_days": 252
+  },
+  "regime_state": {
+    "regime_names": ["normal", "risk_off", "stress"],
+    "current_regime": "normal",
+    "transition_matrix": [
+      [0.86, 0.11, 0.03],
+      [0.14, 0.72, 0.14],
+      [0.06, 0.18, 0.76]
+    ],
+    "regime_mean_adjustments": {
+      "normal": {"mean_shift": 0.0},
+      "risk_off": {"mean_shift": -0.0005},
+      "stress": {"mean_shift": -0.0012}
+    },
+    "regime_vol_adjustments": {
+      "normal": {"volatility_multiplier": 1.0},
+      "risk_off": {"volatility_multiplier": 1.15},
+      "stress": {"volatility_multiplier": 1.35}
+    },
+    "regime_jump_adjustments": {
+      "normal": {
+        "systemic_jump_probability_multiplier": 1.0,
+        "idio_jump_probability_multiplier": 1.0,
+        "systemic_jump_dispersion_multiplier": 1.0
+      },
+      "risk_off": {
+        "systemic_jump_probability_multiplier": 1.3,
+        "idio_jump_probability_multiplier": 1.15,
+        "systemic_jump_dispersion_multiplier": 1.05
+      },
+      "stress": {
+        "systemic_jump_probability_multiplier": 1.8,
+        "idio_jump_probability_multiplier": 1.3,
+        "systemic_jump_dispersion_multiplier": 1.15
+      }
+    }
+  },
+  "jump_state": {
+    "systemic_jump_probability_1d": 0.012,
+    "systemic_jump_impact_by_factor": {
+      "CN_EQ_BROAD": -0.016,
+      "CN_EQ_GROWTH": -0.014,
+      "CN_EQ_VALUE": -0.013,
+      "US_EQ_BROAD": -0.012,
+      "US_EQ_GROWTH": -0.011,
+      "HK_EQ_BROAD": -0.0125,
+      "CN_RATE_DURATION": 0.004,
+      "CN_CREDIT_SPREAD": -0.009,
+      "GOLD_GLOBAL": -0.003,
+      "USD_CNH": 0.002
+    },
+    "systemic_jump_dispersion": 0.018,
+    "idio_jump_profile_by_product": {
+      "cn_equity_balanced_fund": {
+        "probability_1d": 0.018,
+        "loss_mean": -0.022,
+        "loss_std": 0.011
+      },
+      "cn_bond_short_history": {
+        "probability_1d": 0.011,
+        "loss_mean": -0.009,
+        "loss_std": 0.004
+      },
+      "cn_equity_empty_holdings": {
+        "probability_1d": 0.014,
+        "loss_mean": -0.017,
+        "loss_std": 0.009
+      }
+    }
+  },
+  "current_positions": [
+    {
+      "product_id": "cn_equity_balanced_fund",
+      "units": 5200.0,
+      "market_value": 52000.0,
+      "weight": 0.52,
+      "cost_basis": 50000.0,
+      "tradable": true
+    },
+    {
+      "product_id": "cn_bond_short_history",
+      "units": 2800.0,
+      "market_value": 28000.0,
+      "weight": 0.28,
+      "cost_basis": 27500.0,
+      "tradable": true
+    },
+    {
+      "product_id": "cn_equity_empty_holdings",
+      "units": 2000.0,
+      "market_value": 20000.0,
+      "weight": 0.20,
+      "cost_basis": 19800.0,
+      "tradable": true
+    }
+  ],
+  "contribution_schedule": [
+    {
+      "date": "2026-04-15",
+      "amount": 3000.0,
+      "allocation_mode": "target_weights",
+      "target_weights": {
+        "cn_equity_balanced_fund": 0.52,
+        "cn_bond_short_history": 0.28,
+        "cn_equity_empty_holdings": 0.20
+      }
+    }
+  ],
+  "withdrawal_schedule": [
+    {
+      "date": "2026-04-22",
+      "amount": 1500.0,
+      "execution_rule": "cash_first",
+      "target_products": null
+    }
+  ],
+  "rebalancing_policy": {
+    "policy_type": "hybrid",
+    "calendar_frequency": "daily",
+    "threshold_band": 0.04,
+    "execution_timing": "end_of_day_after_return",
+    "transaction_cost_bps": 5.0,
+    "min_trade_amount": 250.0
+  },
+  "success_event_spec": {
+    "horizon_days": 20,
+    "horizon_months": 1,
+    "target_type": "goal_amount",
+    "target_value": 103000.0,
+    "drawdown_constraint": 0.18,
+    "benchmark_ref": null,
+    "contribution_policy": "scheduled_fixed",
+    "withdrawal_policy": "scheduled",
+    "rebalancing_policy_ref": "policy://v14/hybrid_end_of_day",
+    "return_basis": "nominal",
+    "fee_basis": "net",
+    "success_logic": "joint_target_and_drawdown"
+  },
+  "recipes": [
+    {
+      "recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1",
+      "role": "primary",
+      "innovation_layer": "student_t",
+      "volatility_layer": "factor_and_product_garch",
+      "dependency_layer": "factor_level_dcc",
+      "jump_layer": "systemic_plus_idio",
+      "regime_layer": "markov_regime",
+      "estimation_basis": "daily_product_formal",
+      "dependency_scope": "factor",
+      "path_count": 4000
+    }
+  ],
+  "evidence_bundle_ref": "evidence://v14/formal_daily_engine_input"
+}
