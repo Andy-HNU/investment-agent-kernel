@@ -1905,6 +1905,7 @@ class RebalancingPolicySpec:
 @dataclass
 class DailyProbabilityEngineInput:
     as_of: str
+    path_horizon_days: int
     products: list[ProductMarginalSpec]
     factor_dynamics: FactorDynamicsSpec
     regime_state: RegimeStateSpec
@@ -1971,6 +1972,23 @@ class ProbabilityEngineOutput:
     model_disagreement: dict[str, Any]
     probability_disclosure_payload: ProbabilityDisclosurePayload
     evidence_refs: list[str]
+
+
+@dataclass
+class FailureArtifact:
+    failure_stage: str
+    failure_code: str
+    message: str
+    diagnostic_refs: list[str]
+    trustworthy_partial_diagnostics: bool
+
+
+@dataclass
+class ProbabilityEngineRunResult:
+    run_outcome_status: str
+    resolved_result_category: str
+    output: ProbabilityEngineOutput | None
+    failure_artifact: FailureArtifact | None
 ```
 
 ---
@@ -2499,3 +2517,378 @@ class FormalEstimatedResultSpec:
 - `artifact_refs`：具体文件路径、缓存对象、持久化对象
 
 真正要求 invariance 的是前者，不是后者。
+
+---
+
+## 25. Final Consistency Patch
+
+本 patch 用于修复 `v1.4` 主文档中剩余的少量一致性缺口，使其达到可直接指导多人并行实现的正式规格状态。
+
+本章只处理以下 5 类问题：
+
+1. 状态变量索引与更新时序统一
+2. systemic jump 条件化时点统一
+3. `null / FailureArtifact / output schema` 闭合
+4. `path horizon` 的 source of truth 落到 schema
+5. 决策表中所有可比较枚举的全量集合与顺序冻结
+
+若正文其他位置存在更早写法、示例写法、公式简写或口语化描述，以本章为准。
+
+### 25.1 状态索引与一步预测口径冻结
+
+`v1.4` formal path 必须统一采用如下工程口径：
+
+```text
+1. 生成 t+1 收益时，只允许使用 t 时刻已知状态
+2. t+1 实现出的 pre-jump standardized residuals，只允许用于把状态更新到 t+1
+3. 任何 jump / cost / carry 都不得反推进入同一步 GARCH 或 DCC 更新
+```
+
+为避免 `h_t / h_t+1` 记号引起实现歧义，冻结以下解释：
+
+#### 25.1.1 因子 pre-jump 收益生成
+
+```text
+f_t+1^pre = m(S_t+1) + H_t^{1/2} R_t^{1/2} z_f,t+1
+```
+
+其中：
+
+- `H_t`：`t` 时刻已知的因子条件方差对角矩阵
+- `R_t`：`t` 时刻已知的因子相关矩阵
+- `z_f,t+1`：当步采样的因子标准化创新
+
+#### 25.1.2 产品 pre-jump 残差生成
+
+```text
+u_i,t+1^pre = sqrt(h_i,t) * eps_i,t+1
+eps_i,t+1 ~ StudentT(df_i)
+```
+
+其中：
+
+- `h_i,t`：`t` 时刻已知的产品 idiosyncratic 条件方差
+
+#### 25.1.3 因子 GARCH 更新
+
+若 `eps_k,t+1^pre` 为 `t+1` 的因子 pre-jump 标准化残差，则：
+
+```text
+h_k,t+1 = ω_k(S_t+1) + α_k(S_t+1) * (eps_k,t+1^pre)^2 + β_k(S_t+1) * h_k,t
+```
+
+#### 25.1.4 产品 GARCH 更新
+
+若 `u_i,t+1^pre` 为 `t+1` 的产品 pre-jump 残差，则：
+
+```text
+h_i,t+1 = ω_i(S_t+1) + α_i(S_t+1) * (u_i,t+1^pre)^2 + β_i(S_t+1) * h_i,t
+```
+
+#### 25.1.5 DCC 更新
+
+若 `z_f,t+1^pre` 为 `t+1` 的因子 pre-jump standardized residual vector`，则：
+
+```text
+Q_t+1 = (1 - a - b) Q̄ + a z_f,t+1^pre (z_f,t+1^pre)' + b Q_t
+R_t+1 = D_t+1^{-1/2} Q_t+1 D_t+1^{-1/2}
+```
+
+冻结规则：
+
+```text
+R_t 用于生成 t+1 收益；
+R_t+1 只用于下一步 t+1 -> t+2。
+```
+
+#### 25.1.6 对正文旧写法的解释规则
+
+若正文任何位置仍出现如下记法：
+
+```text
+u_i,t+1 = sqrt(h_i,t+1) * eps_i,t+1
+```
+
+或其他看似“先有 h_t+1 再生成 t+1 残差”的写法，则统一解释为：
+
+```text
+这是一步预测条件方差的记号写法，不代表实现顺序改变。
+实际工程实现必须按 25.1.1 ~ 25.1.5 执行。
+```
+
+### 25.2 systemic jump 条件化时点冻结
+
+`v1.4` 已冻结如下规则：
+
+```text
+S_t 只用于通过 transition matrix 采样 S_t+1；
+真正支配 t+1 收益分布的是 S_t+1。
+```
+
+因此 systemic jump 的触发概率与冲击分布必须统一条件化于 `S_t+1`，不允许再混用 `S_t`。
+
+正式冻结为：
+
+```text
+M_sys,t+1 ~ Bernoulli(p_sys(S_t+1))
+L_sys,t+1 ~ F_sys_jump(S_t+1)
+J_sys,i,t+1 = M_sys,t+1 * γ_i' L_sys,t+1
+```
+
+替换性说明：
+
+- 若正文其他位置出现 `L_sys,t+1 ~ F_sys_jump(S_t)`，一律视为旧写法
+- 实现必须改为 `L_sys,t+1 ~ F_sys_jump(S_t+1)`
+
+### 25.3 `null / FailureArtifact / output schema` 闭合
+
+为使 `22.6 formal / degraded / failure 边界` 与输出 schema 一致，`v1.4` 不再直接把失败态塞进 `ProbabilityEngineOutput`。
+
+新增顶层 envelope：
+
+```python
+@dataclass
+class FailureArtifact:
+    failure_stage: str
+    failure_code: str
+    message: str
+    diagnostic_refs: list[str]
+    trustworthy_partial_diagnostics: bool
+
+
+@dataclass
+class ProbabilityEngineRunResult:
+    run_outcome_status: str                      # success / degraded / failure
+    resolved_result_category: str               # formal_independent_result / formal_estimated_result / degraded_formal_result / null
+    output: "ProbabilityEngineOutput | None"
+    failure_artifact: FailureArtifact | None
+```
+
+并冻结如下约束：
+
+```text
+1. 若存在主结果输出：
+   - output 必须非空
+   - failure_artifact 必须为空
+
+2. 若不存在主结果输出：
+   - output 必须为空
+   - failure_artifact 必须非空
+   - resolved_result_category 必须为 null
+
+3. `FailureArtifact` 不是 `degraded_formal_result` 的展示形式；
+   它只对应没有主结果输出的 failure/null 情况。
+```
+
+对现有 schema 的修补规则：
+
+- `ProbabilityEngineOutput` 继续表示“有主结果时”的正式输出对象
+- `ProbabilityEngineRunResult` 才是引擎真正返回给 orchestrator / frontdesk / decision_card 的顶层对象
+
+### 25.4 `path horizon` source of truth 落到 schema
+
+正文已声明：
+
+> path simulation 以 `DailyProbabilityEngineInput` 中的 concrete objects 为准
+
+但原 schema 未显式提供独立的 path horizon。
+现冻结如下修补：
+
+```python
+@dataclass
+class DailyProbabilityEngineInput:
+    as_of: str
+    path_horizon_days: int
+    products: list[ProductMarginalSpec]
+    factor_dynamics: FactorDynamicsSpec
+    regime_state: RegimeStateSpec
+    jump_state: JumpStateSpec
+    current_positions: list[CurrentPosition]
+    contribution_schedule: list[ContributionInstruction]
+    withdrawal_schedule: list[WithdrawalInstruction]
+    rebalancing_policy: RebalancingPolicySpec
+    success_event_spec: SuccessEventSpec
+    recipes: list[SimulationRecipe]
+    evidence_bundle_ref: str
+```
+
+并冻结优先级：
+
+```text
+1. path simulation 的 horizon source of truth = DailyProbabilityEngineInput.path_horizon_days
+2. SuccessEventSpec.horizon_days / horizon_months 负责 disclosure / replay / event contract
+3. 若两者不一致：
+   - simulation 仍以 path_horizon_days 为准
+   - run_outcome_status 标记 spec_input_mismatch
+   - formal strict result 不成立
+```
+
+额外不变量：
+
+```text
+若 SuccessEventSpec.horizon_days 与 path_horizon_days 同时存在，则两者必须一致；
+若 SuccessEventSpec.horizon_months 也存在，则其换算后的 horizon 不得与 path_horizon_days 冲突。
+```
+
+若不满足，视为 invalid formal input。
+
+### 25.5 决策表枚举全集与顺序冻结
+
+凡是出现在资格矩阵、降级链、confidence 决策、披露层级中的可比较字段，必须先映射到冻结枚举，不允许直接做自由字符串比较。
+
+#### 25.5.1 `factor_mapping_confidence`
+
+```text
+Enum order:
+low < medium < high
+```
+
+仅允许值：
+
+- `low`
+- `medium`
+- `high`
+
+#### 25.5.2 `distribution_readiness`
+
+```text
+Enum order:
+not_ready < partial < ready
+```
+
+仅允许值：
+
+- `not_ready`
+- `partial`
+- `ready`
+
+#### 25.5.3 `calibration_quality`
+
+```text
+Enum order:
+failed < weak < acceptable < strong
+```
+
+仅允许值：
+
+- `failed`
+- `weak`
+- `acceptable`
+- `strong`
+
+#### 25.5.4 `confidence_level`
+
+```text
+Enum order:
+low < medium < high
+```
+
+仅允许值：
+
+- `low`
+- `medium`
+- `high`
+
+#### 25.5.5 `disclosure_level`
+
+```text
+Enum order:
+diagnostic_only < unavailable < range_only < point_and_range
+```
+
+仅允许值：
+
+- `diagnostic_only`
+- `unavailable`
+- `range_only`
+- `point_and_range`
+
+说明：
+
+- `diagnostic_only` 表示没有正式结果，仅给诊断
+- `unavailable` 表示 formal 不可成立且不进入正式披露
+- `range_only` 表示存在 formal estimated 或 degraded range-only 结果
+- `point_and_range` 仅允许 formal strict 主结果
+
+#### 25.5.6 `resolved_result_category`
+
+对内允许值：
+
+- `formal_strict_result`
+- `formal_estimated_result`
+- `degraded_formal_result`
+- `null`
+
+对外 bridge 到 `v1.3` surface 时：
+
+- `formal_strict_result -> formal_independent_result`
+- `formal_estimated_result -> formal_estimated_result`
+- `degraded_formal_result -> degraded_formal_result`
+- `null -> null`
+
+#### 25.5.7 实现规则
+
+所有决策表中出现的：
+
+- `>= medium`
+- `>= low`
+- `partial 及以上`
+- `weak 及以上`
+
+都必须先通过固定 enum ordinal 比较，不允许直接做字符串比较。
+
+建议实现：
+
+```python
+FACTOR_MAPPING_CONFIDENCE_ORDER = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+}
+
+DISTRIBUTION_READINESS_ORDER = {
+    "not_ready": 0,
+    "partial": 1,
+    "ready": 2,
+}
+
+CALIBRATION_QUALITY_ORDER = {
+    "failed": 0,
+    "weak": 1,
+    "acceptable": 2,
+    "strong": 3,
+}
+```
+
+### 25.6 对数值例子与旧公式的解释优先级
+
+若 `13. 具体数值例子`、`11. 分层状态与公式`、`12. 日频逐产品模拟推演顺序` 与 `22 / 23 / 24 / 25` 存在口径差异，则解释优先级冻结为：
+
+```text
+25 > 24 > 23 > 22 > 12 > 11 > 13
+```
+
+说明：
+
+- `13` 只用于帮助理解，不得覆盖正式执行合同
+- `11` 的公式若与 `25.1` 的工程索引口径冲突，以 `25.1` 为准
+- `22 / 23 / 24 / 25` 共同构成最终实现合同
+
+### 25.7 Codex 实施要求
+
+Codex 在依据 `v1.4` 实现时，必须额外满足：
+
+```text
+1. 不得保留重复版本的主文档
+2. 不得同时存在两套相互冲突的状态更新公式
+3. 所有输出层调用必须改为返回 ProbabilityEngineRunResult，而不是裸 ProbabilityEngineOutput
+4. 所有资格/降级/confidence 判断必须使用冻结枚举顺序
+5. 所有 replay / calibration / frontdesk / decision_card 的 horizon 读取口径必须统一
+```
+
+验收时必须证明：
+
+- `null` 路径下不会伪造 `primary_result`
+- `FailureArtifact` 与 `degraded_formal_result` 不会混淆
+- `R_t` 与 `R_t+1` 的使用时点在代码与测试中一致
+- `L_sys,t+1` 的条件化时点统一为 `S_t+1`
