@@ -239,6 +239,33 @@ class SuccessEventSpec:
 收益口径为 nominal net-of-fees。
 ```
 
+### 4.2.1 v1.4 GA formal primary 首版收口
+
+为避免 schema 大于实现，`v1.4` GA formal primary 首版只支持以下 success event 组合：
+
+```text
+target_type = goal_amount
+success_logic = joint_target_and_drawdown
+return_basis = nominal
+fee_basis = net
+benchmark_ref = null
+```
+
+其余枚举值：
+
+- `annual_return`
+- `benchmark_outperform`
+- `terminal_only`
+- `benchmark_relative`
+- `real`
+- `gross`
+
+只保留 schema 兼容，不纳入 `v1.4` GA formal path。若 formal 输入命中这些值：
+
+- `FORMAL_STRICT`：`resolved_result_category = null`
+- `FORMAL_ESTIMATION_ALLOWED`：最多 `degraded_formal_result`
+- `disclosure_level` 不得高于 `range_only`
+
 ### 4.3 默认 success 公式
 
 若：
@@ -305,6 +332,23 @@ Pr(success) = (1 / P) * Σ_{p=1..P} I_success(path_p)
 | `daily path evidence` | `EvidenceBundle.daily_simulation_evidence` |
 | `factor mapping evidence` | `EvidenceBundle.factor_mapping_summary` |
 
+结果类别兼容映射补充如下：
+
+| `v1.4` 内部类别 | `v1.3` 兼容对外类别 |
+| --- | --- |
+| `formal_strict_result` | `formal_independent_result` |
+| `formal_estimated_result` | `formal_estimated_result` |
+| `degraded_formal_result` | `degraded_formal_result` |
+| `null` | `null` |
+
+实现规则：
+
+```text
+`formal_strict_result` 是 v1.4 内部决策表中的严格日频逐产品类别名称；
+桥接到既有 frontdesk / decision_card / Claw formal surface 时，
+必须对外发出 `formal_independent_result`。
+```
+
 `product_probability_method` 必须由引擎结果规范化映射得到，禁止自由文本：
 
 ```text
@@ -316,6 +360,17 @@ elif primary result depends on proxy/synthetic substitute:
     product_probability_method = product_proxy_path
 else:
     product_probability_method = hybrid_independent_estimate
+```
+
+补充冻结说明：
+
+```text
+`product_probability_method` 继承自 v1.3 formal surface 的兼容枚举。
+其中 `product_independent_path` 的 formal 语义是：
+“主结果来自逐产品路径级模拟，而不是月级、桶级或仅权重级近似”。
+
+该字段不表示统计独立；
+v1.4 primary 允许通过 factor-level dependence / DCC 建模产品共同风险。
 ```
 
 ### 4.6 Formal 资格矩阵与降级矩阵
@@ -368,6 +423,67 @@ else:
 | independent 覆盖不足但 estimated 仍可成立 | `formal_estimated_result` | `range_only` |
 | 映射/分布/校准不足但仍存在主结果 | `degraded_formal_result` | `range_only` |
 | primary/challenger/stress 全不可用 | `null` | `diagnostic_only` |
+
+#### 4.6.4 固定降级优先级链
+
+`v1.4` 正式路径不得把 4.6.1 / 4.6.2 当作一张“可自由解释”的表；必须执行唯一 precedence：
+
+```python
+if not daily_product_path_available:
+    resolved_result_category = "null"
+    disclosure_level = "unavailable"
+
+elif monthly_fallback_used or bucket_fallback_used:
+    resolved_result_category = "null"
+    disclosure_level = "unavailable"
+
+elif not primary_result_available:
+    resolved_result_category = "null"
+    disclosure_level = "diagnostic_only"
+
+elif execution_policy == "FORMAL_STRICT" and \
+     independent_weight_adjusted_coverage == 1.0 and \
+     observed_weight_adjusted_coverage >= 0.95 and \
+     factor_mapping_confidence >= "medium" and \
+     distribution_readiness == "ready" and \
+     calibration_quality in {"strong", "acceptable"}:
+    resolved_result_category = "formal_strict_result"
+    disclosure_level = "point_and_range"
+
+elif daily_product_path_available and \
+     observed_weight_adjusted_coverage >= 0.60 and \
+     estimated_weight_adjusted_coverage <= 0.40:
+    resolved_result_category = "formal_estimated_result"
+    disclosure_level = "range_only"
+
+else:
+    resolved_result_category = "degraded_formal_result"
+    disclosure_level = "range_only"
+```
+
+任何实现若命中多个条件，必须以此顺序裁决，不允许模块各自做“局部合理”的降级判断。
+
+### 4.7 `SuccessEventSpec` 与 execution input 的 Source of Truth
+
+`SuccessEventSpec` 与 execution 层 concrete schedule 同时存在时，source of truth 关系必须冻结：
+
+```text
+1. path simulation 以 DailyProbabilityEngineInput 中的 concrete objects 为准：
+   - contribution_schedule
+   - withdrawal_schedule
+   - rebalancing_policy
+   - path horizon
+
+2. SuccessEventSpec 只作为：
+   - formal disclosure summary
+   - replay / calibration / decision card contract
+   - explainable event definition
+
+3. 若 SuccessEventSpec 与 concrete input 不一致：
+   - simulation 仍以 concrete input 为准
+   - run_outcome_status 必须标记 spec_input_mismatch
+   - formal strict result 不成立
+```
 
 ---
 
@@ -531,7 +647,7 @@ U_publish = min(1, U_primary + 0.5 * gap_total)
 
 ```text
 r_i,t+1
-= μ_i(S_t)
+= μ_i(S_t+1)
 + β_i,t' f_t+1
 + u_i,t+1
 + J_sys,i,t+1
@@ -541,7 +657,7 @@ r_i,t+1
 
 其中：
 
-- `μ_i(S_t)`：regime 条件化后的产品确定性漂移项
+- `μ_i(S_t+1)`：regime 条件化后的产品确定性漂移项
 - `β_i,t`：产品对因子向量的暴露
 - `f_t+1`：因子收益向量
 - `u_i,t+1`：产品 idiosyncratic 残差项
@@ -561,7 +677,7 @@ eps_i,t+1 ~ StudentT(df_i)
 默认使用 `GARCH(1,1)`：
 
 ```text
-h_i,t+1 = ω_i(S_t) + α_i(S_t) * u_i,t^2 + β_i(S_t) * h_i,t
+h_i,t+1 = ω_i(S_t+1) + α_i(S_t+1) * u_i,t^2 + β_i(S_t+1) * h_i,t
 ```
 
 约束：
@@ -578,16 +694,24 @@ h_i,t+1 = ω_i(S_t) + α_i(S_t) * u_i,t^2 + β_i(S_t) * h_i,t
 因子收益向量：
 
 ```text
-f_t+1 = m(S_t) + H_t+1^{1/2} R_t+1^{1/2} z_t+1 + J_factor,t+1
+f_t+1 = m(S_t+1) + H_t^{1/2} R_t^{1/2} z_t+1
 ```
 
 其中：
 
-- `m(S_t)`：regime 条件化因子均值
-- `H_t+1`：因子条件方差对角矩阵
-- `R_t+1`：因子相关矩阵
+- `m(S_t+1)`：regime 条件化因子均值
+- `H_t`：当步生成因子收益时使用的已知条件方差对角矩阵
+- `R_t`：当步生成因子收益时使用的已知相关矩阵
 - `z_t+1`：标准化因子创新
-- `J_factor,t+1`：因子层系统 jump
+
+为避免 double count，`v1.4` formal primary 中：
+
+```text
+1. factor return f_t+1 永远定义为 pre-jump factor return
+2. systemic jump 不直接写入 f_t+1
+3. systemic jump 只通过 J_sys,i,t+1 进入产品收益
+4. factor-level jump state 仅作为生成 J_sys,i,t+1 的共同冲击源，不作为 β_i' f_t+1 的一部分重复计入
+```
 
 ### 7.5 系统 jump 传导到产品
 
@@ -599,14 +723,14 @@ J_sys,i,t+1 = M_sys,t+1 * γ_i' L_sys,t+1
 
 其中：
 
-- `M_sys,t+1 ~ Bernoulli(p_sys(S_t))`
+- `M_sys,t+1 ~ Bernoulli(p_sys(S_t+1))`
 
 ### 7.6 产品特异 jump
 
 ```text
 J_idio,i,t+1 = M_idio,i,t+1 * L_idio,i,t+1
-M_idio,i,t+1 ~ Bernoulli(p_idio,i(S_t))
-L_idio,i,t+1 ~ JumpLossDist_i
+M_idio,i,t+1 ~ Bernoulli(p_idio,i(S_t+1))
+L_idio,i,t+1 ~ JumpLossDist_i(S_t+1)
 ```
 
 ### 7.7 成本项
@@ -915,13 +1039,13 @@ z_t ~ StudentT(df)
 对每个因子 `k`：
 
 ```text
-h_{k,t+1} = ω_k(S_t) + α_k(S_t) ε_{k,t}^2 + β_k(S_t) h_{k,t}
+h_{k,t+1} = ω_k(S_t+1) + α_k(S_t+1) ε_{k,t}^2 + β_k(S_t+1) h_{k,t}
 ```
 
 对每个产品 `i`：
 
 ```text
-h_{i,t+1} = ω_i(S_t) + α_i(S_t) u_{i,t}^2 + β_i(S_t) h_{i,t}
+h_{i,t+1} = ω_i(S_t+1) + α_i(S_t+1) u_{i,t}^2 + β_i(S_t+1) h_{i,t}
 ```
 
 ### 11.3 依赖结构层：DCC
@@ -945,7 +1069,7 @@ R_{t+1} = D_{t+1}^{-1/2} Q_{t+1} D_{t+1}^{-1/2}
 系统 jump 触发：
 
 ```text
-M_sys,t+1 ~ Bernoulli(p_sys(S_t))
+M_sys,t+1 ~ Bernoulli(p_sys(S_t+1))
 ```
 
 系统 jump 损失向量：
@@ -963,8 +1087,8 @@ J_sys,i,t+1 = M_sys,t+1 * γ_i' L_sys,t+1
 产品个体 jump：
 
 ```text
-M_idio,i,t+1 ~ Bernoulli(p_idio,i(S_t))
-L_idio,i,t+1 ~ F_idio,i(S_t)
+M_idio,i,t+1 ~ Bernoulli(p_idio,i(S_t+1))
+L_idio,i,t+1 ~ F_idio,i(S_t+1)
 J_idio,i,t+1 = M_idio,i,t+1 * L_idio,i,t+1
 ```
 
@@ -978,10 +1102,17 @@ Pr(S_{t+1}=j | S_t=i) = Π_{ij}
 
 不同 regime 下可条件化：
 
-- 因子均值 `m(S_t)`
-- 因子波动参数 `ω_k, α_k, β_k`
-- 产品波动参数 `ω_i, α_i, β_i`
-- jump 概率 `p_sys(S_t), p_idio,i(S_t)`
+- 因子均值 `m(S_t+1)`
+- 因子波动参数 `ω_k(S_t+1), α_k(S_t+1), β_k(S_t+1)`
+- 产品波动参数 `ω_i(S_t+1), α_i(S_t+1), β_i(S_t+1)`
+- jump 概率 `p_sys(S_t+1), p_idio,i(S_t+1)`
+
+冻结合同：
+
+```text
+S_t 只用于通过 transition matrix 采样 S_t+1；
+真正支配 t+1 收益分布的是 S_t+1。
+```
 
 ### 11.6 因子映射 shrinkage 融合公式
 
@@ -998,53 +1129,71 @@ Pr(S_{t+1}=j | S_t=i) = Π_{ij}
 
 单条路径、单日步 `x -> x+1` 必须按下列顺序推进：
 
-1. 采样 `S_{x+1}`
-2. 更新因子 GARCH 状态
-3. 更新因子 DCC 相关状态
-4. 生成因子创新、因子收益
-5. 判断 systemic jump
-6. 对每个产品：
-   - 更新产品 GARCH 状态
-   - 生成产品残差创新
-   - 判断产品 idio jump
-   - 合成产品日收益
-7. 合成组合日收益
-8. 注入 contribution / withdrawal
-9. 判断再平衡
-10. 更新净值、权重、路径状态
+1. 已知 `S_x`、`h_f,x`、`Q_x / R_x`、`h_i,x` 与上一期 pre-jump 残差
+2. 采样 `S_{x+1}`
+3. 在 `S_{x+1}` 条件下确定当步参数：
+   - 因子均值调整
+   - factor / product GARCH 参数
+   - jump 概率
+   - regime-dependent cost adjustments
+4. 使用 `h_f,x` 与 `R_x` 生成因子标准化创新和 pre-jump 因子收益 `f_{x+1}`
+5. 为每个产品生成 pre-jump idiosyncratic 残差，并合成 pre-jump 产品收益
+6. 叠加 systemic jump
+7. 叠加 idiosyncratic jump
+8. 扣除 fee / carry / tracking / liquidity / FX hedge drag
+9. 合成组合日收益
+10. 注入 contribution / withdrawal
+11. 执行再平衡
+12. 更新净值、权重与路径状态
+13. 用 `t+1` 实现出的 pre-jump standardized residuals 更新到下一状态：
+    - factor GARCH state
+    - DCC state
+    - product GARCH state
 
 禁止：
 
 - 先按月聚合后再近似回写日级
 - 先在桶级求收益再映射到产品
 
-### 12.1 单日状态更新顺序合同
+### 12.1 单日状态推进唯一合同
 
-为避免实现时在 GARCH / DCC / jump 的顺序上各做各的，`v1.4` 冻结如下顺序：
+在日步 `t -> t+1` 中，formal path 必须执行如下唯一顺序：
 
-1. 已知 `S_x`、`h_f,x`、`Q_x`、`h_i,x`
-2. 采样 `S_{x+1}`
-3. 在 `S_{x+1}` 条件下采样因子创新 `eps_f,x+1`
-4. 生成因子收益 `f_{x+1}`
-5. 用 **本步因子标准化残差** 更新 DCC，得到 `R_{x+1}`
-6. 对每个产品：
-   - 用上一期产品残差更新 `h_i,x+1`
-   - 生成 pre-jump 残差项
-   - 合成 pre-jump 产品收益
-7. 在 pre-jump 产品收益上叠加：
+1. 已知 `t` 时刻状态：
+   - regime state: `S_t`
+   - factor variance state: `h_f,t`
+   - factor dependence state: `Q_t / R_t`
+   - product variance state: `h_i,t`
+   - previous pre-jump residuals
+2. 采样下一状态：
+   - sample `S_t+1 ~ Π[S_t, ·]`
+3. 用 `S_t+1` 条件化当步参数：
+   - factor mean adjustments
+   - factor GARCH parameters
+   - product GARCH parameters
+   - jump probabilities
+   - regime-dependent cost adjustments
+4. 使用 `t` 时刻的已知状态生成 `t+1` 冲击：
+   - generate factor standardized innovations `z_f,t+1`
+   - compute pre-jump factor return `f_t+1` using `h_f,t` and `R_t`
+   - generate product idiosyncratic innovations `eps_i,t+1` using `h_i,t`
+5. 生成 pre-jump product returns
+6. 叠加 jump：
    - systemic jump
    - idiosyncratic jump
-8. 最后再扣：
-   - fee
-   - carry
-   - tracking / liquidity cost
-9. 合成组合收益并更新净值
+7. 扣除 cost / carry / tracking / liquidity / FX drag
+8. 合成组合收益、注入现金流、执行再平衡、更新净值
+9. 用 `t+1` 实现出的 pre-jump standardized residuals 更新到下一状态：
+   - update factor GARCH state to `h_f,t+1`
+   - update DCC state to `Q_t+1 / R_t+1`
+   - update product GARCH state to `h_i,t+1`
 
 附加边界：
 
 - GARCH 更新只使用 **pre-jump** 残差
 - jump 不反推进入同一步的波动更新
 - cost/carry 一律在 jump 之后入账
+- `R_t` 用于生成 `t+1` 收益，`R_t+1` 只用于下一步 `t+1 -> t+2`
 
 ---
 
@@ -1096,7 +1245,7 @@ Pr(S_{t+1}=j | S_t=i) = Π_{ij}
 S_{x+1} = risk_off
 ```
 
-### 13.3 第二步：采样因子
+### 13.3 第二步：生成 pre-jump 因子收益
 
 简化后使用 4 个相关因子：
 
@@ -1127,7 +1276,7 @@ R =
  [0.15, 0.10, 0.05, 1.00]]
 ```
 
-采样标准化创新后得到：
+使用 `h_f,x` 与 `R_x` 采样标准化创新后得到 pre-jump 因子收益：
 
 ```text
 f_{x+1} =
@@ -1145,7 +1294,7 @@ USD_CNH          = +0.10%
 p_sys = 3%
 ```
 
-本次触发了系统 jump，因子 jump 冲击向量：
+本次触发了系统 jump。注意：该冲击不写入 `f_{x+1}`，而是仅通过 `J_sys,i,t+1` 传导到产品层。共同冲击向量记为：
 
 ```text
 L_sys = [-1.00%, -0.20%, +0.10%, +0.00%]
@@ -1711,7 +1860,46 @@ class SimulationRecipe:
     path_count: int
 ```
 
-### 17.6 主输入对象
+### 17.6 执行层 concrete object schema
+
+```python
+@dataclass
+class CurrentPosition:
+    product_id: str
+    units: float
+    market_value: float
+    weight: float
+    cost_basis: float | None
+    tradable: bool
+
+
+@dataclass
+class ContributionInstruction:
+    date: str
+    amount: float
+    allocation_mode: str          # pro_rata / target_weights / custom
+    target_weights: dict[str, float] | None
+
+
+@dataclass
+class WithdrawalInstruction:
+    date: str
+    amount: float
+    execution_rule: str           # cash_first / pro_rata_sell / custom
+    target_products: list[str] | None
+
+
+@dataclass
+class RebalancingPolicySpec:
+    policy_type: str              # none / calendar / threshold / hybrid
+    calendar_frequency: str | None
+    threshold_band: float | None
+    execution_timing: str         # end_of_day_after_return
+    transaction_cost_bps: float
+    min_trade_amount: float | None
+```
+
+### 17.7 主输入对象
 
 ```python
 @dataclass
@@ -1721,16 +1909,45 @@ class DailyProbabilityEngineInput:
     factor_dynamics: FactorDynamicsSpec
     regime_state: RegimeStateSpec
     jump_state: JumpStateSpec
-    current_positions: list[dict[str, Any]]
-    contribution_schedule: list[dict[str, Any]]
-    withdrawal_schedule: list[dict[str, Any]]
-    rebalancing_policy: dict[str, Any]
+    current_positions: list[CurrentPosition]
+    contribution_schedule: list[ContributionInstruction]
+    withdrawal_schedule: list[WithdrawalInstruction]
+    rebalancing_policy: RebalancingPolicySpec
     success_event_spec: SuccessEventSpec
     recipes: list[SimulationRecipe]
     evidence_bundle_ref: str
 ```
 
-### 17.7 输出对象
+### 17.8 输出对象
+
+```python
+@dataclass
+class PathStatsSummary:
+    terminal_value_mean: float
+    terminal_value_p05: float
+    terminal_value_p50: float
+    terminal_value_p95: float
+    cagr_p05: float
+    cagr_p50: float
+    cagr_p95: float
+    max_drawdown_p05: float
+    max_drawdown_p50: float
+    max_drawdown_p95: float
+    success_count: int
+    path_count: int
+
+
+@dataclass
+class ProbabilityDisclosurePayload:
+    published_point: float | None
+    published_range: tuple[float, float] | None
+    disclosure_level: str
+    confidence_level: str
+    challenger_gap: float | None
+    stress_gap: float | None
+    gap_total: float | None
+    widening_method: str
+```
 
 ```python
 @dataclass
@@ -1742,7 +1959,7 @@ class RecipeSimulationResult:
     cagr_range: tuple[float, float]
     drawdown_range: tuple[float, float]
     sample_count: int
-    path_stats: dict[str, Any]
+    path_stats: PathStatsSummary
     calibration_link_ref: str | None
 
 
@@ -1752,7 +1969,7 @@ class ProbabilityEngineOutput:
     challenger_results: list[RecipeSimulationResult]
     stress_results: list[RecipeSimulationResult]
     model_disagreement: dict[str, Any]
-    probability_disclosure_payload: dict[str, Any]
+    probability_disclosure_payload: ProbabilityDisclosurePayload
     evidence_refs: list[str]
 ```
 
@@ -1927,3 +2144,358 @@ Claw 还必须看到：
 `v1.4` 不是“再加几个 mode”，而是把概率引擎改造成：
 
 > 一个以日频逐产品路径为核心、以方案 B 为主模型、以方案 C 为 challenger、以因子层承接共同依赖、以 jump 和 regime 提供尾部与状态真实性、并明确禁止月级与桶级 fallback 的正式概率系统。
+
+---
+
+## 22. Formal Execution Contract
+
+本章是实现层唯一执行合同。若正文其他位置存在更口语化写法，以本章为准。
+
+### 22.1 单日推进顺序
+
+`v1.4` formal path 的日步 `t -> t+1` 只能按下列顺序执行：
+
+1. 读取 `t` 时刻状态：
+   - `S_t`
+   - `h_f,t`
+   - `Q_t / R_t`
+   - `h_i,t`
+   - previous pre-jump residuals
+2. 采样 `S_t+1`
+3. 使用 `S_t+1` 条件化当步参数：
+   - 因子均值
+   - factor GARCH 参数
+   - product GARCH 参数
+   - jump 概率
+   - regime-dependent cost adjustments
+4. 使用 `h_f,t` 与 `R_t` 生成 `t+1` pre-jump 因子收益
+5. 使用 `h_i,t` 生成产品 pre-jump 残差
+6. 合成产品 pre-jump 收益
+7. 叠加 systemic jump
+8. 叠加 idiosyncratic jump
+9. 扣除 cost / carry / tracking / liquidity / FX drag
+10. 合成组合收益
+11. 注入 contribution / withdrawal
+12. 执行再平衡
+13. 更新组合净值和持仓
+14. 用 `t+1` 实现出的 pre-jump standardized residuals 更新到：
+    - `h_f,t+1`
+    - `Q_t+1 / R_t+1`
+    - `h_i,t+1`
+
+### 22.2 `S_t / S_t+1` 统一口径
+
+冻结规则：
+
+```text
+S_t 只用于通过 transition matrix 采样 S_t+1；
+真正支配 t+1 收益分布的是 S_t+1。
+```
+
+因此：
+
+- `μ_i = μ_i(S_t+1)`
+- `factor GARCH params = params_f(S_t+1)`
+- `product GARCH params = params_i(S_t+1)`
+- `p_sys = p_sys(S_t+1)`
+- `p_idio,i = p_idio,i(S_t+1)`
+- `cost adjustment = c(S_t+1)`
+
+### 22.3 pre-jump / post-jump 统一口径
+
+冻结规则：
+
+```text
+1. β_i' f_t+1 永远对应 pre-jump factor common component
+2. systemic jump 不直接写入 f_t+1
+3. systemic jump 只通过 J_sys,i,t+1 单独进入产品收益
+4. GARCH 与 DCC 更新只使用 pre-jump standardized residuals
+5. jump 不反推进入同一步方差或相关更新
+```
+
+### 22.4 交易执行时点
+
+冻结顺序：
+
+1. 当日收益先实现
+2. 再叠加 jump
+3. 再扣 cost
+4. 再合成组合收益
+5. 日末注入 contribution
+6. 日末执行 withdrawal
+7. 日末按 `RebalancingPolicySpec.execution_timing = end_of_day_after_return` 执行再平衡
+
+补充规则：
+
+- 若现金不足以完成 withdrawal，默认按当前权重比例卖出
+- transaction cost 记入同日 `cost`
+- formal replay、frontdesk、decision card 必须共享这一执行顺序
+
+### 22.5 `SuccessEventSpec` 与 concrete input 的优先级
+
+```text
+1. path simulation 的 source of truth 是 DailyProbabilityEngineInput 中的 concrete objects
+2. SuccessEventSpec 负责 formal disclosure / replay contract / explainable event definition
+3. 若 SuccessEventSpec 与 concrete execution input 不一致：
+   - simulation 仍以 concrete input 为准
+   - 标记 spec_input_mismatch
+   - formal strict result 不成立
+```
+
+### 22.6 formal / degraded / failure 边界
+
+冻结规则：
+
+- 存在主结果输出时，才允许 `formal_strict_result / formal_estimated_result / degraded_formal_result`
+- 若没有主结果，只允许：
+  - `resolved_result_category = null`
+  - `FailureArtifact`
+- `FailureArtifact` 不是 `degraded_formal_result` 的展示形式
+
+---
+
+## 23. Frozen Decision Tables
+
+本章把会导致多人并行实现分叉的判断规则冻结成表。
+
+### 23.1 降级优先级链
+
+唯一 precedence：
+
+```python
+if not daily_product_path_available:
+    resolved_result_category = "null"
+    disclosure_level = "unavailable"
+
+elif monthly_fallback_used or bucket_fallback_used:
+    resolved_result_category = "null"
+    disclosure_level = "unavailable"
+
+elif not primary_result_available:
+    resolved_result_category = "null"
+    disclosure_level = "diagnostic_only"
+
+elif execution_policy == "FORMAL_STRICT" and \
+     independent_weight_adjusted_coverage == 1.0 and \
+     observed_weight_adjusted_coverage >= 0.95 and \
+     factor_mapping_confidence >= "medium" and \
+     distribution_readiness == "ready" and \
+     calibration_quality in {"strong", "acceptable"}:
+    resolved_result_category = "formal_strict_result"
+    disclosure_level = "point_and_range"
+
+elif daily_product_path_available and \
+     observed_weight_adjusted_coverage >= 0.60 and \
+     estimated_weight_adjusted_coverage <= 0.40:
+    resolved_result_category = "formal_estimated_result"
+    disclosure_level = "range_only"
+
+else:
+    resolved_result_category = "degraded_formal_result"
+    disclosure_level = "range_only"
+```
+
+### 23.2 confidence 基础评分表
+
+基础评分先算，再叠加 6.6 的 `gap_total` 下调规则。
+
+| 条件 | 分值 |
+| --- | ---: |
+| `observed_weight_adjusted_coverage >= 0.95` | +2 |
+| `factor_mapping_confidence = high` | +2 |
+| `distribution_readiness = ready` | +2 |
+| `calibration_quality = strong` | +2 |
+| `challenger_available = true` | +1 |
+| `stress_available = true` | +1 |
+
+映射：
+
+- `8-10 = high`
+- `5-7 = medium`
+- `0-4 = low`
+
+硬约束：
+
+- `degraded_formal_result` 最高只能到 `medium`
+- `formal_estimated_result` 若 `estimated_weight_adjusted_coverage > 0.25`，最高只能到 `medium`
+- `distribution_readiness != ready` 时不得给 `high`
+
+### 23.3 success probability range 计算法
+
+若：
+
+- `P` = 路径数
+- `x` = success 命中数
+- `p_hat = x / P`
+
+则：
+
+1. point estimate 固定为 `p_hat`
+2. primary raw range 固定为 Wilson 95% interval
+3. published range 固定为：在 Wilson raw range 上应用 6.6 的 widening 规则
+
+禁止：
+
+- 正态近似区间
+- 任意 beta posterior
+- UI 层自行二次扩宽
+
+### 23.4 shrinkage 权重门槛表
+
+| 条件 | 规则 |
+| --- | --- |
+| 历史 `< 63` 日 | `w_returns = 0` |
+| 历史 `63-125` 日 | `w_returns <= 0.20` |
+| 历史 `126-251` 日 | `w_returns <= 0.40` |
+| 历史 `>= 252` 日 | `w_returns` 可满配 |
+| holdings coverage `< 0.50` | `w_holdings <= 0.20` |
+| holdings coverage `0.50-0.69` | `w_holdings <= 0.40` |
+| 无 holdings 且短历史 | `β_anchor = category cluster mean` |
+
+### 23.5 challenger bootstrap 运行细则
+
+冻结参数：
+
+- `block_size = 20` 个交易日
+- 允许 overlapping blocks
+- 允许 sampling with replacement
+- 多产品 challenger 必须共享同一时间切片，保持联合路径结构
+- regime conditioning：按当前 regime 选初始候选块，后续块继续按路径内 regime 标签筛选
+- 若产品历史长度 `< 2 * block_size`，该产品 challenger 不可用，禁止伪造 challenger coverage
+
+### 23.6 stress recipe 参数表
+
+| 项 | Primary | Stress |
+| --- | --- | --- |
+| systemic jump prob | `p_sys` | `min(1, 1.5 * p_sys)` |
+| idio jump prob | `p_idio` | `min(1, 1.25 * p_idio)` |
+| tail df | `df` | `max(4, 0.7 * df)` |
+| risk_off persistence | `Π_rr` | `min(0.95, Π_rr + 0.10)` |
+| factor vol level | `σ` | `1.20 * σ` |
+
+冻结规则：
+
+- stress 不出 point truth
+- stress 只进入 `stress_results`
+- stress 只影响 widening / tail explanation / confidence downshift
+
+### 23.7 Recipe registry 冻结示例
+
+实现层必须走 registry，不允许工程师各自发明 recipe 名称：
+
+```python
+PRIMARY_RECIPE_V14 = SimulationRecipe(
+    recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+    role="primary",
+    innovation_layer="student_t",
+    volatility_layer="factor_and_product_garch",
+    dependency_layer="factor_level_dcc",
+    jump_layer="systemic_plus_idio",
+    regime_layer="markov_regime",
+    estimation_basis="daily_product_formal",
+    dependency_scope="factor",
+    path_count=4000,
+)
+
+CHALLENGER_RECIPE_V14 = SimulationRecipe(
+    recipe_name="challenger_regime_conditioned_block_bootstrap_v1",
+    role="challenger",
+    innovation_layer="empirical",
+    volatility_layer="embedded_in_history",
+    dependency_layer="shared_block_history",
+    jump_layer="embedded_in_history",
+    regime_layer="regime_conditioned_blocks",
+    estimation_basis="empirical_daily_product_path",
+    dependency_scope="product",
+    path_count=2000,
+)
+
+STRESS_RECIPE_V14 = SimulationRecipe(
+    recipe_name="stress_downside_tail_v1",
+    role="stress",
+    innovation_layer="student_t",
+    volatility_layer="factor_and_product_garch",
+    dependency_layer="factor_level_dcc",
+    jump_layer="systemic_plus_idio_stressed",
+    regime_layer="markov_regime_stressed",
+    estimation_basis="stress_tail_overlay",
+    dependency_scope="factor",
+    path_count=2000,
+)
+```
+
+---
+
+## 24. Schema Completion Patch
+
+本章把仍然容易漂移的 schema 口子补齐。
+
+### 24.1 `SuccessEventSpec` 的正式边界
+
+`v1.4` GA formal primary 首版只支持：
+
+- `target_type = goal_amount`
+- `success_logic = joint_target_and_drawdown`
+- `return_basis = nominal`
+- `fee_basis = net`
+- `benchmark_ref = null`
+
+其余枚举值仅保留兼容性，不纳入 formal strict GA。
+
+### 24.2 `FormalEstimatedResultSpec`
+
+`formal_estimated_result` 不是“independent 不够时的兜底桶”，它的正向定义冻结为：
+
+```python
+@dataclass
+class FormalEstimatedResultSpec:
+    estimation_basis: str   # factor_estimate / partial_independent_with_estimated_residual
+    observed_weight_adjusted_coverage: float
+    estimated_weight_adjusted_coverage: float
+    factor_mapping_confidence: str
+    range_only: bool
+```
+
+冻结约束：
+
+- `estimation_basis` 必填
+- `range_only = true`
+- `estimated_weight_adjusted_coverage` 必须显式出现在 Evidence Bundle
+- 若 estimated 部分超过 `0.40`，不得给 `formal_estimated_result`
+
+### 24.3 `trustworthy_partial_diagnostics` 推导条件
+
+`trustworthy_partial_diagnostics` 禁止自由赋值，必须由以下条件联合推出：
+
+- evidence refs 可追踪
+- explanation readiness 非 `not_ready`
+- 关键诊断字段来源不含 forbidden substitute
+- failed stage 已知
+
+### 24.4 dataclass 冻结
+
+以下对象已经冻结，不再允许 `dict[str, Any]` 代替：
+
+- `CurrentPosition`
+- `ContributionInstruction`
+- `WithdrawalInstruction`
+- `RebalancingPolicySpec`
+- `PathStatsSummary`
+- `ProbabilityDisclosurePayload`
+
+### 24.5 regime detector / jump calibrator / dependence provider 的首版边界
+
+为防止首版 scope 漂移：
+
+- `v1.4` 首版不包含 regime detector 训练器，只消费已校准的 regime state artifact
+- `v1.4` 首版 jump calibrator 允许采用阈值法识别 tail days
+- `v1.4` 首版 dependence provider 只要求实现 `factor_level_dcc`，其余如 `copula_dependence / sparse_dcc / factor_block_dcc` 只预留接口
+
+### 24.6 `EvidenceInvarianceReport` 的 semantic / artifact 区分
+
+性能与复用校验中：
+
+- `semantic_refs`：快照、版本、数据依赖、policy 版本
+- `artifact_refs`：具体文件路径、缓存对象、持久化对象
+
+真正要求 invariance 的是前者，不是后者。
