@@ -34,6 +34,13 @@ FIXED_FACTOR_DICTIONARY: dict[str, FactorDefinition] = {
 }
 
 
+def validate_fixed_factor_dictionary(factors: tuple[FactorDefinition, ...]) -> None:
+    expected_ids = tuple(FIXED_FACTOR_DICTIONARY.keys())
+    actual_ids = tuple(factor.factor_id for factor in factors)
+    if actual_ids != expected_ids:
+        raise ValueError("factor library does not match fixed factor dictionary")
+
+
 def _coerce_mapping(value: Any, *, context: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{context} must be an object")
@@ -108,9 +115,7 @@ def load_factor_library_snapshot(snapshot_path: str | Path) -> FactorLibrarySnap
         raise ValueError("factor library snapshot requires factor_return_history list")
 
     factors = tuple(_coerce_factor_definition(item) for item in factors_payload)
-    expected_ids = tuple(FIXED_FACTOR_DICTIONARY.keys())
-    if tuple(factor.factor_id for factor in factors) != expected_ids:
-        raise ValueError("factor library snapshot does not match fixed factor dictionary")
+    validate_fixed_factor_dictionary(factors)
 
     factor_ids = tuple(factor.factor_id for factor in factors)
     factor_return_history = tuple(_coerce_factor_return_observation(item, factor_ids) for item in history_payload)

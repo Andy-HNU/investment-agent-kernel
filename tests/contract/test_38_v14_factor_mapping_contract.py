@@ -93,3 +93,24 @@ def test_factor_library_public_coercion_rejects_missing_factor_return_history() 
 
     with pytest.raises(ValueError, match="factor_return_history"):
         build_factor_mapping(bundle.products, {"snapshot_id": factor_library.snapshot_id, "as_of": factor_library.as_of, "factors": [factor.__dict__ for factor in factor_library.factors]}, as_of=bundle.as_of)
+
+
+@pytest.mark.contract
+def test_public_factor_library_coercion_rejects_missing_factor_ids() -> None:
+    factor_library = load_factor_library_snapshot(FIXTURE_DIR / "factor_library_snapshot.json")
+    bundle = load_product_mapping_bundle(FIXTURE_DIR / "product_mapping_bundle.json")
+    altered_factors = [factor.__dict__ for factor in factor_library.factors[1:]]
+
+    with pytest.raises(ValueError, match="fixed factor dictionary"):
+        build_factor_mapping(
+            bundle.products,
+            {
+                "snapshot_id": factor_library.snapshot_id,
+                "as_of": factor_library.as_of,
+                "factors": altered_factors,
+                "factor_return_history": [
+                    {"date": row.date, **row.factor_returns} for row in factor_library.factor_return_history
+                ],
+            },
+            as_of=bundle.as_of,
+        )

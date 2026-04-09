@@ -5,7 +5,12 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from probability_engine.factor_library import FactorDefinition, FactorLibrarySnapshot, FactorReturnObservation
+from probability_engine.factor_library import (
+    FactorDefinition,
+    FactorLibrarySnapshot,
+    FactorReturnObservation,
+    validate_fixed_factor_dictionary,
+)
 
 
 @dataclass(frozen=True)
@@ -236,6 +241,7 @@ def _coerce_factor_library(factor_library: FactorLibrarySnapshot | Mapping[str, 
         )
         for item in factors_payload
     )
+    validate_fixed_factor_dictionary(factors)
     factor_ids = tuple(factor.factor_id for factor in factors)
     factor_return_history: list[FactorReturnObservation] = []
     for item in history_payload:
