@@ -86,6 +86,17 @@ class FactorLibrarySnapshot:
     factors: tuple[FactorDefinition, ...]
     factor_return_history: tuple[FactorReturnObservation, ...]
 
+    def __post_init__(self) -> None:
+        validate_fixed_factor_dictionary(self.factors)
+        if not self.factor_return_history:
+            raise ValueError("factor library snapshot requires factor return history")
+        factor_ids = self.factor_ids
+        expected_factor_keys = set(factor_ids)
+        for observation in self.factor_return_history:
+            actual_factor_keys = set(observation.factor_returns)
+            if actual_factor_keys != expected_factor_keys:
+                raise ValueError("factor library snapshot factor returns do not match fixed factor dictionary")
+
     @property
     def factor_ids(self) -> tuple[str, ...]:
         return tuple(factor.factor_id for factor in self.factors)
@@ -115,17 +126,12 @@ def load_factor_library_snapshot(snapshot_path: str | Path) -> FactorLibrarySnap
         raise ValueError("factor library snapshot requires factor_return_history list")
 
     factors = tuple(_coerce_factor_definition(item) for item in factors_payload)
-    validate_fixed_factor_dictionary(factors)
-
     factor_ids = tuple(factor.factor_id for factor in factors)
     factor_return_history = tuple(_coerce_factor_return_observation(item, factor_ids) for item in history_payload)
-    if not factor_return_history:
-        raise ValueError("factor library snapshot requires factor return history")
 
-    snapshot = FactorLibrarySnapshot(
+    return FactorLibrarySnapshot(
         snapshot_id=str(payload.get("snapshot_id", "")),
         as_of=str(payload.get("as_of", "")),
         factors=factors,
         factor_return_history=factor_return_history,
     )
-    return snapshot

@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from probability_engine.factor_library import FIXED_FACTOR_DICTIONARY, load_factor_library_snapshot
+from probability_engine.factor_library import (
+    FIXED_FACTOR_DICTIONARY,
+    FactorLibrarySnapshot,
+    load_factor_library_snapshot,
+)
 from probability_engine.factor_mapping import build_factor_mapping, load_product_mapping_bundle
 
 
@@ -113,4 +117,18 @@ def test_public_factor_library_coercion_rejects_missing_factor_ids() -> None:
                 ],
             },
             as_of=bundle.as_of,
+        )
+
+
+@pytest.mark.contract
+def test_manual_factor_library_snapshot_rejects_missing_factor_ids() -> None:
+    factor_library = load_factor_library_snapshot(FIXTURE_DIR / "factor_library_snapshot.json")
+    invalid_factors = factor_library.factors[1:]
+
+    with pytest.raises(ValueError, match="fixed factor dictionary"):
+        FactorLibrarySnapshot(
+            snapshot_id=factor_library.snapshot_id,
+            as_of=factor_library.as_of,
+            factors=invalid_factors,
+            factor_return_history=factor_library.factor_return_history,
         )
