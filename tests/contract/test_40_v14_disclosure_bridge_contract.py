@@ -29,6 +29,20 @@ def test_task4_primary_only_run_emits_minimal_typed_disclosure_payload() -> None
     assert result.output.probability_disclosure_payload.confidence_level in {"high", "medium", "low"}
 
 
+def test_successful_task4_run_uses_internal_formal_strict_result() -> None:
+    sim_input = deepcopy(_load_v14_formal_daily_input())
+    for product in sim_input["products"]:
+        product["mapping_confidence"] = "high"
+
+    result = run_probability_engine(sim_input)
+
+    assert isinstance(result, ProbabilityEngineRunResult)
+    assert result.run_outcome_status == "success"
+    assert result.resolved_result_category == "formal_strict_result"
+    assert result.output is not None
+    assert result.output.probability_disclosure_payload.disclosure_level == "point_and_range"
+
+
 def test_invalid_task4_formal_scope_does_not_publish_disclosure_payload() -> None:
     sim_input = deepcopy(_load_v14_formal_daily_input())
     sim_input["success_event_spec"]["horizon_days"] = sim_input["path_horizon_days"] + 1

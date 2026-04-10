@@ -46,6 +46,23 @@ def _quantile(values: np.ndarray, level: float) -> float:
     return float(np.quantile(values, level))
 
 
+def _next_trading_day(current: date) -> date:
+    next_day = current + timedelta(days=1)
+    while next_day.weekday() >= 5:
+        next_day += timedelta(days=1)
+    return next_day
+
+
+def _trading_step_dates(as_of: str, horizon_days: int) -> list[str]:
+    anchor = date.fromisoformat(as_of)
+    step_dates: list[str] = []
+    current = anchor
+    for _ in range(max(int(horizon_days), 0)):
+        current = _next_trading_day(current)
+        step_dates.append(current.isoformat())
+    return step_dates
+
+
 def _student_t_scale(rng: np.random.Generator, df: float | None) -> float:
     if df is None or df <= 2.0:
         return 1.0
@@ -108,6 +125,21 @@ def _annualized_cagr(initial_value: float, terminal_value: float, horizon_days: 
     if initial_value <= 0.0 or terminal_value <= 0.0 or horizon_days <= 0:
         return -1.0
     return float((terminal_value / initial_value) ** (252.0 / horizon_days) - 1.0)
+
+
+def _wilson_interval(success_count: int, total_count: int, z_score: float = 1.96) -> tuple[float, float]:
+    if total_count <= 0:
+        return (0.0, 0.0)
+    probability = float(success_count) / float(total_count)
+    z_squared = float(z_score**2)
+    denominator = 1.0 + (z_squared / float(total_count))
+    center = (probability + (z_squared / (2.0 * float(total_count)))) / denominator
+    margin = (
+        z_score
+        * np.sqrt((probability * (1.0 - probability) + (z_squared / (4.0 * float(total_count)))) / float(total_count))
+        / denominator
+    )
+    return (_clamp_probability(center - margin), _clamp_probability(center + margin))
 
 
 def _confidence_rank(value: str) -> int:
@@ -267,9 +299,11 @@ def _simulate_single_path(
     regime_state = RegimeStateSpec.from_any(runtime_input.regime_state.to_dict())
     if regime_state is None:
         raise ValueError("regime_state is required")
-    calendar_anchor = date.fromisoformat(runtime_input.as_of)
 
-    for offset in range(runtime_input.path_horizon_days):
+    step_dates = _trading_step_dates(runtime_input.as_of, runtime_input.path_horizon_days)
+    previous_step_date = runtime_input.as_of
+
+    for offset, step_date in enumerate(step_dates):
         current_regime = regime_state.current_regime
         next_regime = sample_next_regime(regime_state, random_state=rng, regime_name=current_regime)
         adjustments = regime_adjustments(regime_state, regime_name=next_regime)
@@ -347,7 +381,6 @@ def _simulate_single_path(
             drag = _sum_profile_values(product.carry_profile) + _sum_profile_values(product.valuation_profile)
             product_returns[product.product_id] = pre_jump_return + systemic_component + idio_component + drag
 
-        step_date = (calendar_anchor + timedelta(days=offset + 1)).isoformat()
         portfolio_state = apply_daily_cashflows_and_rebalance(
             portfolio_state=portfolio_state,
             product_returns=product_returns,
@@ -355,7 +388,7 @@ def _simulate_single_path(
             withdrawals=instructions_for_date(runtime_input.withdrawal_schedule, step_date),
             policy=runtime_input.rebalancing_policy,
             current_date=step_date,
-            previous_date=(calendar_anchor + timedelta(days=offset)).isoformat(),
+            previous_date=previous_step_date,
         )
         peak_value = max(peak_value, portfolio_state.net_value)
         if peak_value > 0.0:
@@ -387,6 +420,7 @@ def _simulate_single_path(
                 1e-12,
             )
         regime_state.current_regime = next_regime
+        previous_step_date = step_date
 
     terminal_value = portfolio_state.net_value
     success = terminal_value >= float(runtime_input.success_event_spec.target_value)
@@ -410,12 +444,9 @@ def _summarize_outcomes(
     drawdowns = np.asarray([outcome.max_drawdown for outcome in outcomes], dtype=float)
     successes = np.asarray([1.0 if outcome.success else 0.0 for outcome in outcomes], dtype=float)
 
-    success_probability = float(np.mean(successes))
-    margin = 1.96 * np.sqrt(max(success_probability * (1.0 - success_probability), 1e-12) / max(len(outcomes), 1))
-    success_range = (
-        max(0.0, success_probability - margin),
-        min(1.0, success_probability + margin),
-    )
+    success_count = int(np.sum(successes))
+    success_probability = float(success_count / max(len(outcomes), 1))
+    success_range = _wilson_interval(success_count, len(outcomes))
 
     return RecipeSimulationResult(
         recipe_name=recipe.recipe_name,
@@ -436,7 +467,7 @@ def _summarize_outcomes(
             max_drawdown_p05=_quantile(drawdowns, 0.05),
             max_drawdown_p50=_quantile(drawdowns, 0.50),
             max_drawdown_p95=_quantile(drawdowns, 0.95),
-            success_count=int(np.sum(successes)),
+            success_count=success_count,
             path_count=len(outcomes),
         ),
         calibration_link_ref=runtime_input.evidence_bundle_ref or None,

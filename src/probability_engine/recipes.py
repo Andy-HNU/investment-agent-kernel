@@ -63,28 +63,18 @@ def _matches_supported_primary_recipe(recipe: SimulationRecipe) -> bool:
     registered = RECIPE_REGISTRY.get(recipe.recipe_name)
     if registered is None:
         return False
-    return (
-        recipe.role == "primary"
-        and registered.role == "primary"
-        and recipe.innovation_layer == registered.innovation_layer
-        and recipe.volatility_layer == registered.volatility_layer
-        and recipe.dependency_layer == registered.dependency_layer
-        and recipe.jump_layer == registered.jump_layer
-        and recipe.regime_layer == registered.regime_layer
-        and recipe.estimation_basis == registered.estimation_basis
-        and recipe.dependency_scope == registered.dependency_scope
-        and recipe.path_count > 0
-    )
+    return registered.role == "primary" and recipe == registered
 
 
 def resolve_recipes(values: list[Any] | None) -> list[SimulationRecipe]:
-    if not values:
+    if values is None:
         return [PRIMARY_RECIPE_V14]
-    recipes = [SimulationRecipe.from_any(item) for item in values]
-    return recipes or [PRIMARY_RECIPE_V14]
+    return [SimulationRecipe.from_any(item) for item in values]
 
 
 def primary_recipe(recipes: list[SimulationRecipe]) -> SimulationRecipe:
+    if not recipes:
+        raise ValueError("Task 4 requires an explicit primary recipe when a recipes list is supplied")
     for recipe in recipes:
         if recipe.role == "primary":
             if not _matches_supported_primary_recipe(recipe):
@@ -93,4 +83,4 @@ def primary_recipe(recipes: list[SimulationRecipe]) -> SimulationRecipe:
                     f"got {recipe.recipe_name or '<unnamed>'}"
                 )
             return recipe
-    return PRIMARY_RECIPE_V14
+    raise ValueError("Task 4 requires a primary recipe in the supplied recipes list")

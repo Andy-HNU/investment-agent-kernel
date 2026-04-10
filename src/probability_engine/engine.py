@@ -15,6 +15,8 @@ from probability_engine.path_generator import (
 )
 from probability_engine.recipes import primary_recipe, resolve_recipes
 
+_TASK4_TRADING_DAYS_PER_MONTH = 20
+
 
 def _validate_task4_formal_success_event(runtime_input: DailyEngineRuntimeInput) -> None:
     success_event = runtime_input.success_event_spec
@@ -33,6 +35,11 @@ def _validate_task4_formal_success_event(runtime_input: DailyEngineRuntimeInput)
         failures.append("success_event_spec.benchmark_ref must be null")
     if int(success_event.horizon_days) != int(runtime_input.path_horizon_days):
         failures.append("success_event_spec.horizon_days must match path_horizon_days")
+    implied_horizon_days = int(success_event.horizon_months) * _TASK4_TRADING_DAYS_PER_MONTH
+    if implied_horizon_days != int(success_event.horizon_days):
+        failures.append(
+            "success_event_spec.horizon_months conflicts with the frozen v1.4 trading-day horizon"
+        )
     if failures:
         raise ValueError("; ".join(failures))
 
@@ -51,7 +58,7 @@ def _resolve_outcome(runtime_input: DailyEngineRuntimeInput) -> tuple[str, str]:
     confidence_level = probability_engine_confidence_level(runtime_input)
     if confidence_level == "low":
         return "degraded", "degraded_formal_result"
-    return "success", "formal_independent_result"
+    return "success", "formal_strict_result"
 
 
 def _base_disclosure_payload(
