@@ -14,6 +14,13 @@ from probability_engine.contracts import (
     distribution_readiness_at_least,
     factor_mapping_confidence_at_least,
 )
+from probability_engine.challengers import (
+    CHALLENGER_RECIPE_V14,
+    STRESS_RECIPE_V14,
+    build_stress_recipe_result,
+    run_challenger_bootstrap,
+)
+from probability_engine.disclosure_bridge import assemble_probability_run_result
 from probability_engine.engine import run_probability_engine
 from probability_engine.dependence import FactorLevelDccProvider
 from probability_engine.jumps import (
@@ -57,6 +64,9 @@ __all__ = [
     "SimulationRecipe",
     "SuccessEventSpec",
     "PRIMARY_RECIPE_V14",
+    "CHALLENGER_RECIPE_V14",
+    "STRESS_RECIPE_V14",
+    "assemble_probability_run_result",
     "apply_daily_cashflows_and_rebalance",
     "calibration_quality_at_least",
     "distribution_readiness_at_least",
@@ -69,10 +79,12 @@ __all__ = [
     "idiosyncratic_jump_profile",
     "initialize_portfolio_state",
     "primary_recipe",
+    "build_stress_recipe_result",
     "regime_adjusted_systemic_jump_dispersion",
     "load_jump_state_snapshot",
     "load_regime_state_snapshot",
     "resolve_recipes",
+    "run_challenger_bootstrap",
     "run_probability_engine",
     "sample_next_regime",
     "systemic_jump_probability",
