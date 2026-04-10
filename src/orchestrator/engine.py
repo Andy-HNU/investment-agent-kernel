@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 from typing import Any
 
@@ -11,6 +11,7 @@ from decision_card.builder import build_decision_card
 from decision_card.types import DecisionCardBuildInput, DecisionCardType
 from goal_solver.engine import run_goal_solver
 from goal_solver.types import normalize_product_probability_method
+from probability_engine.engine import run_probability_engine
 from product_mapping import build_candidate_product_context, build_execution_plan
 from product_mapping.types import ProductCandidate
 from product_mapping.runtime_inputs import enrich_market_raw_with_runtime_product_inputs
@@ -172,6 +173,20 @@ def _utc_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _date_text(value: Any) -> str | None:
+    moment = _utc_datetime(value)
+    if moment is not None:
+        return moment.date().isoformat()
+    text = _text(value)
+    if text is None:
+        return None
+    candidate = text[:10]
+    try:
+        return date.fromisoformat(candidate).isoformat()
+    except ValueError:
+        return None
+
+
 def _payload(value: Any) -> Any:
     if value is None:
         return None
@@ -182,6 +197,264 @@ def _payload(value: Any) -> Any:
     if hasattr(value, "__dict__"):
         return dict(value.__dict__)
     return value
+
+
+def _normalized_weights(values: dict[str, Any] | None) -> dict[str, float]:
+    normalized = {
+        str(key): max(float(item), 0.0)
+        for key, item in dict(values or {}).items()
+        if _text(key) is not None
+    }
+    total = sum(normalized.values())
+    if total <= 0.0:
+        return {}
+    return {key: value / total for key, value in normalized.items()}
+
+
+def _future_business_days(as_of: str, count: int) -> list[str]:
+    anchor = date.fromisoformat(as_of)
+    days: list[str] = []
+    current = anchor
+    while len(days) < count:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            days.append(current.isoformat())
+    return days
+
+
+def _series_variance(series: list[Any]) -> float:
+    values = [float(item) for item in series]
+    if not values:
+        return 1e-4
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / max(len(values), 1)
+    return max(variance, 1e-6)
+
+
+def _negative_loss_profile(series: list[Any]) -> tuple[float, float]:
+    negatives = [abs(float(value)) for value in series if float(value) < 0.0]
+    if not negatives:
+        return (0.015, 0.0075)
+    mean_loss = sum(negatives) / len(negatives)
+    variance = sum((value - mean_loss) ** 2 for value in negatives) / max(len(negatives), 1)
+    return (max(mean_loss, 0.005), max(variance**0.5, 0.0025))
+
+
+def _asset_bucket_factor_betas(asset_bucket: str, factor_names: list[str]) -> dict[str, float]:
+    betas = {name: 0.0 for name in factor_names}
+
+    def _assign(pattern: str, value: float) -> bool:
+        for factor_name in factor_names:
+            if pattern in factor_name.lower():
+                betas[factor_name] = value
+                return True
+        return False
+
+    bucket = str(asset_bucket or "").strip().lower()
+    if bucket in {"equity_cn", "satellite"}:
+        _assign("cn_eq_broad", 0.84 if bucket == "equity_cn" else 0.92)
+        _assign("cn_eq_growth", 0.03 if bucket == "equity_cn" else 0.05)
+        _assign("cn_eq_value", 0.02)
+        _assign("gold", 0.02 if bucket == "equity_cn" else 0.01)
+        _assign("usd", 0.01)
+    elif bucket == "bond_cn":
+        _assign("cn_rate_duration", 0.73)
+        _assign("cn_credit_spread", 0.17)
+        _assign("gold", 0.04)
+        _assign("usd", 0.03)
+        _assign("cn_eq_broad", 0.01)
+    elif bucket == "gold":
+        _assign("gold", 0.95)
+        _assign("usd", 0.05)
+    elif bucket in {"cash", "cash_liquidity"}:
+        _assign("cn_rate_duration", 0.10)
+    else:
+        _assign("cn_eq_broad", 0.50)
+    return betas
+
+
+def _build_probability_engine_run_input(
+    *,
+    run_id: str,
+    envelope: dict[str, Any],
+    calibration_result: Any,
+    goal_solver_input: Any,
+    goal_solver_output: Any,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    goal_input = _as_dict(goal_solver_input)
+    solver_output = _as_dict(goal_solver_output)
+    recommended_result = _as_dict(solver_output.get("recommended_result"))
+    recommended_name = _first_text(
+        solver_output.get("recommended_allocation_name"),
+        recommended_result.get("allocation_name"),
+    )
+    candidate_contexts = _as_dict(goal_input.get("candidate_product_contexts"))
+    recommended_context = _as_dict(candidate_contexts.get(recommended_name)) if recommended_name else {}
+    simulation_input = _as_dict(recommended_context.get("product_simulation_input"))
+    simulation_products = [
+        _as_dict(item) for item in list(simulation_input.get("products") or []) if _as_dict(item)
+    ]
+    calibration_data = _as_dict(calibration_result)
+    factor_dynamics = _payload(calibration_data.get("factor_dynamics"))
+    regime_state = _payload(calibration_data.get("regime_state"))
+    jump_state = _payload(calibration_data.get("jump_state"))
+    factor_names = [str(item) for item in list(_as_dict(factor_dynamics).get("factor_names") or []) if _text(item)]
+    if not simulation_products or factor_dynamics is None or regime_state is None or jump_state is None or not factor_names:
+        return None, {}
+
+    as_of = (
+        _date_text(envelope.get("as_of"))
+        or _date_text(_as_dict(_as_dict(envelope.get("market_raw")).get("historical_dataset")).get("as_of"))
+        or date.today().isoformat()
+    )
+    path_horizon_days = 20
+    trading_calendar = _future_business_days(as_of, path_horizon_days)
+
+    goal = _as_dict(goal_input.get("goal"))
+    constraints = _as_dict(goal_input.get("constraints"))
+    cashflow_plan = _as_dict(goal_input.get("cashflow_plan"))
+    live_portfolio = _as_dict(envelope.get("live_portfolio"))
+    account_raw = _as_dict(envelope.get("account_raw"))
+    total_value = float(
+        live_portfolio.get("total_value")
+        or account_raw.get("total_value")
+        or goal_input.get("current_portfolio_value")
+        or 0.0
+    )
+    if total_value <= 0.0:
+        return None, {}
+
+    target_weights = _normalized_weights(
+        {str(item.get("product_id") or ""): float(item.get("target_weight") or 0.0) for item in simulation_products}
+    )
+    if not target_weights:
+        return None, {}
+
+    products: list[dict[str, Any]] = []
+    current_positions: list[dict[str, Any]] = []
+    jump_data = _as_dict(jump_state)
+    jump_profiles = {
+        str(key): _as_dict(value)
+        for key, value in _as_dict(jump_data.get("idio_jump_profile_by_product")).items()
+    }
+    for item in simulation_products:
+        product_id = _text(item.get("product_id"))
+        if product_id is None:
+            continue
+        series = [float(value) for value in list(item.get("return_series") or [])]
+        loss_mean, loss_std = _negative_loss_profile(series)
+        variance = _series_variance(series)
+        jump_profile = jump_profiles.get(product_id) or {
+            "probability_1d": 0.012,
+            "loss_mean": -loss_mean,
+            "loss_std": loss_std,
+        }
+        mapping_confidence = "high" if str(item.get("data_status") or "").strip().lower() == "observed" else "medium"
+        products.append(
+            {
+                "product_id": product_id,
+                "asset_bucket": _text(item.get("asset_bucket")) or "",
+                "factor_betas": _asset_bucket_factor_betas(_text(item.get("asset_bucket")) or "", factor_names),
+                "innovation_family": "student_t",
+                "tail_df": float(_as_dict(factor_dynamics).get("tail_df") or 7.0),
+                "volatility_process": "product_garch_11",
+                "garch_params": {
+                    "omega": variance * 0.03,
+                    "alpha": 0.07,
+                    "beta": 0.90,
+                    "nu": float(_as_dict(factor_dynamics).get("tail_df") or 7.0),
+                    "long_run_variance": variance,
+                },
+                "idiosyncratic_jump_profile": jump_profile,
+                "carry_profile": {"carry_drag": -0.00001},
+                "valuation_profile": {"valuation_drag": -0.000005},
+                "mapping_confidence": mapping_confidence,
+                "factor_mapping_source": "asset_bucket_proxy",
+                "factor_mapping_evidence": [
+                    {
+                        "source": "product_simulation_input",
+                        "observed_points": int(item.get("observed_points") or len(series)),
+                    }
+                ],
+                "observed_series_ref": _text(item.get("source_ref")) or f"observed://product_simulation/{product_id}",
+            }
+        )
+        weight = float(target_weights.get(product_id, 0.0))
+        market_value = total_value * weight
+        current_positions.append(
+            {
+                "product_id": product_id,
+                "units": market_value,
+                "market_value": market_value,
+                "weight": weight,
+                "cost_basis": market_value,
+                "tradable": True,
+            }
+        )
+
+    if not products or not current_positions:
+        return None, {}
+
+    monthly_contribution = float(cashflow_plan.get("monthly_contribution") or 0.0)
+    contribution_schedule: list[dict[str, Any]] = []
+    if monthly_contribution > 0.0:
+        contribution_schedule.append(
+            {
+                "date": trading_calendar[len(trading_calendar) // 2],
+                "amount": monthly_contribution,
+                "allocation_mode": "target_weights",
+                "target_weights": dict(target_weights),
+            }
+        )
+
+    target_value = float(goal.get("goal_amount") or recommended_result.get("target_value") or total_value)
+    probability_input = {
+        "as_of": as_of,
+        "path_horizon_days": path_horizon_days,
+        "trading_calendar": trading_calendar,
+        "products": products,
+        "factor_dynamics": factor_dynamics,
+        "regime_state": regime_state,
+        "jump_state": jump_state,
+        "current_positions": current_positions,
+        "contribution_schedule": contribution_schedule,
+        "withdrawal_schedule": [],
+        "rebalancing_policy": {
+            "policy_type": "hybrid",
+            "calendar_frequency": "daily",
+            "threshold_band": 0.04,
+            "execution_timing": "end_of_day_after_return",
+            "transaction_cost_bps": 5.0,
+            "min_trade_amount": 250.0,
+        },
+        "success_event_spec": {
+            "horizon_days": path_horizon_days,
+            "horizon_months": 1,
+            "target_type": "goal_amount",
+            "target_value": target_value,
+            "drawdown_constraint": float(constraints.get("max_drawdown_tolerance") or 0.20),
+            "benchmark_ref": None,
+            "contribution_policy": "scheduled_fixed" if monthly_contribution > 0.0 else "none",
+            "withdrawal_policy": "none",
+            "rebalancing_policy_ref": "policy://orchestrator/hybrid_daily",
+            "return_basis": "nominal",
+            "fee_basis": "net",
+            "success_logic": "joint_target_and_drawdown",
+        },
+        "recipes": [
+            {
+                "recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1",
+                "role": "primary",
+            }
+        ],
+        "evidence_bundle_ref": f"evidence://probability_engine/{run_id}",
+        "random_seed": int(_as_dict(goal_input.get("solver_params")).get("seed") or 17),
+    }
+    return probability_input, {
+        "daily_product_path_available": True,
+        "monthly_fallback_used": False,
+        "bucket_fallback_used": False,
+    }
 
 
 def _has_any_raw_snapshot_inputs(envelope: dict[str, Any]) -> bool:
@@ -1169,6 +1442,7 @@ def _build_card_input(
     goal_solver_output: Any,
     goal_solver_input: Any,
     runtime_result: Any,
+    probability_engine_result: Any,
     workflow_decision: WorkflowDecision,
     runtime_restriction: RuntimeRestriction,
     execution_plan_summary: dict[str, Any],
@@ -1193,6 +1467,7 @@ def _build_card_input(
         goal_solver_output=goal_solver_output,
         goal_solver_input=goal_solver_input,
         runtime_result=runtime_result,
+        probability_engine_result=probability_engine_result,
         workflow_decision=workflow_decision,
         runtime_restriction=runtime_restriction,
         execution_plan_summary=execution_plan_summary,
@@ -2561,6 +2836,7 @@ def run_orchestrator(
     goal_solver_output = None
     goal_solver_input_used = envelope.get("goal_solver_input") or prior_solver_input
     runtime_result = None
+    probability_engine_result = None
     solver_snapshot_id = None
     has_prior_baseline = prior_solver_output is not None and prior_solver_input is not None
 
@@ -2621,6 +2897,15 @@ def run_orchestrator(
                                 goal_solver_output,
                                 solver_input,
                             )
+                            probability_engine_input, _ = _build_probability_engine_run_input(
+                                run_id=run_id,
+                                envelope=envelope,
+                                calibration_result=calibration_result,
+                                goal_solver_input=solver_input,
+                                goal_solver_output=goal_solver_output,
+                            )
+                            if probability_engine_input is not None:
+                                probability_engine_result = run_probability_engine(probability_engine_input)
                             solver_snapshot_id = _obj(goal_solver_output).get("input_snapshot_id")
                             recommended_name = _first_text(
                                 _as_dict(goal_solver_output).get("recommended_allocation_name"),
@@ -2914,6 +3199,7 @@ def run_orchestrator(
         goal_solver_output=goal_solver_output,
         goal_solver_input=goal_solver_input_used,
         runtime_result=runtime_result,
+        probability_engine_result=probability_engine_result,
         workflow_decision=workflow_decision,
         runtime_restriction=runtime_restriction,
         execution_plan_summary=execution_plan_summary,
@@ -3007,6 +3293,7 @@ def run_orchestrator(
         calibration_result=calibration_result,
         goal_solver_output=goal_solver_output,
         runtime_result=runtime_result,
+        probability_engine_result=probability_engine_result,
         execution_plan=execution_plan,
         card_build_input=card_build_input,
         decision_card=decision_card,
