@@ -143,7 +143,7 @@ def test_non_formal_primary_recipe_is_rejected() -> None:
     assert "formal daily primary recipe" in result.failure_artifact.message
 
 
-def test_mutated_registered_primary_recipe_is_rejected() -> None:
+def test_registered_primary_recipe_allows_path_count_override() -> None:
     sim_input = deepcopy(_load_v14_formal_daily_input())
     sim_input["recipes"] = [
         {
@@ -155,10 +155,9 @@ def test_mutated_registered_primary_recipe_is_rejected() -> None:
 
     result = run_probability_engine(sim_input)
 
-    assert result.run_outcome_status == "failure"
-    assert result.output is None
-    assert result.failure_artifact is not None
-    assert "formal daily primary recipe" in result.failure_artifact.message
+    assert result.run_outcome_status in {"success", "degraded"}
+    assert result.output is not None
+    assert result.output.primary_result.path_stats.path_count == 1
 
 
 def test_explicit_recipe_list_without_primary_is_rejected() -> None:

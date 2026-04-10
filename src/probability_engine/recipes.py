@@ -63,7 +63,19 @@ def _matches_supported_primary_recipe(recipe: SimulationRecipe) -> bool:
     registered = RECIPE_REGISTRY.get(recipe.recipe_name)
     if registered is None:
         return False
-    return registered.role == "primary" and recipe == registered
+    return (
+        registered.role == "primary"
+        and recipe.recipe_name == registered.recipe_name
+        and recipe.role == registered.role
+        and recipe.innovation_layer == registered.innovation_layer
+        and recipe.volatility_layer == registered.volatility_layer
+        and recipe.dependency_layer == registered.dependency_layer
+        and recipe.jump_layer == registered.jump_layer
+        and recipe.regime_layer == registered.regime_layer
+        and recipe.estimation_basis == registered.estimation_basis
+        and recipe.dependency_scope == registered.dependency_scope
+        and int(recipe.path_count) > 0
+    )
 
 
 def resolve_recipes(values: list[Any] | None) -> list[SimulationRecipe]:
