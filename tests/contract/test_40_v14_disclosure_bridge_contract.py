@@ -43,6 +43,34 @@ def test_successful_task4_run_uses_internal_formal_strict_result() -> None:
     assert result.output.probability_disclosure_payload.disclosure_level == "point_and_range"
 
 
+def test_missing_trading_calendar_blocks_formal_task4_output() -> None:
+    sim_input = deepcopy(_load_v14_formal_daily_input())
+    sim_input.pop("trading_calendar")
+
+    result = run_probability_engine(sim_input)
+
+    assert isinstance(result, ProbabilityEngineRunResult)
+    assert result.run_outcome_status == "failure"
+    assert result.resolved_result_category == "null"
+    assert result.output is None
+    assert result.failure_artifact is not None
+    assert "trading_calendar" in result.failure_artifact.message
+
+
+def test_short_trading_calendar_blocks_formal_task4_output() -> None:
+    sim_input = deepcopy(_load_v14_formal_daily_input())
+    sim_input["trading_calendar"] = sim_input["trading_calendar"][:-1]
+
+    result = run_probability_engine(sim_input)
+
+    assert isinstance(result, ProbabilityEngineRunResult)
+    assert result.run_outcome_status == "failure"
+    assert result.resolved_result_category == "null"
+    assert result.output is None
+    assert result.failure_artifact is not None
+    assert "trading_calendar" in result.failure_artifact.message
+
+
 def test_invalid_task4_formal_scope_does_not_publish_disclosure_payload() -> None:
     sim_input = deepcopy(_load_v14_formal_daily_input())
     sim_input["success_event_spec"]["horizon_days"] = sim_input["path_horizon_days"] + 1

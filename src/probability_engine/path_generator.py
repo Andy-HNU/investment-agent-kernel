@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 import numpy as np
@@ -46,21 +46,23 @@ def _quantile(values: np.ndarray, level: float) -> float:
     return float(np.quantile(values, level))
 
 
-def _next_trading_day(current: date) -> date:
-    next_day = current + timedelta(days=1)
-    while next_day.weekday() >= 5:
-        next_day += timedelta(days=1)
-    return next_day
-
-
-def _trading_step_dates(as_of: str, horizon_days: int) -> list[str]:
+def _trading_step_dates(as_of: str, trading_calendar: list[str], horizon_days: int) -> list[str]:
+    if horizon_days <= 0:
+        return []
+    if not trading_calendar:
+        raise ValueError("trading_calendar is required for formal Task 4 runs")
     anchor = date.fromisoformat(as_of)
-    step_dates: list[str] = []
-    current = anchor
-    for _ in range(max(int(horizon_days), 0)):
-        current = _next_trading_day(current)
-        step_dates.append(current.isoformat())
-    return step_dates
+    normalized: list[str] = []
+    previous = anchor
+    for raw_date in trading_calendar:
+        current = date.fromisoformat(str(raw_date).strip())
+        if current <= previous:
+            raise ValueError("trading_calendar must be strictly increasing and after as_of")
+        normalized.append(current.isoformat())
+        previous = current
+        if len(normalized) == horizon_days:
+            return normalized
+    raise ValueError("trading_calendar must provide at least path_horizon_days dates")
 
 
 def _student_t_scale(rng: np.random.Generator, df: float | None) -> float:
@@ -199,6 +201,7 @@ class ProductMarginalSpec:
 class DailyEngineRuntimeInput:
     as_of: str
     path_horizon_days: int
+    trading_calendar: list[str]
     products: list[ProductMarginalSpec]
     factor_dynamics: FactorDynamicsSpec
     regime_state: RegimeStateSpec
@@ -211,6 +214,9 @@ class DailyEngineRuntimeInput:
     recipes: list[Any]
     evidence_bundle_ref: str
     random_seed: int
+
+    def trading_step_dates(self) -> list[str]:
+        return _trading_step_dates(self.as_of, self.trading_calendar, self.path_horizon_days)
 
     @classmethod
     def from_any(cls, value: "DailyEngineRuntimeInput | dict[str, Any]") -> "DailyEngineRuntimeInput":
@@ -225,6 +231,7 @@ class DailyEngineRuntimeInput:
         return cls(
             as_of=str(payload.get("as_of", "")).strip(),
             path_horizon_days=int(payload.get("path_horizon_days", 0)),
+            trading_calendar=[str(item).strip() for item in list(payload.get("trading_calendar") or []) if str(item).strip()],
             products=[ProductMarginalSpec.from_any(item) for item in list(payload.get("products") or [])],
             factor_dynamics=FactorDynamicsSpec.from_any(payload.get("factor_dynamics")),
             regime_state=RegimeStateSpec.from_any(payload.get("regime_state")),
@@ -300,7 +307,7 @@ def _simulate_single_path(
     if regime_state is None:
         raise ValueError("regime_state is required")
 
-    step_dates = _trading_step_dates(runtime_input.as_of, runtime_input.path_horizon_days)
+    step_dates = runtime_input.trading_step_dates()
     previous_step_date = runtime_input.as_of
 
     for offset, step_date in enumerate(step_dates):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from probability_engine.contracts import (
@@ -15,12 +16,19 @@ from probability_engine.path_generator import (
 )
 from probability_engine.recipes import primary_recipe, resolve_recipes
 
-_TASK4_TRADING_DAYS_PER_MONTH = 20
+
+def _calendar_month_distance(start_date: str, end_date: str) -> int:
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    start_year, start_month = start.year, start.month
+    end_year, end_month = end.year, end.month
+    return (end_year - start_year) * 12 + (end_month - start_month)
 
 
 def _validate_task4_formal_success_event(runtime_input: DailyEngineRuntimeInput) -> None:
     success_event = runtime_input.success_event_spec
     failures: list[str] = []
+    step_dates = runtime_input.trading_step_dates()
     required_values = {
         "target_type": "goal_amount",
         "success_logic": "joint_target_and_drawdown",
@@ -35,10 +43,10 @@ def _validate_task4_formal_success_event(runtime_input: DailyEngineRuntimeInput)
         failures.append("success_event_spec.benchmark_ref must be null")
     if int(success_event.horizon_days) != int(runtime_input.path_horizon_days):
         failures.append("success_event_spec.horizon_days must match path_horizon_days")
-    implied_horizon_days = int(success_event.horizon_months) * _TASK4_TRADING_DAYS_PER_MONTH
-    if implied_horizon_days != int(success_event.horizon_days):
+    realized_month_distance = 0 if not step_dates else _calendar_month_distance(runtime_input.as_of, step_dates[-1])
+    if int(success_event.horizon_months) != realized_month_distance:
         failures.append(
-            "success_event_spec.horizon_months conflicts with the frozen v1.4 trading-day horizon"
+            "success_event_spec.horizon_months conflicts with the realized trading calendar horizon"
         )
     if failures:
         raise ValueError("; ".join(failures))

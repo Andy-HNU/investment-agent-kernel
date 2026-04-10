@@ -44,14 +44,37 @@ def test_primary_recipe_returns_formal_output_for_full_daily_input() -> None:
     assert result.output.probability_disclosure_payload is not None
 
 
-def test_five_day_horizon_uses_five_trading_steps() -> None:
-    assert _trading_step_dates("2026-04-10", 5) == [
+def test_explicit_trading_calendar_is_source_of_truth_for_formal_steps() -> None:
+    sim_input = _load_v14_formal_daily_input()
+
+    assert _trading_step_dates(sim_input["as_of"], sim_input["trading_calendar"], 5) == [
+        "2026-04-10",
         "2026-04-13",
         "2026-04-14",
         "2026-04-15",
         "2026-04-16",
-        "2026-04-17",
     ]
+    assert "2026-05-01" not in _trading_step_dates(sim_input["as_of"], sim_input["trading_calendar"], sim_input["path_horizon_days"])
+
+
+def test_holiday_date_not_in_trading_calendar_does_not_affect_engine_output() -> None:
+    baseline_input = _load_v14_formal_daily_input()
+    holiday_input = deepcopy(baseline_input)
+    holiday_input["contribution_schedule"] = list(holiday_input["contribution_schedule"]) + [
+        {
+            "date": "2026-05-01",
+            "amount": 999999.0,
+            "allocation_mode": "target_weights",
+            "target_weights": baseline_input["contribution_schedule"][0]["target_weights"],
+        }
+    ]
+
+    baseline = run_probability_engine(baseline_input)
+    holiday = run_probability_engine(holiday_input)
+
+    assert baseline.output is not None
+    assert holiday.output is not None
+    assert holiday.output.to_dict() == baseline.output.to_dict()
 
 
 def test_non_formal_primary_recipe_is_rejected() -> None:
@@ -149,7 +172,7 @@ def test_invalid_formal_success_event_spec_is_rejected(field: str, value: object
 
 def test_conflicting_horizon_months_are_rejected() -> None:
     sim_input = deepcopy(_load_v14_formal_daily_input())
-    sim_input["success_event_spec"]["horizon_months"] = 2
+    sim_input["success_event_spec"]["horizon_months"] = 0
 
     result = run_probability_engine(sim_input)
 
