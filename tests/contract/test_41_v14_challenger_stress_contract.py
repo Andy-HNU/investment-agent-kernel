@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from probability_engine.challengers import ChallengerBootstrapDiagnostics, build_stress_recipe_result, run_challenger_bootstrap
 from probability_engine.contracts import PathStatsSummary, ProbabilityEngineRunResult, RecipeSimulationResult, SuccessEventSpec
 from probability_engine.disclosure_bridge import DisclosureEvidenceSpec, assemble_probability_run_result
+from probability_engine.portfolio_policy import CurrentPosition
 
 
 def _make_success_event_spec() -> SuccessEventSpec:
@@ -157,28 +160,51 @@ def test_challenger_bootstrap_uses_position_scale_for_success_evaluation() -> No
         horizon_days=2,
         success_event_spec=success_event_spec,
         current_positions=[
-            {
-                "product_id": "a",
-                "units": 0.0,
-                "market_value": 60.0,
-                "weight": 0.6,
-                "cost_basis": None,
-                "tradable": True,
-            },
-            {
-                "product_id": "b",
-                "units": 0.0,
-                "market_value": 40.0,
-                "weight": 0.4,
-                "cost_basis": None,
-                "tradable": True,
-            },
+            CurrentPosition(product_id="a", units=0.0, market_value=60.0, weight=0.6, cost_basis=None, tradable=True),
+            CurrentPosition(product_id="b", units=0.0, market_value=40.0, weight=0.4, cost_basis=None, tradable=True),
         ],
         random_seed=3,
     )
 
     assert diagnostics.result.path_stats.success_count == 1
     assert diagnostics.result.success_probability == 1.0
+
+
+def test_challenger_bootstrap_rejects_mismatched_initial_value_for_current_positions() -> None:
+    success_event_spec = SuccessEventSpec(
+        horizon_days=2,
+        horizon_months=1,
+        target_type="goal_amount",
+        target_value=105.0,
+        drawdown_constraint=0.50,
+        benchmark_ref=None,
+        contribution_policy="fixed",
+        withdrawal_policy="none",
+        rebalancing_policy_ref="none",
+        return_basis="nominal",
+        fee_basis="net",
+        success_logic="joint_target_and_drawdown",
+    )
+
+    with pytest.raises(ValueError, match="initial_portfolio_value must match"):
+        run_challenger_bootstrap(
+            history_matrix=[
+                [0.05, 0.00, 0.05, 0.00],
+                [0.05, 0.00, 0.05, 0.00],
+            ],
+            regime_labels=["risk_off", "normal", "risk_off", "normal"],
+            current_regime="risk_off",
+            block_size=2,
+            path_count=1,
+            horizon_days=2,
+            success_event_spec=success_event_spec,
+            current_positions=[
+                CurrentPosition(product_id="a", units=0.0, market_value=60.0, weight=0.6, cost_basis=None, tradable=True),
+                CurrentPosition(product_id="b", units=0.0, market_value=40.0, weight=0.4, cost_basis=None, tradable=True),
+            ],
+            initial_portfolio_value=120.0,
+            random_seed=3,
+        )
 
 
 def test_stress_recipe_result_summarizes_explicit_stressed_paths() -> None:
@@ -221,6 +247,64 @@ def test_stress_recipe_result_supports_explicit_portfolio_scale() -> None:
 
     assert stressed_result.path_stats.success_count == 1
     assert stressed_result.success_probability == 1.0
+
+
+def test_stress_recipe_result_requires_explicit_portfolio_scale_for_non_normalized_targets() -> None:
+    success_event_spec = SuccessEventSpec(
+        horizon_days=2,
+        horizon_months=1,
+        target_type="goal_amount",
+        target_value=105.0,
+        drawdown_constraint=0.50,
+        benchmark_ref=None,
+        contribution_policy="fixed",
+        withdrawal_policy="none",
+        rebalancing_policy_ref="none",
+        return_basis="nominal",
+        fee_basis="net",
+        success_logic="joint_target_and_drawdown",
+    )
+
+    with pytest.raises(ValueError, match="initial_portfolio_value"):
+        build_stress_recipe_result(
+            stressed_path_returns=[[0.05, 0.00]],
+            success_event_spec=success_event_spec,
+        )
+
+
+def test_challenger_bootstrap_records_each_path_block_trace() -> None:
+    history_matrix = [
+        [0.030, -0.010, 0.020, -0.020, 0.015, 0.010, -0.010, 0.020],
+        [-0.010, 0.020, 0.010, 0.005, -0.005, 0.030, 0.010, 0.015],
+    ]
+    regime_labels = [
+        "risk_off",
+        "normal",
+        "normal",
+        "normal",
+        "normal",
+        "normal",
+        "normal",
+        "normal",
+    ]
+
+    result = run_challenger_bootstrap(
+        history_matrix=history_matrix,
+        regime_labels=regime_labels,
+        current_regime="risk_off",
+        block_size=2,
+        path_count=3,
+        horizon_days=4,
+        success_event_spec=_make_success_event_spec(),
+        portfolio_weights=[0.8, 0.2],
+        random_seed=11,
+    )
+
+    assert len(result.selected_block_starts_by_path) == 3
+    assert len(result.selected_block_regimes_by_path) == 3
+    assert all(len(path_starts) == 2 for path_starts in result.selected_block_starts_by_path)
+    assert all(len(path_regimes) == 2 for path_regimes in result.selected_block_regimes_by_path)
+    assert result.selected_block_regimes_by_path[0] == ["risk_off", "normal"]
 
 
 def test_disclosure_bridge_uses_evidence_to_emit_exact_formal_strict_disclosure() -> None:
@@ -303,6 +387,32 @@ def test_disclosure_bridge_uses_evidence_to_emit_formal_estimated_disclosure() -
     assert payload.disclosure_level == "range_only"
     assert payload.confidence_level == "medium"
     assert payload.widening_method == "wilson_plus_gap_total"
+
+
+def test_disclosure_bridge_requires_real_challenger_and_stress_results_for_confidence_credit() -> None:
+    primary = _make_primary_result()
+    run_result = assemble_probability_run_result(
+        primary=primary,
+        challengers=[],
+        stresses=[],
+        evidence=DisclosureEvidenceSpec(
+            daily_product_path_available=True,
+            monthly_fallback_used=False,
+            bucket_fallback_used=False,
+            independent_weight_adjusted_coverage=1.0,
+            observed_weight_adjusted_coverage=0.98,
+            estimated_weight_adjusted_coverage=0.02,
+            factor_mapping_confidence="high",
+            distribution_readiness="ready",
+            calibration_quality="acceptable",
+            challenger_available=True,
+            stress_available=True,
+            execution_policy="FORMAL_STRICT",
+        ),
+    )
+
+    assert run_result.output is not None
+    assert run_result.output.probability_disclosure_payload.confidence_level == "medium"
 
 
 def test_disclosure_bridge_requires_primary_result() -> None:
