@@ -110,6 +110,7 @@ def test_bridge_preserves_probability_explanation_payload(tmp_path, monkeypatch)
     )
 
     decision_card = result["result"]["decision_card"]
+    probability_explanation = decision_card["probability_explanation"]
     assert "probability_explanation" in decision_card
     assert "frontier_analysis" in decision_card
     assert "product_evidence_panel" in decision_card
@@ -117,7 +118,14 @@ def test_bridge_preserves_probability_explanation_payload(tmp_path, monkeypatch)
         "success_probability" in decision_card["key_metrics"]
         or "success_probability_range" in decision_card["key_metrics"]
     )
-    assert "product_probability_method" in decision_card["key_metrics"]
+    assert result["result"]["product_probability_method"] in {
+        "product_independent_path",
+        "product_estimated_path",
+    }
+    assert result["result"]["monthly_fallback_used"] is False
+    assert result["result"]["bucket_fallback_used"] is False
+    probability_payload = result["result"]["probability_disclosure_payload"]
+    assert probability_payload["gap_total"] is not None
 
 
 def test_bridge_reuses_baseline_evidence_for_repeated_onboarding(tmp_path, monkeypatch):

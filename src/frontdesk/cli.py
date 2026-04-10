@@ -1275,16 +1275,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             external_data_config=external_data_config,
         )
         if args.command == "onboard":
+            summary_payload = dict(payload)
+            user_state = summary_payload["user_state"]
             payload = {
                 "workflow": "onboard",
-                "status": payload["status"],
-                "run_id": payload["run_id"],
-                "user_state": payload["user_state"],
-                "refresh_summary": payload.get("refresh_summary"),
-                "external_snapshot_source": payload.get("external_snapshot_source"),
-                "external_snapshot_config": payload.get("external_snapshot_config"),
-                "external_snapshot_status": payload.get("external_snapshot_status"),
-                "external_snapshot_error": payload.get("external_snapshot_error"),
+                "status": summary_payload["status"],
+                "run_id": summary_payload["run_id"],
+                "user_state": user_state,
+                "decision_card": user_state.get("decision_card"),
+                "run_outcome_status": summary_payload.get("run_outcome_status"),
+                "resolved_result_category": summary_payload.get("resolved_result_category"),
+                "disclosure_decision": summary_payload.get("disclosure_decision"),
+                "evidence_bundle": summary_payload.get("evidence_bundle"),
+                "probability_engine_result": summary_payload.get("probability_engine_result"),
+                "probability_disclosure_payload": summary_payload.get("probability_disclosure_payload"),
+                "product_probability_method": summary_payload.get("product_probability_method"),
+                "monthly_fallback_used": summary_payload.get("monthly_fallback_used"),
+                "bucket_fallback_used": summary_payload.get("bucket_fallback_used"),
+                "formal_path_visibility": summary_payload.get("formal_path_visibility"),
+                "refresh_summary": summary_payload.get("refresh_summary"),
+                "external_snapshot_source": summary_payload.get("external_snapshot_source"),
+                "external_snapshot_config": summary_payload.get("external_snapshot_config"),
+                "external_snapshot_status": summary_payload.get("external_snapshot_status"),
+                "external_snapshot_error": summary_payload.get("external_snapshot_error"),
             }
     elif args.command == "show-user":
         payload = load_frontdesk_snapshot(args.account_profile_id, db_path=db_path)

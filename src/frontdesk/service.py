@@ -1525,6 +1525,12 @@ def _frontdesk_summary(
         profile_payload = _as_dict(profile_payload.get("profile"))
     evidence_bundle = dict(result_payload.get("evidence_bundle") or decision_card.get("evidence_bundle") or {})
     probability_engine_result = result_payload.get("probability_engine_result")
+    probability_output = _as_dict(_as_dict(probability_engine_result).get("output"))
+    probability_disclosure_payload = dict(probability_output.get("probability_disclosure_payload") or {})
+    product_probability_method = (
+        _as_dict(decision_card.get("probability_explanation")).get("product_probability_method")
+        or _as_dict(decision_card.get("key_metrics")).get("product_probability_method")
+    )
     monthly_fallback_used = evidence_bundle.get("monthly_fallback_used")
     bucket_fallback_used = evidence_bundle.get("bucket_fallback_used")
     if probability_engine_result is not None:
@@ -1547,6 +1553,8 @@ def _frontdesk_summary(
         ),
         "evidence_bundle": evidence_bundle,
         "probability_engine_result": probability_engine_result,
+        "probability_disclosure_payload": probability_disclosure_payload,
+        "product_probability_method": product_probability_method,
         "monthly_fallback_used": monthly_fallback_used,
         "bucket_fallback_used": bucket_fallback_used,
         "evidence_invariance_report": dict(result_payload.get("evidence_invariance_report") or {}),

@@ -28,9 +28,13 @@ def test_task4_primary_only_run_emits_minimal_typed_disclosure_payload() -> None
     assert result.output is not None
     assert result.output.challenger_results == []
     assert result.output.stress_results == []
-    assert result.output.model_disagreement == {}
+    assert result.output.model_disagreement["best_challenger_probability"] is None
+    assert result.output.model_disagreement["stress_probability"] is None
+    assert result.output.model_disagreement["gap_total"] == 0.0
+    assert result.output.model_disagreement["widening_method"] == "wilson_plus_gap_total"
     assert isinstance(result.output.probability_disclosure_payload, ProbabilityDisclosurePayload)
-    assert result.output.probability_disclosure_payload.widening_method == "task4_primary_only"
+    assert result.output.probability_disclosure_payload.widening_method == "wilson_plus_gap_total"
+    assert result.output.probability_disclosure_payload.gap_total == 0.0
     assert result.output.probability_disclosure_payload.disclosure_level in {"point_and_range", "range_only"}
     assert result.output.probability_disclosure_payload.confidence_level in {"high", "medium", "low"}
 

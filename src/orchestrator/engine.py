@@ -103,6 +103,7 @@ _HIGH_RISK_ACTION_TYPES = {
     "add_cash_sat",
     "reduce_defense",
 }
+_FORMAL_DAILY_REGRESSION_PATH_COUNT = 32
 
 
 def _obj(value: Any) -> Any:
@@ -471,6 +472,7 @@ def _build_probability_engine_run_input(
         "recipes": [
             {
                 "recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1",
+                "path_count": _FORMAL_DAILY_REGRESSION_PATH_COUNT,
             }
         ],
         "evidence_bundle_ref": f"evidence://probability_engine/{run_id}",
@@ -544,6 +546,26 @@ def _bridged_probability_surface(
         "resolved_result_category": mapped_category,
         "disclosure_decision": bridged_disclosure,
         "evidence_bundle": bridged_evidence,
+    }
+
+
+def _probability_runtime_telemetry(probability_engine_input: Any, probability_engine_result: Any) -> dict[str, Any]:
+    input_payload = _as_dict(probability_engine_input)
+    result_payload = _as_dict(probability_engine_result)
+    output_payload = _as_dict(result_payload.get("output"))
+    primary_result = _as_dict(output_payload.get("primary_result"))
+    primary_path_stats = _as_dict(primary_result.get("path_stats"))
+    challenger_results = [_as_dict(item) for item in list(output_payload.get("challenger_results") or [])]
+    stress_results = [_as_dict(item) for item in list(output_payload.get("stress_results") or [])]
+
+    def _path_count(result: dict[str, Any]) -> int:
+        return int(_as_dict(result.get("path_stats")).get("path_count") or 0)
+
+    return {
+        "path_horizon_days": int(input_payload.get("path_horizon_days") or 0) or None,
+        "path_count_primary": int(primary_path_stats.get("path_count") or 0) or None,
+        "path_count_challenger": sum(_path_count(item) for item in challenger_results),
+        "path_count_stress": sum(_path_count(item) for item in stress_results),
     }
 
 
@@ -3382,6 +3404,12 @@ def run_orchestrator(
         "explanation_build_ms": round(float(explanation_build_ms), 3),
         "total_orchestrator_ms": round((perf_counter() - telemetry_started) * 1000.0, 3),
     }
+    runtime_telemetry.update(
+        _probability_runtime_telemetry(
+            probability_engine_input=probability_engine_input,
+            probability_engine_result=probability_engine_result,
+        )
+    )
     audit_record.artifact_refs["has_runtime_telemetry"] = True
     audit_record.artifact_refs["runtime_telemetry"] = runtime_telemetry
     return OrchestratorResult(

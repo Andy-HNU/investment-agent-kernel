@@ -164,6 +164,10 @@ def test_orchestrator_top_level_surface_tracks_bridged_probability_result_when_e
     assert result["disclosure_decision"]["confidence_level"] == "medium"
     assert result["evidence_bundle"]["run_outcome_status"] == "completed"
     assert result["evidence_bundle"]["resolved_result_category"] == "formal_estimated_result"
+    assert result["runtime_telemetry"]["path_horizon_days"] > 20
+    assert result["runtime_telemetry"]["path_count_primary"] == 128
+    assert result["runtime_telemetry"]["path_count_challenger"] == 0
+    assert result["runtime_telemetry"]["path_count_stress"] == 0
 
 
 def test_orchestrator_maps_internal_formal_strict_result_to_v13_independent_surface(monkeypatch) -> None:
@@ -276,6 +280,7 @@ def test_formal_daily_builder_uses_goal_horizon_and_proxy_confidence_for_smoke_p
     assert captured["success_event_spec"]["horizon_days"] == captured["path_horizon_days"]
     assert captured["success_event_spec"]["horizon_months"] == 36
     assert {product["mapping_confidence"] for product in captured["products"]} == {"low"}
+    assert captured["recipes"][0]["path_count"] == 32
     contribution_schedule = list(captured["contribution_schedule"])
     assert len(contribution_schedule) == 36
     assert contribution_schedule[-1]["date"] == captured["trading_calendar"][-1]

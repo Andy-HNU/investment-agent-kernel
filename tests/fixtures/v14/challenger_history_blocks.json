@@ -1,0 +1,25 @@
+{
+  "history_matrix": [
+    [0.01, -0.004, 0.015, 0.006, 0.008, -0.002, 0.012, 0.005],
+    [0.003, 0.001, -0.002, 0.004, 0.002, 0.0, 0.003, 0.001]
+  ],
+  "regime_labels": [
+    "risk_off",
+    "risk_off",
+    "normal",
+    "normal",
+    "risk_off",
+    "risk_off",
+    "normal",
+    "normal"
+  ],
+  "current_regime": "risk_off",
+  "block_size": 2,
+  "path_count": 12,
+  "horizon_days": 8,
+  "portfolio_weights": [
+    0.7,
+    0.3
+  ],
+  "random_seed": 13
+}

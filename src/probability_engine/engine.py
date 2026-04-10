@@ -91,8 +91,8 @@ def _base_disclosure_payload(
         confidence_level=confidence_level,
         challenger_gap=None,
         stress_gap=None,
-        gap_total=None,
-        widening_method="task4_primary_only",
+        gap_total=0.0,
+        widening_method="wilson_plus_gap_total",
     )
 
 
@@ -115,7 +115,16 @@ def run_probability_engine(sim_input: Any) -> ProbabilityEngineRunResult:
                 primary_result=primary_result,
                 challenger_results=[],
                 stress_results=[],
-                model_disagreement={},
+                model_disagreement={
+                    "primary_probability": float(primary_result.success_probability),
+                    "best_challenger_probability": None,
+                    "stress_probability": None,
+                    "challenger_gap": None,
+                    "stress_gap": None,
+                    "gap_total": 0.0,
+                    "confidence_level": confidence_level,
+                    "widening_method": "wilson_plus_gap_total",
+                },
                 probability_disclosure_payload=_base_disclosure_payload(
                     primary_result,
                     run_outcome_status=run_outcome_status,

@@ -73,6 +73,14 @@ def test_frontdesk_cli_non_interactive_onboarding_smoke(tmp_path, capsys):
     assert payload["user_state"]["active_execution_plan"] is None
     assert payload["user_state"]["pending_execution_plan"]["plan_version"] == 1
     assert payload["user_state"]["decision_card"]["input_provenance"]["counts"]["user_provided"] >= 1
+    assert payload["monthly_fallback_used"] is False
+    assert payload["bucket_fallback_used"] is False
+    assert payload["product_probability_method"] in {
+        "product_independent_path",
+        "product_estimated_path",
+    }
+    probability_payload = payload["probability_disclosure_payload"]
+    assert probability_payload["gap_total"] is not None
 
 
 @pytest.mark.smoke
