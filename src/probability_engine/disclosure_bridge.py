@@ -176,6 +176,28 @@ class DisclosureDecisionSummary:
     gap_total: float
 
 
+def _normalized_evidence(
+    evidence: "DisclosureEvidenceSpec",
+    *,
+    challengers: list[RecipeSimulationResult],
+    stresses: list[RecipeSimulationResult],
+) -> "DisclosureEvidenceSpec":
+    return DisclosureEvidenceSpec(
+        daily_product_path_available=evidence.daily_product_path_available,
+        monthly_fallback_used=evidence.monthly_fallback_used,
+        bucket_fallback_used=evidence.bucket_fallback_used,
+        independent_weight_adjusted_coverage=evidence.independent_weight_adjusted_coverage,
+        observed_weight_adjusted_coverage=evidence.observed_weight_adjusted_coverage,
+        estimated_weight_adjusted_coverage=evidence.estimated_weight_adjusted_coverage,
+        factor_mapping_confidence=evidence.factor_mapping_confidence,
+        distribution_readiness=evidence.distribution_readiness,
+        calibration_quality=evidence.calibration_quality,
+        challenger_available=bool(evidence.challenger_available and challengers),
+        stress_available=bool(evidence.stress_available and stresses),
+        execution_policy=evidence.execution_policy,
+    )
+
+
 def _best_challenger(primary: RecipeSimulationResult, challengers: list[RecipeSimulationResult]) -> RecipeSimulationResult | None:
     if not challengers:
         return None
@@ -252,6 +274,11 @@ def assemble_probability_run_result(
         )
 
     evidence = DisclosureEvidenceSpec.from_any(evidence)
+    evidence = _normalized_evidence(
+        evidence,
+        challengers=challengers,
+        stresses=stresses,
+    )
     decision = _resolve_disclosure_decision(
         primary=primary,
         challengers=challengers,

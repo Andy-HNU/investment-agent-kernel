@@ -355,7 +355,7 @@ def build_stress_recipe_result(
     *,
     stressed_path_returns: list[list[float]],
     success_event_spec: SuccessEventSpec,
-    initial_portfolio_value: float = 1.0,
+    initial_portfolio_value: float | None = None,
     recipe: SimulationRecipe | None = None,
 ) -> RecipeSimulationResult:
     candidate_recipe = recipe or STRESS_RECIPE_V14
@@ -363,11 +363,17 @@ def build_stress_recipe_result(
         raise ValueError("stress recipe result requires a stress recipe")
     if not stressed_path_returns:
         raise ValueError("stressed_path_returns must not be empty")
+    if initial_portfolio_value is None:
+        if float(success_event_spec.target_value) > 2.0:
+            raise ValueError("initial_portfolio_value is required for non-normalized stress targets")
+        effective_initial_value = 1.0
+    else:
+        effective_initial_value = float(initial_portfolio_value)
 
     path_results = [
         _simulate_path(
             np.asarray(path_returns, dtype=float),
-            initial_value=float(initial_portfolio_value),
+            initial_value=effective_initial_value,
             success_event_spec=success_event_spec,
         )
         for path_returns in stressed_path_returns
