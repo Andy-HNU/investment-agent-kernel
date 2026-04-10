@@ -246,71 +246,6 @@ def _profile_model(profile: dict[str, Any]) -> UserOnboardingProfile:
     return UserOnboardingProfile(**profile)
 
 
-def _mapped_probability_result_category(value: str | None) -> str | None:
-    normalized = str(value or "").strip()
-    if not normalized or normalized == "null":
-        return None
-    if normalized == "formal_strict_result":
-        return "formal_independent_result"
-    if normalized in {"formal_estimated_result", "degraded_formal_result"}:
-        return normalized
-    return None
-
-
-def _probability_summary_surface(result_payload: dict[str, Any]) -> dict[str, Any]:
-    probability_engine_result = _as_dict(result_payload.get("probability_engine_result"))
-    if not probability_engine_result:
-        return {}
-    mapped_category = _mapped_probability_result_category(
-        _as_dict(probability_engine_result).get("resolved_result_category")
-    )
-    if mapped_category is None:
-        return {}
-    mapped_status = str(probability_engine_result.get("run_outcome_status") or "").strip().lower()
-    if mapped_status not in {"success", "degraded"}:
-        return {}
-
-    legacy_status = str(result_payload.get("run_outcome_status") or "").strip().lower()
-    legacy_category = str(result_payload.get("resolved_result_category") or "").strip()
-    if legacy_status == "degraded" or legacy_category == "degraded_formal_result":
-        mapped_status = "degraded"
-        mapped_category = "degraded_formal_result"
-
-    output_payload = _as_dict(probability_engine_result.get("output"))
-    disclosure_payload = _as_dict(output_payload.get("probability_disclosure_payload"))
-    disclosure_decision = dict(result_payload.get("disclosure_decision") or {})
-    evidence_bundle = dict(result_payload.get("evidence_bundle") or {})
-
-    disclosure_level = str(disclosure_payload.get("disclosure_level") or disclosure_decision.get("disclosure_level") or "")
-    confidence_level = str(disclosure_payload.get("confidence_level") or disclosure_decision.get("confidence_level") or "")
-    if disclosure_level:
-        disclosure_decision["disclosure_level"] = disclosure_level
-        disclosure_decision["point_value_allowed"] = disclosure_level == "point_and_range"
-        disclosure_decision["range_required"] = disclosure_level in {"point_and_range", "range_only"}
-        disclosure_decision["diagnostic_only"] = disclosure_level == "diagnostic_only"
-        disclosure_decision["precision_cap"] = disclosure_level
-    if confidence_level:
-        disclosure_decision["confidence_level"] = confidence_level
-    disclosure_decision["result_category"] = mapped_category
-
-    evidence_bundle["run_outcome_status"] = mapped_status
-    evidence_bundle["resolved_result_category"] = mapped_category
-    evidence_bundle["formal_path_status"] = mapped_status
-    evidence_bundle["monthly_fallback_used"] = False
-    evidence_bundle["bucket_fallback_used"] = False
-    evidence_bundle["disclosure_decision"] = dict(disclosure_decision)
-
-    return {
-        "run_outcome_status": mapped_status,
-        "resolved_result_category": mapped_category,
-        "disclosure_decision": disclosure_decision,
-        "evidence_bundle": evidence_bundle,
-        "monthly_fallback_used": False,
-        "bucket_fallback_used": False,
-        "probability_engine_result": probability_engine_result,
-    }
-
-
 def _external_snapshot_payload(source: str | Path | None) -> dict[str, Any] | None:
     if source is None:
         return None
@@ -1588,7 +1523,15 @@ def _frontdesk_summary(
     profile_payload = _as_dict(user_state.get("profile"))
     if isinstance(profile_payload.get("profile"), dict):
         profile_payload = _as_dict(profile_payload.get("profile"))
-    probability_surface = _probability_summary_surface(result_payload)
+    evidence_bundle = dict(result_payload.get("evidence_bundle") or decision_card.get("evidence_bundle") or {})
+    probability_engine_result = result_payload.get("probability_engine_result")
+    monthly_fallback_used = evidence_bundle.get("monthly_fallback_used")
+    bucket_fallback_used = evidence_bundle.get("bucket_fallback_used")
+    if probability_engine_result is not None:
+        if monthly_fallback_used is None:
+            monthly_fallback_used = False
+        if bucket_fallback_used is None:
+            bucket_fallback_used = False
     summary = {
         "account_profile_id": account_profile_id,
         "display_name": display_name,
@@ -1596,28 +1539,16 @@ def _frontdesk_summary(
         "run_id": result_payload.get("run_id"),
         "workflow_type": result_payload.get("workflow_type"),
         "status": result_payload.get("status"),
-        "run_outcome_status": probability_surface.get("run_outcome_status")
-        or result_payload.get("run_outcome_status")
-        or decision_card.get("run_outcome_status"),
-        "resolved_result_category": probability_surface.get("resolved_result_category")
-        or result_payload.get("resolved_result_category")
+        "run_outcome_status": result_payload.get("run_outcome_status") or decision_card.get("run_outcome_status"),
+        "resolved_result_category": result_payload.get("resolved_result_category")
         or decision_card.get("resolved_result_category"),
         "disclosure_decision": dict(
-            probability_surface.get("disclosure_decision")
-            or result_payload.get("disclosure_decision")
-            or decision_card.get("disclosure_decision")
-            or {}
+            result_payload.get("disclosure_decision") or decision_card.get("disclosure_decision") or {}
         ),
-        "evidence_bundle": dict(
-            probability_surface.get("evidence_bundle")
-            or result_payload.get("evidence_bundle")
-            or decision_card.get("evidence_bundle")
-            or {}
-        ),
-        "probability_engine_result": probability_surface.get("probability_engine_result")
-        or result_payload.get("probability_engine_result"),
-        "monthly_fallback_used": probability_surface.get("monthly_fallback_used"),
-        "bucket_fallback_used": probability_surface.get("bucket_fallback_used"),
+        "evidence_bundle": evidence_bundle,
+        "probability_engine_result": probability_engine_result,
+        "monthly_fallback_used": monthly_fallback_used,
+        "bucket_fallback_used": bucket_fallback_used,
         "evidence_invariance_report": dict(result_payload.get("evidence_invariance_report") or {}),
         "reuse_context": dict(result_payload.get("reuse_context") or decision_card.get("reuse_context") or {}),
         "decision_card": decision_card,

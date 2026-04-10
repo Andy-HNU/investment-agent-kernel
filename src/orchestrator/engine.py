@@ -211,11 +211,27 @@ def _normalized_weights(values: dict[str, Any] | None) -> dict[str, float]:
     return {key: value / total for key, value in normalized.items()}
 
 
-def _future_business_days(as_of: str, count: int) -> list[str]:
+def _days_in_month(year: int, month: int) -> int:
+    if month == 12:
+        next_month = date(year + 1, 1, 1)
+    else:
+        next_month = date(year, month + 1, 1)
+    return (next_month - timedelta(days=1)).day
+
+
+def _add_calendar_months(anchor: date, months: int) -> date:
+    total_month = (anchor.month - 1) + months
+    year = anchor.year + total_month // 12
+    month = total_month % 12 + 1
+    day = min(anchor.day, _days_in_month(year, month))
+    return date(year, month, day)
+
+
+def _future_business_days_until(as_of: str, end_date: date) -> list[str]:
     anchor = date.fromisoformat(as_of)
     days: list[str] = []
     current = anchor
-    while len(days) < count:
+    while current < end_date:
         current += timedelta(days=1)
         if current.weekday() < 5:
             days.append(current.isoformat())
@@ -307,12 +323,17 @@ def _build_probability_engine_run_input(
         or _date_text(_as_dict(_as_dict(envelope.get("market_raw")).get("historical_dataset")).get("as_of"))
         or date.today().isoformat()
     )
-    path_horizon_days = 20
-    trading_calendar = _future_business_days(as_of, path_horizon_days)
 
     goal = _as_dict(goal_input.get("goal"))
     constraints = _as_dict(goal_input.get("constraints"))
     cashflow_plan = _as_dict(goal_input.get("cashflow_plan"))
+    horizon_months = int(goal.get("horizon_months") or 1)
+    horizon_months = max(horizon_months, 1)
+    end_date = _add_calendar_months(date.fromisoformat(as_of), horizon_months)
+    trading_calendar = _future_business_days_until(as_of, end_date)
+    path_horizon_days = len(trading_calendar)
+    if path_horizon_days <= 0:
+        return None, {}
     live_portfolio = _as_dict(envelope.get("live_portfolio"))
     account_raw = _as_dict(envelope.get("account_raw"))
     total_value = float(
@@ -349,7 +370,7 @@ def _build_probability_engine_run_input(
             "loss_mean": -loss_mean,
             "loss_std": loss_std,
         }
-        mapping_confidence = "high" if str(item.get("data_status") or "").strip().lower() == "observed" else "medium"
+        mapping_confidence = "low"
         products.append(
             {
                 "product_id": product_id,
@@ -372,7 +393,7 @@ def _build_probability_engine_run_input(
                 "factor_mapping_source": "asset_bucket_proxy",
                 "factor_mapping_evidence": [
                     {
-                        "source": "product_simulation_input",
+                        "source": "asset_bucket_proxy",
                         "observed_points": int(item.get("observed_points") or len(series)),
                     }
                 ],
@@ -398,14 +419,20 @@ def _build_probability_engine_run_input(
     monthly_contribution = float(cashflow_plan.get("monthly_contribution") or 0.0)
     contribution_schedule: list[dict[str, Any]] = []
     if monthly_contribution > 0.0:
-        contribution_schedule.append(
-            {
-                "date": trading_calendar[len(trading_calendar) // 2],
-                "amount": monthly_contribution,
-                "allocation_mode": "target_weights",
-                "target_weights": dict(target_weights),
-            }
-        )
+        for month_index in range(1, horizon_months + 1):
+            contribution_date = _add_calendar_months(date.fromisoformat(as_of), month_index)
+            target_date = next(
+                (item for item in trading_calendar if item >= contribution_date.isoformat()),
+                trading_calendar[-1],
+            )
+            contribution_schedule.append(
+                {
+                    "date": target_date,
+                    "amount": monthly_contribution,
+                    "allocation_mode": "target_weights",
+                    "target_weights": dict(target_weights),
+                }
+            )
 
     target_value = float(goal.get("goal_amount") or recommended_result.get("target_value") or total_value)
     probability_input = {
@@ -429,7 +456,7 @@ def _build_probability_engine_run_input(
         },
         "success_event_spec": {
             "horizon_days": path_horizon_days,
-            "horizon_months": 1,
+            "horizon_months": horizon_months,
             "target_type": "goal_amount",
             "target_value": target_value,
             "drawdown_constraint": float(constraints.get("max_drawdown_tolerance") or 0.20),
@@ -444,7 +471,6 @@ def _build_probability_engine_run_input(
         "recipes": [
             {
                 "recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1",
-                "role": "primary",
             }
         ],
         "evidence_bundle_ref": f"evidence://probability_engine/{run_id}",
@@ -454,6 +480,70 @@ def _build_probability_engine_run_input(
         "daily_product_path_available": True,
         "monthly_fallback_used": False,
         "bucket_fallback_used": False,
+    }
+
+
+def _mapped_probability_result_category(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    if normalized == "formal_strict_result":
+        return "formal_independent_result"
+    if normalized in {"formal_estimated_result", "degraded_formal_result"}:
+        return normalized
+    return None
+
+
+def _bridged_probability_surface(
+    *,
+    probability_engine_result: Any,
+    run_outcome_status: str,
+    resolved_result_category: str | None,
+    disclosure_decision: dict[str, Any],
+    evidence_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    probability_payload = _as_dict(probability_engine_result)
+    if not probability_payload:
+        return {}
+    if str(run_outcome_status).strip().lower() in {
+        RunOutcomeStatus.BLOCKED.value,
+        RunOutcomeStatus.DEGRADED.value,
+        RunOutcomeStatus.UNAVAILABLE.value,
+    }:
+        return {}
+    mapped_category = _mapped_probability_result_category(probability_payload.get("resolved_result_category"))
+    probability_status = str(probability_payload.get("run_outcome_status") or "").strip().lower()
+    if mapped_category is None or probability_status not in {"success", "degraded"}:
+        return {}
+    top_level_status = "completed" if probability_status == "success" else "degraded"
+
+    output_payload = _as_dict(probability_payload.get("output"))
+    disclosure_payload = _as_dict(output_payload.get("probability_disclosure_payload"))
+    bridged_disclosure = dict(disclosure_decision or {})
+    bridged_evidence = dict(evidence_bundle or {})
+    bridged_disclosure["result_category"] = mapped_category
+    if disclosure_payload.get("disclosure_level") is not None:
+        bridged_disclosure["disclosure_level"] = disclosure_payload.get("disclosure_level")
+        bridged_disclosure["point_value_allowed"] = disclosure_payload.get("disclosure_level") == "point_and_range"
+        bridged_disclosure["range_required"] = disclosure_payload.get("disclosure_level") in {
+            "point_and_range",
+            "range_only",
+        }
+        bridged_disclosure["diagnostic_only"] = disclosure_payload.get("disclosure_level") == "diagnostic_only"
+        bridged_disclosure["precision_cap"] = disclosure_payload.get("disclosure_level")
+    if disclosure_payload.get("confidence_level") is not None:
+        bridged_disclosure["confidence_level"] = disclosure_payload.get("confidence_level")
+
+    bridged_evidence["run_outcome_status"] = top_level_status
+    bridged_evidence["resolved_result_category"] = mapped_category
+    bridged_evidence["formal_path_status"] = top_level_status
+    bridged_evidence["monthly_fallback_used"] = False
+    bridged_evidence["bucket_fallback_used"] = False
+    bridged_evidence["disclosure_decision"] = dict(bridged_disclosure)
+
+    return {
+        "run_outcome_status": top_level_status,
+        "resolved_result_category": mapped_category,
+        "disclosure_decision": bridged_disclosure,
+        "evidence_bundle": bridged_evidence,
     }
 
 
@@ -3190,6 +3280,25 @@ def run_orchestrator(
             },
         ).to_dict()
     )
+    bridged_probability_surface = _bridged_probability_surface(
+        probability_engine_result=probability_engine_result,
+        run_outcome_status=gate1_run_outcome_status.value,
+        resolved_result_category=gate1_resolved_result_category,
+        disclosure_decision=gate1_disclosure_decision.to_dict(),
+        evidence_bundle=gate1_evidence_bundle.to_dict(),
+    )
+    canonical_run_outcome_status = (
+        bridged_probability_surface.get("run_outcome_status") or gate1_run_outcome_status.value
+    )
+    canonical_resolved_result_category = (
+        bridged_probability_surface.get("resolved_result_category") or gate1_resolved_result_category
+    )
+    canonical_disclosure_decision = dict(
+        bridged_probability_surface.get("disclosure_decision") or gate1_disclosure_decision.to_dict()
+    )
+    canonical_evidence_bundle = dict(
+        bridged_probability_surface.get("evidence_bundle") or gate1_evidence_bundle.to_dict()
+    )
     card_build_input = _build_card_input(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,
@@ -3204,10 +3313,10 @@ def run_orchestrator(
         runtime_restriction=runtime_restriction,
         execution_plan_summary=execution_plan_summary,
         audit_record=None,
-        run_outcome_status=gate1_run_outcome_status.value,
-        resolved_result_category=gate1_resolved_result_category,
-        disclosure_decision=gate1_disclosure_decision.to_dict(),
-        evidence_bundle=gate1_evidence_bundle.to_dict(),
+        run_outcome_status=canonical_run_outcome_status,
+        resolved_result_category=canonical_resolved_result_category,
+        disclosure_decision=canonical_disclosure_decision,
+        evidence_bundle=canonical_evidence_bundle,
         input_provenance=gate1_input_provenance,
         blocking_reasons=blocking_reasons,
         degraded_notes=gate1_degraded_notes,
@@ -3279,10 +3388,10 @@ def run_orchestrator(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,
         status=status,
-        run_outcome_status=gate1_run_outcome_status.value,
-        resolved_result_category=gate1_resolved_result_category,
-        disclosure_decision=gate1_disclosure_decision.to_dict(),
-        evidence_bundle=gate1_evidence_bundle.to_dict(),
+        run_outcome_status=canonical_run_outcome_status,
+        resolved_result_category=canonical_resolved_result_category,
+        disclosure_decision=canonical_disclosure_decision,
+        evidence_bundle=canonical_evidence_bundle,
         evidence_invariance_report=evidence_invariance_report,
         runtime_telemetry=runtime_telemetry,
         requested_workflow_type=requested_workflow,

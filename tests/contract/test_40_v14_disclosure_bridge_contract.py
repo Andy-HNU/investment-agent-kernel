@@ -9,10 +9,16 @@ from probability_engine.engine import run_probability_engine
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "v14" / "formal_daily_engine_input.json"
+_CONTRACT_PATH_COUNT = 32
 
 
 def _load_v14_formal_daily_input() -> dict[str, object]:
-    return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    recipes = list(payload.get("recipes") or [])
+    if recipes:
+        recipes[0] = {**dict(recipes[0]), "path_count": _CONTRACT_PATH_COUNT}
+        payload["recipes"] = recipes
+    return payload
 
 
 def test_task4_primary_only_run_emits_minimal_typed_disclosure_payload() -> None:
@@ -41,6 +47,21 @@ def test_successful_task4_run_uses_internal_formal_strict_result() -> None:
     assert result.resolved_result_category == "formal_strict_result"
     assert result.output is not None
     assert result.output.probability_disclosure_payload.disclosure_level == "point_and_range"
+
+
+def test_low_mapping_confidence_task4_run_does_not_emit_formal_strict_result() -> None:
+    sim_input = deepcopy(_load_v14_formal_daily_input())
+    for product in sim_input["products"]:
+        product["mapping_confidence"] = "low"
+
+    result = run_probability_engine(sim_input)
+
+    assert isinstance(result, ProbabilityEngineRunResult)
+    assert result.run_outcome_status == "degraded"
+    assert result.resolved_result_category == "degraded_formal_result"
+    assert result.output is not None
+    assert result.output.probability_disclosure_payload.confidence_level != "high"
+    assert result.output.probability_disclosure_payload.disclosure_level == "range_only"
 
 
 def test_missing_trading_calendar_blocks_formal_task4_output() -> None:
