@@ -12,6 +12,8 @@ from probability_engine.contracts import (
     SuccessEventSpec,
 )
 
+_WIDENING_METHOD = "wilson_plus_gap_total"
+
 
 def _clamp_probability(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
@@ -123,7 +125,7 @@ def assemble_probability_run_result(
         stress_gap=stress_gap,
         gap_total=gap_total,
         confidence_level=confidence_level,
-        widening_method="task5_primary_challenger_stress",
+        widening_method=_WIDENING_METHOD,
     )
 
     result_category = _result_category_from_confidence(confidence_level)
@@ -142,7 +144,7 @@ def assemble_probability_run_result(
             challenger_gap=challenger_gap,
             stress_gap=stress_gap,
             gap_total=gap_total,
-            widening_method="task5_primary_challenger_stress",
+            widening_method=_WIDENING_METHOD,
         ),
         evidence_refs=evidence_refs,
     )
