@@ -415,6 +415,44 @@ def test_disclosure_bridge_requires_real_challenger_and_stress_results_for_confi
     assert run_result.output.probability_disclosure_payload.confidence_level == "medium"
 
 
+def test_disclosure_bridge_uses_actual_challenger_and_stress_results_even_if_evidence_flags_are_false() -> None:
+    primary = _make_primary_result()
+    challenger = _make_secondary_result(
+        recipe_name="challenger_regime_conditioned_block_bootstrap_v1",
+        role="challenger",
+        success_probability=0.62,
+        success_range=(0.58, 0.66),
+    )
+    stress = _make_secondary_result(
+        recipe_name="stress_downside_tail_v1",
+        role="stress",
+        success_probability=0.62,
+        success_range=(0.58, 0.66),
+    )
+    run_result = assemble_probability_run_result(
+        primary=primary,
+        challengers=[challenger],
+        stresses=[stress],
+        evidence=DisclosureEvidenceSpec(
+            daily_product_path_available=True,
+            monthly_fallback_used=False,
+            bucket_fallback_used=False,
+            independent_weight_adjusted_coverage=1.0,
+            observed_weight_adjusted_coverage=0.98,
+            estimated_weight_adjusted_coverage=0.02,
+            factor_mapping_confidence="high",
+            distribution_readiness="ready",
+            calibration_quality="acceptable",
+            challenger_available=False,
+            stress_available=False,
+            execution_policy="FORMAL_STRICT",
+        ),
+    )
+
+    assert run_result.output is not None
+    assert run_result.output.probability_disclosure_payload.confidence_level == "high"
+
+
 def test_disclosure_bridge_requires_primary_result() -> None:
     run_result = assemble_probability_run_result(
         primary=None,

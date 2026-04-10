@@ -192,8 +192,8 @@ def _normalized_evidence(
         factor_mapping_confidence=evidence.factor_mapping_confidence,
         distribution_readiness=evidence.distribution_readiness,
         calibration_quality=evidence.calibration_quality,
-        challenger_available=bool(evidence.challenger_available and challengers),
-        stress_available=bool(evidence.stress_available and stresses),
+        challenger_available=bool(challengers),
+        stress_available=bool(stresses),
         execution_policy=evidence.execution_policy,
     )
 
