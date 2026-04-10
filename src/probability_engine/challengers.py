@@ -127,17 +127,27 @@ def _portfolio_state_from_positions(
     *,
     num_products: int,
     portfolio_weights: list[float] | None,
-    current_positions: list[CurrentPosition] | None,
-    initial_portfolio_value: float,
-) -> tuple[PortfolioState, list[str], list[float]]:
+    current_positions: list[CurrentPosition | dict[str, Any]] | None,
+    initial_portfolio_value: float | None,
+) -> tuple[PortfolioState, list[str], list[float], float]:
     if current_positions is not None:
         if len(current_positions) != num_products:
             raise ValueError("current_positions must align with the history_matrix rows")
-        state = initialize_portfolio_state(list(current_positions))
-        product_ids = [position.product_id for position in current_positions]
+        normalized_positions = [CurrentPosition.from_any(position) for position in current_positions]
+        state = initialize_portfolio_state(normalized_positions)
+        effective_initial_value = float(state.net_value)
+        if initial_portfolio_value is not None and not np.isclose(
+            float(initial_portfolio_value),
+            effective_initial_value,
+            rtol=1e-9,
+            atol=1e-9,
+        ):
+            raise ValueError("initial_portfolio_value must match the net value implied by current_positions")
+        product_ids = [position.product_id for position in normalized_positions]
         weights = [float(state.current_weights().get(product_id, 0.0)) for product_id in product_ids]
-        return state, product_ids, weights
+        return state, product_ids, weights, effective_initial_value
 
+    effective_initial_value = 1.0 if initial_portfolio_value is None else float(initial_portfolio_value)
     if portfolio_weights is None:
         weights = [1.0 / float(num_products)] * num_products
     else:
@@ -155,7 +165,7 @@ def _portfolio_state_from_positions(
         CurrentPosition(
             product_id=product_id,
             units=0.0,
-            market_value=float(initial_portfolio_value) * float(weight),
+            market_value=effective_initial_value * float(weight),
             weight=float(weight),
             cost_basis=None,
             tradable=True,
@@ -164,7 +174,7 @@ def _portfolio_state_from_positions(
     ]
     state = initialize_portfolio_state(synthetic_positions)
     normalized_weights = [float(state.current_weights().get(product_id, 0.0)) for product_id in product_ids]
-    return state, product_ids, normalized_weights
+    return state, product_ids, normalized_weights, effective_initial_value
 
 
 def _portfolio_daily_returns(
@@ -268,8 +278,8 @@ def run_challenger_bootstrap(
     horizon_days: int = 20,
     success_event_spec: SuccessEventSpec,
     portfolio_weights: list[float] | None = None,
-    current_positions: list[CurrentPosition] | None = None,
-    initial_portfolio_value: float = 1.0,
+    current_positions: list[CurrentPosition | dict[str, Any]] | None = None,
+    initial_portfolio_value: float | None = None,
     random_seed: int = 17,
     recipe: SimulationRecipe | None = None,
 ) -> ChallengerBootstrapDiagnostics:
@@ -289,11 +299,11 @@ def run_challenger_bootstrap(
     if matrix.shape[1] < 2 * int(block_size):
         raise ValueError("history is too short for challenger bootstrap")
 
-    initial_state, product_ids, normalized_weights = _portfolio_state_from_positions(
+    initial_state, product_ids, normalized_weights, effective_initial_value = _portfolio_state_from_positions(
         num_products=matrix.shape[0],
         portfolio_weights=portfolio_weights,
         current_positions=current_positions,
-        initial_portfolio_value=float(initial_portfolio_value),
+        initial_portfolio_value=None if initial_portfolio_value is None else float(initial_portfolio_value),
     )
     candidate_starts = _eligible_block_starts(labels, current_regime, int(block_size))
     if not candidate_starts:
@@ -315,13 +325,12 @@ def run_challenger_bootstrap(
             portfolio_state=portfolio_state,
             product_ids=product_ids,
         )
-        if path_index == 0:
-            selected_block_starts_by_path.append(selected_block_starts)
-            selected_block_regimes_by_path.append(selected_block_regimes)
+        selected_block_starts_by_path.append(selected_block_starts)
+        selected_block_regimes_by_path.append(selected_block_regimes)
         path_results.append(
             _simulate_path(
                 np.asarray(path_returns, dtype=float),
-                initial_value=float(initial_portfolio_value),
+                initial_value=effective_initial_value,
                 success_event_spec=success_event_spec,
             )
         )
@@ -346,6 +355,7 @@ def build_stress_recipe_result(
     *,
     stressed_path_returns: list[list[float]],
     success_event_spec: SuccessEventSpec,
+    initial_portfolio_value: float = 1.0,
     recipe: SimulationRecipe | None = None,
 ) -> RecipeSimulationResult:
     candidate_recipe = recipe or STRESS_RECIPE_V14
@@ -357,7 +367,7 @@ def build_stress_recipe_result(
     path_results = [
         _simulate_path(
             np.asarray(path_returns, dtype=float),
-            initial_value=1.0,
+            initial_value=float(initial_portfolio_value),
             success_event_spec=success_event_spec,
         )
         for path_returns in stressed_path_returns

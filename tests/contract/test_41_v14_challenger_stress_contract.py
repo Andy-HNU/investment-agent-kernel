@@ -103,7 +103,7 @@ def test_challenger_bootstrap_advances_regime_and_preserves_portfolio_weights() 
         regime_labels=regime_labels,
         current_regime="risk_off",
         block_size=2,
-        path_count=1,
+        path_count=3,
         horizon_days=4,
         success_event_spec=_make_success_event_spec(),
         portfolio_weights=[0.8, 0.2],
@@ -123,9 +123,62 @@ def test_challenger_bootstrap_advances_regime_and_preserves_portfolio_weights() 
 
     assert isinstance(weighted, ChallengerBootstrapDiagnostics)
     assert weighted.result.role == "challenger"
+    assert len(weighted.selected_block_starts_by_path) == 3
+    assert len(weighted.selected_block_regimes_by_path) == 3
     assert weighted.selected_block_regimes_by_path[0] == ["risk_off", "normal"]
     assert weighted.selected_block_starts_by_path[0][0] == 0
     assert weighted.result.path_stats.terminal_value_mean != equal_weighted.result.path_stats.terminal_value_mean
+
+
+def test_challenger_bootstrap_uses_position_scale_for_success_evaluation() -> None:
+    success_event_spec = SuccessEventSpec(
+        horizon_days=2,
+        horizon_months=1,
+        target_type="goal_amount",
+        target_value=105.0,
+        drawdown_constraint=0.50,
+        benchmark_ref=None,
+        contribution_policy="fixed",
+        withdrawal_policy="none",
+        rebalancing_policy_ref="none",
+        return_basis="nominal",
+        fee_basis="net",
+        success_logic="joint_target_and_drawdown",
+    )
+    diagnostics = run_challenger_bootstrap(
+        history_matrix=[
+            [0.05, 0.00, 0.05, 0.00],
+            [0.05, 0.00, 0.05, 0.00],
+        ],
+        regime_labels=["risk_off", "normal", "risk_off", "normal"],
+        current_regime="risk_off",
+        block_size=2,
+        path_count=1,
+        horizon_days=2,
+        success_event_spec=success_event_spec,
+        current_positions=[
+            {
+                "product_id": "a",
+                "units": 0.0,
+                "market_value": 60.0,
+                "weight": 0.6,
+                "cost_basis": None,
+                "tradable": True,
+            },
+            {
+                "product_id": "b",
+                "units": 0.0,
+                "market_value": 40.0,
+                "weight": 0.4,
+                "cost_basis": None,
+                "tradable": True,
+            },
+        ],
+        random_seed=3,
+    )
+
+    assert diagnostics.result.path_stats.success_count == 1
+    assert diagnostics.result.success_probability == 1.0
 
 
 def test_stress_recipe_result_summarizes_explicit_stressed_paths() -> None:
@@ -143,6 +196,31 @@ def test_stress_recipe_result_summarizes_explicit_stressed_paths() -> None:
     assert stressed_result.path_stats.success_count == 0
     assert stressed_result.path_stats.path_count == 2
     assert stressed_result.calibration_link_ref == "stress://explicit_stress_paths"
+
+
+def test_stress_recipe_result_supports_explicit_portfolio_scale() -> None:
+    success_event_spec = SuccessEventSpec(
+        horizon_days=2,
+        horizon_months=1,
+        target_type="goal_amount",
+        target_value=105.0,
+        drawdown_constraint=0.50,
+        benchmark_ref=None,
+        contribution_policy="fixed",
+        withdrawal_policy="none",
+        rebalancing_policy_ref="none",
+        return_basis="nominal",
+        fee_basis="net",
+        success_logic="joint_target_and_drawdown",
+    )
+    stressed_result = build_stress_recipe_result(
+        stressed_path_returns=[[0.05, 0.00]],
+        success_event_spec=success_event_spec,
+        initial_portfolio_value=100.0,
+    )
+
+    assert stressed_result.path_stats.success_count == 1
+    assert stressed_result.success_probability == 1.0
 
 
 def test_disclosure_bridge_uses_evidence_to_emit_exact_formal_strict_disclosure() -> None:
