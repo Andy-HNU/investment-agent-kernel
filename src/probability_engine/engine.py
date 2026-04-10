@@ -16,6 +16,27 @@ from probability_engine.path_generator import (
 from probability_engine.recipes import primary_recipe, resolve_recipes
 
 
+def _validate_task4_formal_success_event(runtime_input: DailyEngineRuntimeInput) -> None:
+    success_event = runtime_input.success_event_spec
+    failures: list[str] = []
+    required_values = {
+        "target_type": "goal_amount",
+        "success_logic": "joint_target_and_drawdown",
+        "return_basis": "nominal",
+        "fee_basis": "net",
+    }
+    for field_name, expected in required_values.items():
+        actual = getattr(success_event, field_name)
+        if actual != expected:
+            failures.append(f"success_event_spec.{field_name} must be '{expected}'")
+    if success_event.benchmark_ref is not None:
+        failures.append("success_event_spec.benchmark_ref must be null")
+    if int(success_event.horizon_days) != int(runtime_input.path_horizon_days):
+        failures.append("success_event_spec.horizon_days must match path_horizon_days")
+    if failures:
+        raise ValueError("; ".join(failures))
+
+
 def _published_disclosure_level(run_outcome_status: str) -> str:
     return "point_and_range" if run_outcome_status == "success" else "range_only"
 
@@ -59,6 +80,7 @@ def run_probability_engine(sim_input: Any) -> ProbabilityEngineRunResult:
         runtime_input = DailyEngineRuntimeInput.from_any(sim_input)
         recipes = resolve_recipes(runtime_input.recipes)
         selected_recipe = primary_recipe(recipes)
+        _validate_task4_formal_success_event(runtime_input)
         primary_result = simulate_primary_paths(runtime_input, selected_recipe)
         confidence_level = probability_engine_confidence_level(runtime_input)
         run_outcome_status, resolved_result_category = _resolve_outcome(runtime_input)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from probability_engine.contracts import ProbabilityDisclosurePayload, ProbabilityEngineRunResult
@@ -26,3 +27,17 @@ def test_task4_primary_only_run_emits_minimal_typed_disclosure_payload() -> None
     assert result.output.probability_disclosure_payload.widening_method == "task4_primary_only"
     assert result.output.probability_disclosure_payload.disclosure_level in {"point_and_range", "range_only"}
     assert result.output.probability_disclosure_payload.confidence_level in {"high", "medium", "low"}
+
+
+def test_invalid_task4_formal_scope_does_not_publish_disclosure_payload() -> None:
+    sim_input = deepcopy(_load_v14_formal_daily_input())
+    sim_input["success_event_spec"]["horizon_days"] = sim_input["path_horizon_days"] + 1
+
+    result = run_probability_engine(sim_input)
+
+    assert isinstance(result, ProbabilityEngineRunResult)
+    assert result.run_outcome_status == "failure"
+    assert result.resolved_result_category == "null"
+    assert result.output is None
+    assert result.failure_artifact is not None
+    assert "success_event_spec" in result.failure_artifact.message

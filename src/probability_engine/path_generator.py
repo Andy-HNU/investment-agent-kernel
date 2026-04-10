@@ -49,7 +49,7 @@ def _quantile(values: np.ndarray, level: float) -> float:
 def _student_t_scale(rng: np.random.Generator, df: float | None) -> float:
     if df is None or df <= 2.0:
         return 1.0
-    return float(np.sqrt(df / rng.chisquare(df)))
+    return float(np.sqrt((df - 2.0) / rng.chisquare(df)))
 
 
 def _draw_standardized_scalar(rng: np.random.Generator, innovation_family: str, tail_df: float | None) -> float:
@@ -354,6 +354,8 @@ def _simulate_single_path(
             contributions=instructions_for_date(runtime_input.contribution_schedule, step_date),
             withdrawals=instructions_for_date(runtime_input.withdrawal_schedule, step_date),
             policy=runtime_input.rebalancing_policy,
+            current_date=step_date,
+            previous_date=(calendar_anchor + timedelta(days=offset)).isoformat(),
         )
         peak_value = max(peak_value, portfolio_state.net_value)
         if peak_value > 0.0:

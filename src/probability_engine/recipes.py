@@ -59,6 +59,24 @@ RECIPE_REGISTRY: dict[str, SimulationRecipe] = {
 }
 
 
+def _matches_supported_primary_recipe(recipe: SimulationRecipe) -> bool:
+    registered = RECIPE_REGISTRY.get(recipe.recipe_name)
+    if registered is None:
+        return False
+    return (
+        recipe.role == "primary"
+        and registered.role == "primary"
+        and recipe.innovation_layer == registered.innovation_layer
+        and recipe.volatility_layer == registered.volatility_layer
+        and recipe.dependency_layer == registered.dependency_layer
+        and recipe.jump_layer == registered.jump_layer
+        and recipe.regime_layer == registered.regime_layer
+        and recipe.estimation_basis == registered.estimation_basis
+        and recipe.dependency_scope == registered.dependency_scope
+        and recipe.path_count > 0
+    )
+
+
 def resolve_recipes(values: list[Any] | None) -> list[SimulationRecipe]:
     if not values:
         return [PRIMARY_RECIPE_V14]
@@ -69,5 +87,10 @@ def resolve_recipes(values: list[Any] | None) -> list[SimulationRecipe]:
 def primary_recipe(recipes: list[SimulationRecipe]) -> SimulationRecipe:
     for recipe in recipes:
         if recipe.role == "primary":
+            if not _matches_supported_primary_recipe(recipe):
+                raise ValueError(
+                    "Task 4 requires a supported formal daily primary recipe; "
+                    f"got {recipe.recipe_name or '<unnamed>'}"
+                )
             return recipe
     return PRIMARY_RECIPE_V14

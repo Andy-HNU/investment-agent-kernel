@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, TypeVar
 
 
@@ -17,6 +18,32 @@ def _normalize_weight_map(values: dict[str, float]) -> dict[str, float]:
 
 def _instruction_date(value: str) -> str:
     return str(value or "").strip()
+
+
+def _calendar_rebalance_triggered(
+    policy: "RebalancingPolicySpec",
+    *,
+    current_date: str | None,
+    previous_date: str | None,
+) -> bool:
+    if policy.policy_type not in {"calendar", "hybrid"}:
+        return False
+    frequency = str(policy.calendar_frequency or "").strip().lower()
+    if frequency == "daily":
+        return True
+    if not current_date or not previous_date:
+        return False
+    current = date.fromisoformat(current_date)
+    previous = date.fromisoformat(previous_date)
+    if frequency == "weekly":
+        return current.isocalendar()[:2] != previous.isocalendar()[:2]
+    if frequency == "monthly":
+        return (current.year, current.month) != (previous.year, previous.month)
+    if frequency == "quarterly":
+        return (current.year, (current.month - 1) // 3) != (previous.year, (previous.month - 1) // 3)
+    if frequency == "annual":
+        return current.year != previous.year
+    return False
 
 
 @dataclass(frozen=True)
@@ -185,7 +212,13 @@ class PortfolioState:
             last_withdrawal=float(instruction.amount),
         )
 
-    def rebalance(self, policy: RebalancingPolicySpec | None) -> "PortfolioState":
+    def rebalance(
+        self,
+        policy: RebalancingPolicySpec | None,
+        *,
+        current_date: str | None = None,
+        previous_date: str | None = None,
+    ) -> "PortfolioState":
         if policy is None:
             return self
         if policy.policy_type == "none":
@@ -199,8 +232,16 @@ class PortfolioState:
                 abs(current_weights.get(product_id, 0.0) - self.target_weights.get(product_id, 0.0)) >= float(policy.threshold_band)
                 for product_id in self.target_weights
             )
-        calendar_triggered = policy.policy_type in {"calendar", "hybrid"} and policy.calendar_frequency == "daily"
-        if not threshold_triggered and not calendar_triggered and policy.policy_type == "threshold":
+        calendar_triggered = _calendar_rebalance_triggered(
+            policy,
+            current_date=current_date,
+            previous_date=previous_date,
+        )
+        if policy.policy_type == "threshold" and not threshold_triggered:
+            return self
+        if policy.policy_type == "calendar" and not calendar_triggered:
+            return self
+        if policy.policy_type == "hybrid" and not (threshold_triggered or calendar_triggered):
             return self
         if not self.target_weights:
             return self
@@ -245,6 +286,9 @@ def apply_daily_cashflows_and_rebalance(
     contributions: list[ContributionInstruction],
     withdrawals: list[WithdrawalInstruction],
     policy: RebalancingPolicySpec,
+    *,
+    current_date: str | None = None,
+    previous_date: str | None = None,
 ) -> PortfolioState:
     post_return = portfolio_state.after_returns(product_returns)
     post_contribution = post_return
@@ -253,4 +297,8 @@ def apply_daily_cashflows_and_rebalance(
     post_withdrawal = post_contribution
     for withdrawal in withdrawals:
         post_withdrawal = post_withdrawal.apply_withdrawal(withdrawal)
-    return post_withdrawal.rebalance(policy)
+    return post_withdrawal.rebalance(
+        policy,
+        current_date=current_date,
+        previous_date=previous_date,
+    )
