@@ -16,11 +16,12 @@ from probability_engine.contracts import (
 )
 from probability_engine.challengers import (
     CHALLENGER_RECIPE_V14,
+    ChallengerBootstrapDiagnostics,
     STRESS_RECIPE_V14,
     build_stress_recipe_result,
     run_challenger_bootstrap,
 )
-from probability_engine.disclosure_bridge import assemble_probability_run_result
+from probability_engine.disclosure_bridge import DisclosureEvidenceSpec, assemble_probability_run_result
 from probability_engine.engine import run_probability_engine
 from probability_engine.dependence import FactorLevelDccProvider
 from probability_engine.jumps import (
@@ -65,7 +66,9 @@ __all__ = [
     "SuccessEventSpec",
     "PRIMARY_RECIPE_V14",
     "CHALLENGER_RECIPE_V14",
+    "ChallengerBootstrapDiagnostics",
     "STRESS_RECIPE_V14",
+    "DisclosureEvidenceSpec",
     "assemble_probability_run_result",
     "apply_daily_cashflows_and_rebalance",
     "calibration_quality_at_least",

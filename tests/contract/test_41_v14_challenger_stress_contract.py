@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import pytest
-
-from probability_engine.challengers import build_stress_recipe_result, run_challenger_bootstrap
+from probability_engine.challengers import ChallengerBootstrapDiagnostics, build_stress_recipe_result, run_challenger_bootstrap
 from probability_engine.contracts import PathStatsSummary, ProbabilityEngineRunResult, RecipeSimulationResult, SuccessEventSpec
-from probability_engine.disclosure_bridge import assemble_probability_run_result
+from probability_engine.disclosure_bridge import DisclosureEvidenceSpec, assemble_probability_run_result
 
 
 def _make_success_event_spec() -> SuccessEventSpec:
@@ -51,7 +49,13 @@ def _make_primary_result() -> RecipeSimulationResult:
     )
 
 
-def _make_secondary_result(*, recipe_name: str, role: str, success_probability: float, success_range: tuple[float, float]) -> RecipeSimulationResult:
+def _make_secondary_result(
+    *,
+    recipe_name: str,
+    role: str,
+    success_probability: float,
+    success_range: tuple[float, float],
+) -> RecipeSimulationResult:
     return RecipeSimulationResult(
         recipe_name=recipe_name,
         role=role,
@@ -78,85 +82,149 @@ def _make_secondary_result(*, recipe_name: str, role: str, success_probability: 
     )
 
 
-def test_scheme_c_challenger_bootstrap_and_disclosure_bridge_widen_range() -> None:
+def test_challenger_bootstrap_advances_regime_and_preserves_portfolio_weights() -> None:
     history_matrix = [
-        [0.01, 0.02, -0.01, 0.03, 0.01, 0.00, -0.02, 0.01],
-        [0.00, -0.01, 0.02, 0.01, -0.02, 0.00, 0.01, 0.02],
+        [0.030, -0.010, 0.020, -0.020, 0.015, 0.010, -0.010, 0.020],
+        [-0.010, 0.020, 0.010, 0.005, -0.005, 0.030, 0.010, 0.015],
     ]
     regime_labels = [
-        "normal",
-        "normal",
-        "risk_off",
         "risk_off",
         "normal",
-        "stress",
-        "risk_off",
+        "normal",
+        "normal",
+        "normal",
+        "normal",
+        "normal",
         "normal",
     ]
-    challenger = run_challenger_bootstrap(
+
+    weighted = run_challenger_bootstrap(
         history_matrix=history_matrix,
         regime_labels=regime_labels,
         current_regime="risk_off",
         block_size=2,
-        path_count=64,
+        path_count=1,
         horizon_days=4,
         success_event_spec=_make_success_event_spec(),
+        portfolio_weights=[0.8, 0.2],
+        random_seed=11,
     )
-    stress = build_stress_recipe_result(_make_primary_result())
-    run_result = assemble_probability_run_result(
-        primary=_make_primary_result(),
-        challengers=[challenger],
-        stresses=[stress],
+    equal_weighted = run_challenger_bootstrap(
+        history_matrix=history_matrix,
+        regime_labels=regime_labels,
+        current_regime="risk_off",
+        block_size=2,
+        path_count=1,
+        horizon_days=4,
+        success_event_spec=_make_success_event_spec(),
+        portfolio_weights=[0.5, 0.5],
+        random_seed=11,
+    )
+
+    assert isinstance(weighted, ChallengerBootstrapDiagnostics)
+    assert weighted.result.role == "challenger"
+    assert weighted.selected_block_regimes_by_path[0] == ["risk_off", "normal"]
+    assert weighted.selected_block_starts_by_path[0][0] == 0
+    assert weighted.result.path_stats.terminal_value_mean != equal_weighted.result.path_stats.terminal_value_mean
+
+
+def test_stress_recipe_result_summarizes_explicit_stressed_paths() -> None:
+    stressed_result = build_stress_recipe_result(
+        stressed_path_returns=[
+            [-0.03, -0.01, 0.00, -0.02],
+            [-0.02, -0.03, -0.01, -0.02],
+        ],
         success_event_spec=_make_success_event_spec(),
     )
 
-    assert isinstance(run_result, ProbabilityEngineRunResult)
-    assert run_result.output is not None
-    assert run_result.output.primary_result.role == "primary"
-    assert run_result.output.challenger_results[0].role == "challenger"
-    assert run_result.output.stress_results[0].role == "stress"
-    assert run_result.output.probability_disclosure_payload.published_point == 0.62
-    assert run_result.output.probability_disclosure_payload.published_range is not None
-    assert run_result.output.probability_disclosure_payload.published_range[0] <= 0.58
-    assert run_result.output.probability_disclosure_payload.published_range[1] >= 0.66
-    assert run_result.output.probability_disclosure_payload.gap_total is not None
-    assert run_result.output.probability_disclosure_payload.widening_method == "wilson_plus_gap_total"
-    assert run_result.resolved_result_category in {"formal_strict_result", "formal_estimated_result", "degraded_formal_result"}
+    assert stressed_result.role == "stress"
+    assert stressed_result.sample_count == 2
+    assert stressed_result.success_probability == 0.0
+    assert stressed_result.path_stats.success_count == 0
+    assert stressed_result.path_stats.path_count == 2
+    assert stressed_result.calibration_link_ref == "stress://explicit_stress_paths"
 
 
-def test_disclosure_bridge_applies_fixed_gap_widening_formula() -> None:
+def test_disclosure_bridge_uses_evidence_to_emit_exact_formal_strict_disclosure() -> None:
     primary = _make_primary_result()
     challenger = _make_secondary_result(
         recipe_name="challenger_regime_conditioned_block_bootstrap_v1",
         role="challenger",
-        success_probability=0.54,
-        success_range=(0.50, 0.58),
+        success_probability=0.62,
+        success_range=(0.58, 0.66),
     )
     stress = _make_secondary_result(
         recipe_name="stress_downside_tail_v1",
         role="stress",
-        success_probability=0.50,
-        success_range=(0.45, 0.54),
+        success_probability=0.62,
+        success_range=(0.58, 0.66),
     )
 
     run_result = assemble_probability_run_result(
         primary=primary,
         challengers=[challenger],
         stresses=[stress],
-        success_event_spec=_make_success_event_spec(),
+        evidence=DisclosureEvidenceSpec(
+            daily_product_path_available=True,
+            monthly_fallback_used=False,
+            bucket_fallback_used=False,
+            independent_weight_adjusted_coverage=1.0,
+            observed_weight_adjusted_coverage=0.98,
+            estimated_weight_adjusted_coverage=0.02,
+            factor_mapping_confidence="high",
+            distribution_readiness="ready",
+            calibration_quality="strong",
+            challenger_available=True,
+            stress_available=True,
+            execution_policy="FORMAL_STRICT",
+        ),
     )
 
+    assert isinstance(run_result, ProbabilityEngineRunResult)
     assert run_result.output is not None
+    assert run_result.run_outcome_status == "success"
+    assert run_result.resolved_result_category == "formal_strict_result"
     payload = run_result.output.probability_disclosure_payload
     assert payload.published_point == 0.62
-    assert payload.challenger_gap == pytest.approx(0.08)
-    assert payload.stress_gap == pytest.approx(0.12)
-    assert payload.gap_total == pytest.approx(0.12)
-    assert payload.published_range == pytest.approx((0.52, 0.72))
-    assert payload.confidence_level == "low"
-    assert payload.disclosure_level == "range_only"
+    assert payload.published_range == (0.58, 0.66)
+    assert payload.widening_method == "wilson_plus_gap_total"
+    assert payload.disclosure_level == "point_and_range"
+    assert payload.confidence_level == "high"
+    assert run_result.output.primary_result.role == "primary"
+    assert run_result.output.challenger_results[0].role == "challenger"
+    assert run_result.output.stress_results[0].role == "stress"
+
+
+def test_disclosure_bridge_uses_evidence_to_emit_formal_estimated_disclosure() -> None:
+    primary = _make_primary_result()
+    run_result = assemble_probability_run_result(
+        primary=primary,
+        challengers=[],
+        stresses=[],
+        evidence=DisclosureEvidenceSpec(
+            daily_product_path_available=True,
+            monthly_fallback_used=False,
+            bucket_fallback_used=False,
+            independent_weight_adjusted_coverage=0.72,
+            observed_weight_adjusted_coverage=0.72,
+            estimated_weight_adjusted_coverage=0.28,
+            factor_mapping_confidence="high",
+            distribution_readiness="ready",
+            calibration_quality="strong",
+            challenger_available=False,
+            stress_available=False,
+            execution_policy="FORMAL_ESTIMATION_ALLOWED",
+        ),
+    )
+
+    assert isinstance(run_result, ProbabilityEngineRunResult)
+    assert run_result.output is not None
     assert run_result.run_outcome_status == "degraded"
-    assert run_result.resolved_result_category == "degraded_formal_result"
+    assert run_result.resolved_result_category == "formal_estimated_result"
+    payload = run_result.output.probability_disclosure_payload
+    assert payload.disclosure_level == "range_only"
+    assert payload.confidence_level == "medium"
+    assert payload.widening_method == "wilson_plus_gap_total"
 
 
 def test_disclosure_bridge_requires_primary_result() -> None:
@@ -164,7 +232,20 @@ def test_disclosure_bridge_requires_primary_result() -> None:
         primary=None,
         challengers=[],
         stresses=[],
-        success_event_spec=_make_success_event_spec(),
+        evidence=DisclosureEvidenceSpec(
+            daily_product_path_available=False,
+            monthly_fallback_used=False,
+            bucket_fallback_used=False,
+            independent_weight_adjusted_coverage=0.0,
+            observed_weight_adjusted_coverage=0.0,
+            estimated_weight_adjusted_coverage=0.0,
+            factor_mapping_confidence="low",
+            distribution_readiness="not_ready",
+            calibration_quality="failed",
+            challenger_available=False,
+            stress_available=False,
+            execution_policy="FORMAL_STRICT",
+        ),
     )
 
     assert run_result.run_outcome_status == "failure"

@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 
 from probability_engine.contracts import PathStatsSummary, RecipeSimulationResult, SuccessEventSpec
+from probability_engine.portfolio_policy import CurrentPosition, PortfolioState, initialize_portfolio_state
 from probability_engine.recipes import SimulationRecipe
 
 
@@ -57,7 +58,7 @@ def _eligible_block_starts(regime_labels: list[str], current_regime: str, block_
     starts: list[int] = []
     for start in range(0, len(labels) - block_size + 1):
         block = labels[start : start + block_size]
-        if all(label == current for label in block):
+        if block and block[0] == current:
             starts.append(start)
     return starts
 
@@ -122,6 +123,103 @@ def _summarize_paths(
     )
 
 
+def _portfolio_state_from_positions(
+    *,
+    num_products: int,
+    portfolio_weights: list[float] | None,
+    current_positions: list[CurrentPosition] | None,
+    initial_portfolio_value: float,
+) -> tuple[PortfolioState, list[str], list[float]]:
+    if current_positions is not None:
+        if len(current_positions) != num_products:
+            raise ValueError("current_positions must align with the history_matrix rows")
+        state = initialize_portfolio_state(list(current_positions))
+        product_ids = [position.product_id for position in current_positions]
+        weights = [float(state.current_weights().get(product_id, 0.0)) for product_id in product_ids]
+        return state, product_ids, weights
+
+    if portfolio_weights is None:
+        weights = [1.0 / float(num_products)] * num_products
+    else:
+        weights = [max(0.0, float(value)) for value in list(portfolio_weights)]
+        if len(weights) != num_products:
+            raise ValueError("portfolio_weights must align with the history_matrix rows")
+        total = sum(weights)
+        if total <= 0.0:
+            weights = [1.0 / float(num_products)] * num_products
+        else:
+            weights = [weight / total for weight in weights]
+
+    product_ids = [f"product_{index}" for index in range(num_products)]
+    synthetic_positions = [
+        CurrentPosition(
+            product_id=product_id,
+            units=0.0,
+            market_value=float(initial_portfolio_value) * float(weight),
+            weight=float(weight),
+            cost_basis=None,
+            tradable=True,
+        )
+        for product_id, weight in zip(product_ids, weights, strict=True)
+    ]
+    state = initialize_portfolio_state(synthetic_positions)
+    normalized_weights = [float(state.current_weights().get(product_id, 0.0)) for product_id in product_ids]
+    return state, product_ids, normalized_weights
+
+
+def _portfolio_daily_returns(
+    *,
+    block: np.ndarray,
+    portfolio_state: PortfolioState,
+    product_ids: list[str],
+) -> tuple[PortfolioState, list[float]]:
+    daily_returns: list[float] = []
+    for day_index in range(block.shape[1]):
+        product_returns = {product_ids[row_index]: float(block[row_index, day_index]) for row_index in range(block.shape[0])}
+        previous_value = portfolio_state.net_value
+        portfolio_state = portfolio_state.after_returns(product_returns)
+        if previous_value <= 0.0:
+            daily_returns.append(0.0)
+        else:
+            daily_returns.append(float(portfolio_state.net_value / previous_value - 1.0))
+    return portfolio_state, daily_returns
+
+
+def _build_path_returns(
+    *,
+    matrix: np.ndarray,
+    labels: list[str],
+    current_regime: str,
+    block_size: int,
+    horizon_days: int,
+    rng: np.random.Generator,
+    portfolio_state: PortfolioState,
+    product_ids: list[str],
+) -> tuple[list[float], list[int], list[str]]:
+    selected_block_starts: list[int] = []
+    selected_block_regimes: list[str] = []
+    path_returns: list[float] = []
+    regime_cursor = str(current_regime).strip()
+
+    while len(path_returns) < horizon_days:
+        candidate_starts = _eligible_block_starts(labels, regime_cursor, block_size)
+        if not candidate_starts:
+            raise ValueError(f"no regime-conditioned challenger blocks are available for regime '{regime_cursor}'")
+        start = int(rng.choice(candidate_starts))
+        selected_block_starts.append(start)
+        selected_block_regimes.append(regime_cursor)
+        block = matrix[:, start : start + block_size]
+        portfolio_state, block_returns = _portfolio_daily_returns(
+            block=block,
+            portfolio_state=portfolio_state,
+            product_ids=product_ids,
+        )
+        path_returns.extend(block_returns)
+        regime_cursor = labels[start + block_size - 1]
+
+    return path_returns[:horizon_days], selected_block_starts, selected_block_regimes
+
+
 CHALLENGER_RECIPE_V14 = SimulationRecipe(
     recipe_name="challenger_regime_conditioned_block_bootstrap_v1",
     role="challenger",
@@ -150,29 +248,14 @@ STRESS_RECIPE_V14 = SimulationRecipe(
 
 
 @dataclass(frozen=True)
-class ChallengerBootstrapResult:
-    recipe: SimulationRecipe
-    success_probability: float
-    path_stats: PathStatsSummary
+class ChallengerBootstrapDiagnostics:
+    result: RecipeSimulationResult
     block_size: int
     current_regime: str
     candidate_block_count: int
-
-    def to_recipe_result(self) -> RecipeSimulationResult:
-        return RecipeSimulationResult(
-            recipe_name=self.recipe.recipe_name,
-            role=self.recipe.role,
-            success_probability=self.success_probability,
-            success_probability_range=_wilson_interval(
-                self.path_stats.success_count,
-                self.path_stats.path_count,
-            ),
-            cagr_range=(self.path_stats.cagr_p05, self.path_stats.cagr_p95),
-            drawdown_range=(self.path_stats.max_drawdown_p05, self.path_stats.max_drawdown_p95),
-            sample_count=self.path_stats.path_count,
-            path_stats=self.path_stats,
-            calibration_link_ref=f"challenger://{self.recipe.recipe_name}",
-        )
+    portfolio_weights: tuple[float, ...]
+    selected_block_starts_by_path: list[list[int]]
+    selected_block_regimes_by_path: list[list[str]]
 
 
 def run_challenger_bootstrap(
@@ -184,9 +267,12 @@ def run_challenger_bootstrap(
     path_count: int = 2000,
     horizon_days: int = 20,
     success_event_spec: SuccessEventSpec,
+    portfolio_weights: list[float] | None = None,
+    current_positions: list[CurrentPosition] | None = None,
+    initial_portfolio_value: float = 1.0,
     random_seed: int = 17,
     recipe: SimulationRecipe | None = None,
-) -> RecipeSimulationResult:
+) -> ChallengerBootstrapDiagnostics:
     candidate_recipe = recipe or CHALLENGER_RECIPE_V14
     if candidate_recipe.role != "challenger":
         raise ValueError("challenger bootstrap requires a challenger recipe")
@@ -203,23 +289,39 @@ def run_challenger_bootstrap(
     if matrix.shape[1] < 2 * int(block_size):
         raise ValueError("history is too short for challenger bootstrap")
 
+    initial_state, product_ids, normalized_weights = _portfolio_state_from_positions(
+        num_products=matrix.shape[0],
+        portfolio_weights=portfolio_weights,
+        current_positions=current_positions,
+        initial_portfolio_value=float(initial_portfolio_value),
+    )
     candidate_starts = _eligible_block_starts(labels, current_regime, int(block_size))
     if not candidate_starts:
         raise ValueError("no regime-conditioned challenger blocks are available")
 
     rng = np.random.default_rng(int(random_seed))
     path_results: list[tuple[float, float, float, bool]] = []
-    for _ in range(int(path_count)):
-        sampled_returns: list[np.ndarray] = []
-        while sum(block.shape[1] for block in sampled_returns) < int(horizon_days):
-            start = int(rng.choice(candidate_starts))
-            sampled_returns.append(matrix[:, start : start + int(block_size)])
-        sampled_matrix = np.concatenate(sampled_returns, axis=1)[:, : int(horizon_days)]
-        aggregated_returns = sampled_matrix.mean(axis=0)
+    selected_block_starts_by_path: list[list[int]] = []
+    selected_block_regimes_by_path: list[list[str]] = []
+    for path_index in range(int(path_count)):
+        portfolio_state = initial_state
+        path_returns, selected_block_starts, selected_block_regimes = _build_path_returns(
+            matrix=matrix,
+            labels=labels,
+            current_regime=current_regime,
+            block_size=int(block_size),
+            horizon_days=int(horizon_days),
+            rng=rng,
+            portfolio_state=portfolio_state,
+            product_ids=product_ids,
+        )
+        if path_index == 0:
+            selected_block_starts_by_path.append(selected_block_starts)
+            selected_block_regimes_by_path.append(selected_block_regimes)
         path_results.append(
             _simulate_path(
-                aggregated_returns,
-                initial_value=1.0,
+                np.asarray(path_returns, dtype=float),
+                initial_value=float(initial_portfolio_value),
                 success_event_spec=success_event_spec,
             )
         )
@@ -229,92 +331,40 @@ def run_challenger_bootstrap(
         path_results=path_results,
         calibration_link_ref=f"challenger://{candidate_recipe.recipe_name}",
     )
-    return ChallengerBootstrapResult(
-        recipe=candidate_recipe,
-        success_probability=summary.success_probability,
-        path_stats=summary.path_stats,
+    return ChallengerBootstrapDiagnostics(
+        result=summary,
         block_size=int(block_size),
         current_regime=str(current_regime).strip(),
         candidate_block_count=len(candidate_starts),
-    ).to_recipe_result()
-
-
-@dataclass(frozen=True)
-class StressRecipeResult:
-    recipe: SimulationRecipe
-    source_recipe_name: str
-    stress_factor: float
-    success_probability: float
-    path_stats: PathStatsSummary
-
-    def to_recipe_result(self) -> RecipeSimulationResult:
-        return RecipeSimulationResult(
-            recipe_name=self.recipe.recipe_name,
-            role=self.recipe.role,
-            success_probability=self.success_probability,
-            success_probability_range=_wilson_interval(
-                self.path_stats.success_count,
-                self.path_stats.path_count,
-            ),
-            cagr_range=(self.path_stats.cagr_p05, self.path_stats.cagr_p95),
-            drawdown_range=(self.path_stats.max_drawdown_p05, self.path_stats.max_drawdown_p95),
-            sample_count=self.path_stats.path_count,
-            path_stats=self.path_stats,
-            calibration_link_ref=f"stress://{self.source_recipe_name}",
-        )
+        portfolio_weights=tuple(normalized_weights),
+        selected_block_starts_by_path=selected_block_starts_by_path,
+        selected_block_regimes_by_path=selected_block_regimes_by_path,
+    )
 
 
 def build_stress_recipe_result(
-    primary_result: RecipeSimulationResult,
     *,
+    stressed_path_returns: list[list[float]],
+    success_event_spec: SuccessEventSpec,
     recipe: SimulationRecipe | None = None,
-    stress_factor: float = 0.92,
 ) -> RecipeSimulationResult:
     candidate_recipe = recipe or STRESS_RECIPE_V14
     if candidate_recipe.role != "stress":
         raise ValueError("stress recipe result requires a stress recipe")
-    stress_factor = float(stress_factor)
-    if not 0.0 < stress_factor < 1.0:
-        raise ValueError("stress_factor must be between 0 and 1")
+    if not stressed_path_returns:
+        raise ValueError("stressed_path_returns must not be empty")
 
-    source_range = tuple(primary_result.success_probability_range)
-    probability_drop = max(0.04, (source_range[1] - source_range[0]) * 0.5)
-    stressed_probability = _clamp_probability(primary_result.success_probability - probability_drop)
-    stressed_range = (
-        _clamp_probability(source_range[0] * stress_factor),
-        _clamp_probability(max(source_range[0] * stress_factor, source_range[1] - probability_drop)),
-    )
-
-    stressed_path_stats = PathStatsSummary(
-        terminal_value_mean=float(primary_result.path_stats.terminal_value_mean * stress_factor),
-        terminal_value_p05=float(primary_result.path_stats.terminal_value_p05 * (stress_factor - 0.02)),
-        terminal_value_p50=float(primary_result.path_stats.terminal_value_p50 * stress_factor),
-        terminal_value_p95=float(primary_result.path_stats.terminal_value_p95 * (stress_factor + 0.01)),
-        cagr_p05=float(primary_result.path_stats.cagr_p05 - 0.03),
-        cagr_p50=float(primary_result.path_stats.cagr_p50 - 0.02),
-        cagr_p95=float(primary_result.path_stats.cagr_p95 - 0.01),
-        max_drawdown_p05=_clamp_probability(primary_result.path_stats.max_drawdown_p05 * 1.10),
-        max_drawdown_p50=_clamp_probability(primary_result.path_stats.max_drawdown_p50 * 1.15),
-        max_drawdown_p95=_clamp_probability(primary_result.path_stats.max_drawdown_p95 * 1.20),
-        success_count=int(round(stressed_probability * primary_result.sample_count)),
-        path_count=primary_result.sample_count,
-    )
-    stressed_summary = StressRecipeResult(
+    path_results = [
+        _simulate_path(
+            np.asarray(path_returns, dtype=float),
+            initial_value=1.0,
+            success_event_spec=success_event_spec,
+        )
+        for path_returns in stressed_path_returns
+    ]
+    summary = _summarize_paths(
         recipe=candidate_recipe,
-        source_recipe_name=primary_result.recipe_name,
-        stress_factor=stress_factor,
-        success_probability=stressed_probability,
-        path_stats=stressed_path_stats,
+        path_results=path_results,
+        calibration_link_ref="stress://explicit_stress_paths",
     )
-    stressed_result = stressed_summary.to_recipe_result()
-    return RecipeSimulationResult(
-        recipe_name=stressed_result.recipe_name,
-        role=stressed_result.role,
-        success_probability=stressed_probability,
-        success_probability_range=stressed_range,
-        cagr_range=(stressed_path_stats.cagr_p05, stressed_path_stats.cagr_p95),
-        drawdown_range=(stressed_path_stats.max_drawdown_p05, stressed_path_stats.max_drawdown_p95),
-        sample_count=stressed_result.sample_count,
-        path_stats=stressed_path_stats,
-        calibration_link_ref=stressed_result.calibration_link_ref,
-    )
+    return summary
