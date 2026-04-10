@@ -222,6 +222,24 @@ def test_conflicting_horizon_months_are_rejected() -> None:
     assert "horizon_months" in result.failure_artifact.message
 
 
+def test_zero_horizon_is_rejected_for_formal_task4_runs() -> None:
+    sim_input = deepcopy(_load_v14_formal_daily_input())
+    sim_input["path_horizon_days"] = 0
+    sim_input["trading_calendar"] = []
+    sim_input["success_event_spec"]["horizon_days"] = 0
+    sim_input["success_event_spec"]["horizon_months"] = 0
+    for product in sim_input["products"]:
+        product["mapping_confidence"] = "high"
+
+    result = run_probability_engine(sim_input)
+
+    assert result.run_outcome_status == "failure"
+    assert result.resolved_result_category == "null"
+    assert result.output is None
+    assert result.failure_artifact is not None
+    assert "path_horizon_days" in result.failure_artifact.message
+
+
 class _FixedChiSquareRng:
     def chisquare(self, df: float) -> float:
         return float(df)

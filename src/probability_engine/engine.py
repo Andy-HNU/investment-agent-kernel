@@ -37,6 +37,8 @@ def _compatible_horizon_months(runtime_input: DailyEngineRuntimeInput) -> set[in
 def _validate_task4_formal_success_event(runtime_input: DailyEngineRuntimeInput) -> None:
     success_event = runtime_input.success_event_spec
     failures: list[str] = []
+    if int(runtime_input.path_horizon_days) <= 0:
+        failures.append("path_horizon_days must be positive for formal Task 4 runs")
     required_values = {
         "target_type": "goal_amount",
         "success_logic": "joint_target_and_drawdown",

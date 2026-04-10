@@ -154,6 +154,7 @@ class RecipeSimulationResult:
 class DailyProbabilityEngineInput:
     as_of: str
     path_horizon_days: int
+    trading_calendar: list[str]
     products: list[Any]
     factor_dynamics: Any
     regime_state: Any
