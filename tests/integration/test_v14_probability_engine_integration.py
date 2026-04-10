@@ -44,6 +44,46 @@ def test_primary_recipe_returns_formal_output_for_full_daily_input() -> None:
     assert result.output.probability_disclosure_payload is not None
 
 
+def test_same_month_twenty_trading_day_path_accepts_horizon_months_one() -> None:
+    sim_input = deepcopy(_load_v14_formal_daily_input())
+    sim_input["as_of"] = "2026-04-01"
+    sim_input["trading_calendar"] = [
+        "2026-04-02",
+        "2026-04-03",
+        "2026-04-06",
+        "2026-04-07",
+        "2026-04-08",
+        "2026-04-09",
+        "2026-04-10",
+        "2026-04-13",
+        "2026-04-14",
+        "2026-04-15",
+        "2026-04-16",
+        "2026-04-17",
+        "2026-04-20",
+        "2026-04-21",
+        "2026-04-22",
+        "2026-04-23",
+        "2026-04-24",
+        "2026-04-27",
+        "2026-04-28",
+        "2026-04-29",
+    ]
+    sim_input["success_event_spec"]["horizon_months"] = 1
+
+    result = run_probability_engine(sim_input)
+
+    assert result.run_outcome_status in {"success", "degraded"}
+    assert result.output is not None
+
+
+def test_fixture_cross_month_twenty_trading_day_path_accepts_horizon_months_one() -> None:
+    result = run_probability_engine(_load_v14_formal_daily_input())
+
+    assert result.run_outcome_status in {"success", "degraded"}
+    assert result.output is not None
+
+
 def test_explicit_trading_calendar_is_source_of_truth_for_formal_steps() -> None:
     sim_input = _load_v14_formal_daily_input()
 
@@ -172,7 +212,7 @@ def test_invalid_formal_success_event_spec_is_rejected(field: str, value: object
 
 def test_conflicting_horizon_months_are_rejected() -> None:
     sim_input = deepcopy(_load_v14_formal_daily_input())
-    sim_input["success_event_spec"]["horizon_months"] = 0
+    sim_input["success_event_spec"]["horizon_months"] = 3
 
     result = run_probability_engine(sim_input)
 
