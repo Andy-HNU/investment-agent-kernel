@@ -103,7 +103,6 @@ _HIGH_RISK_ACTION_TYPES = {
     "add_cash_sat",
     "reduce_defense",
 }
-_FORMAL_DAILY_REGRESSION_PATH_COUNT = 32
 
 
 def _obj(value: Any) -> Any:
@@ -472,7 +471,6 @@ def _build_probability_engine_run_input(
         "recipes": [
             {
                 "recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1",
-                "path_count": _FORMAL_DAILY_REGRESSION_PATH_COUNT,
             }
         ],
         "evidence_bundle_ref": f"evidence://probability_engine/{run_id}",
@@ -505,6 +503,32 @@ def _bridged_probability_surface(
     probability_payload = _as_dict(probability_engine_result)
     if not probability_payload:
         return {}
+    probability_status = str(probability_payload.get("run_outcome_status") or "").strip().lower()
+    if probability_status == "failure":
+        bridged_disclosure = dict(disclosure_decision or {})
+        bridged_disclosure["result_category"] = None
+        bridged_disclosure["disclosure_level"] = "unavailable"
+        bridged_disclosure["point_value_allowed"] = False
+        bridged_disclosure["range_required"] = False
+        bridged_disclosure["diagnostic_only"] = False
+        bridged_disclosure["precision_cap"] = "unavailable"
+        bridged_disclosure["confidence_level"] = "low"
+
+        bridged_evidence = dict(evidence_bundle or {})
+        bridged_evidence["run_outcome_status"] = RunOutcomeStatus.UNAVAILABLE.value
+        bridged_evidence["resolved_result_category"] = None
+        bridged_evidence["formal_path_status"] = RunOutcomeStatus.UNAVAILABLE.value
+        bridged_evidence["monthly_fallback_used"] = False
+        bridged_evidence["bucket_fallback_used"] = False
+        bridged_evidence["disclosure_decision"] = dict(bridged_disclosure)
+        bridged_evidence["failure_artifact"] = _as_dict(probability_payload.get("failure_artifact"))
+
+        return {
+            "run_outcome_status": RunOutcomeStatus.UNAVAILABLE.value,
+            "resolved_result_category": None,
+            "disclosure_decision": bridged_disclosure,
+            "evidence_bundle": bridged_evidence,
+        }
     if str(run_outcome_status).strip().lower() in {
         RunOutcomeStatus.BLOCKED.value,
         RunOutcomeStatus.DEGRADED.value,
@@ -512,7 +536,6 @@ def _bridged_probability_surface(
     }:
         return {}
     mapped_category = _mapped_probability_result_category(probability_payload.get("resolved_result_category"))
-    probability_status = str(probability_payload.get("run_outcome_status") or "").strip().lower()
     if mapped_category is None or probability_status not in {"success", "degraded"}:
         return {}
     top_level_status = "completed" if probability_status == "success" else "degraded"
@@ -2949,6 +2972,7 @@ def run_orchestrator(
     goal_solver_input_used = envelope.get("goal_solver_input") or prior_solver_input
     runtime_result = None
     probability_engine_result = None
+    probability_engine_input = None
     solver_snapshot_id = None
     has_prior_baseline = prior_solver_output is not None and prior_solver_input is not None
 
@@ -3310,16 +3334,24 @@ def run_orchestrator(
         evidence_bundle=gate1_evidence_bundle.to_dict(),
     )
     canonical_run_outcome_status = (
-        bridged_probability_surface.get("run_outcome_status") or gate1_run_outcome_status.value
+        bridged_probability_surface["run_outcome_status"]
+        if "run_outcome_status" in bridged_probability_surface
+        else gate1_run_outcome_status.value
     )
     canonical_resolved_result_category = (
-        bridged_probability_surface.get("resolved_result_category") or gate1_resolved_result_category
+        bridged_probability_surface["resolved_result_category"]
+        if "resolved_result_category" in bridged_probability_surface
+        else gate1_resolved_result_category
     )
     canonical_disclosure_decision = dict(
-        bridged_probability_surface.get("disclosure_decision") or gate1_disclosure_decision.to_dict()
+        bridged_probability_surface["disclosure_decision"]
+        if "disclosure_decision" in bridged_probability_surface
+        else gate1_disclosure_decision.to_dict()
     )
     canonical_evidence_bundle = dict(
-        bridged_probability_surface.get("evidence_bundle") or gate1_evidence_bundle.to_dict()
+        bridged_probability_surface["evidence_bundle"]
+        if "evidence_bundle" in bridged_probability_surface
+        else gate1_evidence_bundle.to_dict()
     )
     card_build_input = _build_card_input(
         run_id=run_id,

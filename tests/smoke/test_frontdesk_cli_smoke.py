@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -34,6 +35,19 @@ def _observed_snapshot_source(tmp_path: Path, profile: UserOnboardingProfile) ->
         profile,
         market_raw_overrides=_formal_market_raw_overrides(),
     )
+
+
+def _override_primary_recipe_for_smoke(monkeypatch, *, path_count: int = 32) -> None:
+    from probability_engine import recipes as recipe_module
+
+    override = replace(recipe_module.PRIMARY_RECIPE_V14, path_count=path_count)
+    monkeypatch.setattr(recipe_module, "PRIMARY_RECIPE_V14", override)
+    monkeypatch.setitem(recipe_module.RECIPE_REGISTRY, override.recipe_name, override)
+
+
+@pytest.fixture(autouse=True)
+def _fast_primary_recipe(monkeypatch):
+    _override_primary_recipe_for_smoke(monkeypatch)
 
 
 @pytest.mark.smoke

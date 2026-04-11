@@ -9,6 +9,7 @@ import orchestrator.engine as orchestrator_engine
 from frontdesk.service import _frontdesk_summary
 from orchestrator.engine import run_orchestrator
 from probability_engine.contracts import (
+    FailureArtifact,
     PathStatsSummary,
     ProbabilityDisclosurePayload,
     ProbabilityEngineOutput,
@@ -170,6 +171,67 @@ def test_orchestrator_top_level_surface_tracks_bridged_probability_result_when_e
     assert result["runtime_telemetry"]["path_count_stress"] == 0
 
 
+def test_orchestrator_marks_formal_surface_unavailable_when_probability_engine_fails(monkeypatch) -> None:
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "run_probability_engine",
+        lambda sim_input: ProbabilityEngineRunResult(
+            run_outcome_status="failure",
+            resolved_result_category="null",
+            output=None,
+            failure_artifact=FailureArtifact(
+                failure_stage="probability_engine",
+                failure_code="primary_daily_engine_failed",
+                message="synthetic contract failure",
+                diagnostic_refs=["diag://probability_engine_failed"],
+                trustworthy_partial_diagnostics=False,
+            ),
+        ),
+    )
+    monkeypatch.setattr(orchestrator_engine, "_gate1_run_outcome_status", lambda **kwargs: RunOutcomeStatus.COMPLETED)
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "v14_contract_failure_bridge"},
+        raw_inputs=_formal_onboarding_raw_inputs(account_profile_id="v14_contract_failure_bridge"),
+    ).to_dict()
+
+    assert result["probability_engine_result"] is not None
+    assert result["run_outcome_status"] == "unavailable"
+    assert result["resolved_result_category"] is None
+    assert result["evidence_bundle"]["run_outcome_status"] == "unavailable"
+
+
+def test_orchestrator_marks_degraded_gate1_surface_unavailable_when_probability_engine_fails(monkeypatch) -> None:
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "run_probability_engine",
+        lambda sim_input: ProbabilityEngineRunResult(
+            run_outcome_status="failure",
+            resolved_result_category="null",
+            output=None,
+            failure_artifact=FailureArtifact(
+                failure_stage="probability_engine",
+                failure_code="primary_daily_engine_failed",
+                message="synthetic degraded contract failure",
+                diagnostic_refs=["diag://probability_engine_failed"],
+                trustworthy_partial_diagnostics=False,
+            ),
+        ),
+    )
+    monkeypatch.setattr(orchestrator_engine, "_gate1_run_outcome_status", lambda **kwargs: RunOutcomeStatus.DEGRADED)
+    monkeypatch.setattr(orchestrator_engine, "_gate1_resolved_result_category", lambda **kwargs: "degraded_formal_result")
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "v14_contract_failure_bridge_degraded"},
+        raw_inputs=_formal_onboarding_raw_inputs(account_profile_id="v14_contract_failure_bridge_degraded"),
+    ).to_dict()
+
+    assert result["probability_engine_result"] is not None
+    assert result["run_outcome_status"] == "unavailable"
+    assert result["resolved_result_category"] is None
+    assert result["evidence_bundle"]["run_outcome_status"] == "unavailable"
+
+
 def test_orchestrator_maps_internal_formal_strict_result_to_v13_independent_surface(monkeypatch) -> None:
     monkeypatch.setattr(
         orchestrator_engine,
@@ -280,7 +342,7 @@ def test_formal_daily_builder_uses_goal_horizon_and_proxy_confidence_for_smoke_p
     assert captured["success_event_spec"]["horizon_days"] == captured["path_horizon_days"]
     assert captured["success_event_spec"]["horizon_months"] == 36
     assert {product["mapping_confidence"] for product in captured["products"]} == {"low"}
-    assert captured["recipes"][0]["path_count"] == 32
+    assert "path_count" not in captured["recipes"][0]
     contribution_schedule = list(captured["contribution_schedule"])
     assert len(contribution_schedule) == 36
     assert contribution_schedule[-1]["date"] == captured["trading_calendar"][-1]

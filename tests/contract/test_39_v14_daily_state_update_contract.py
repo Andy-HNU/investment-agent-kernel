@@ -8,6 +8,7 @@ import pytest
 
 from calibration.engine import run_calibration
 from calibration.types import CalibrationResult
+from probability_engine.path_generator import DailyEngineRuntimeInput, simulate_primary_paths
 from probability_engine.factor_library import FIXED_FACTOR_DICTIONARY
 from probability_engine.dependence import FactorLevelDccProvider
 from probability_engine.jumps import (
@@ -16,6 +17,7 @@ from probability_engine.jumps import (
     load_jump_state_snapshot,
     systemic_jump_probability,
 )
+from probability_engine.recipes import SimulationRecipe
 from probability_engine.regime import load_regime_state_snapshot, sample_next_regime
 from probability_engine.volatility import update_garch_state
 
@@ -149,6 +151,124 @@ def test_run_calibration_exposes_typed_v14_state_artifacts() -> None:
     assert isinstance(result.jump_state.idio_jump_profile_by_product, dict)
     assert all(str(key).strip() for key in result.jump_state.idio_jump_profile_by_product)
     assert set(result.jump_state.idio_jump_profile_by_product).isdisjoint(FIXED_FACTOR_DICTIONARY)
+
+
+@pytest.mark.contract
+def test_primary_path_does_not_regime_adjust_fallback_product_jump_profiles() -> None:
+    runtime_input = DailyEngineRuntimeInput.from_any(
+        {
+            "as_of": "2026-04-10",
+            "path_horizon_days": 1,
+            "trading_calendar": ["2026-04-11"],
+            "products": [
+                {
+                    "product_id": "fallback_jump_product",
+                    "asset_bucket": "equity_cn",
+                    "factor_betas": {"CN_EQ_BROAD": 0.0},
+                    "innovation_family": "gaussian",
+                    "tail_df": None,
+                    "volatility_process": "garch_t",
+                    "garch_params": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "long_run_variance": 0.0},
+                    "idiosyncratic_jump_profile": {"probability_1d": 1.0, "loss_mean": -0.02, "loss_std": 0.0},
+                    "carry_profile": {},
+                    "valuation_profile": {},
+                    "mapping_confidence": "high",
+                    "factor_mapping_source": "prior",
+                    "factor_mapping_evidence": [],
+                    "observed_series_ref": "obs://fallback_jump_product",
+                }
+            ],
+            "factor_dynamics": {
+                "factor_names": ["CN_EQ_BROAD"],
+                "factor_series_ref": "factor://cn_eq_broad",
+                "innovation_family": "gaussian",
+                "tail_df": None,
+                "garch_params_by_factor": {
+                    "CN_EQ_BROAD": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "long_run_variance": 0.0}
+                },
+                "dcc_params": {"alpha": 0.04, "beta": 0.93},
+                "long_run_covariance": {"CN_EQ_BROAD": {"CN_EQ_BROAD": 1.0}},
+                "covariance_shrinkage": 0.2,
+                "calibration_window_days": 252,
+            },
+            "regime_state": {
+                "regime_names": ["normal", "stress"],
+                "current_regime": "normal",
+                "transition_matrix": [[0.0, 1.0], [0.0, 1.0]],
+                "regime_mean_adjustments": {"normal": {}, "stress": {}},
+                "regime_vol_adjustments": {"normal": {}, "stress": {}},
+                "regime_jump_adjustments": {
+                    "normal": {},
+                    "stress": {
+                        "idio_jump_probability_multiplier": 2.0,
+                        "idio_loss_multiplier": 3.0,
+                        "idio_loss_std_multiplier": 5.0,
+                    },
+                },
+            },
+            "jump_state": {
+                "systemic_jump_probability_1d": 0.0,
+                "systemic_jump_impact_by_factor": {"CN_EQ_BROAD": 0.0},
+                "systemic_jump_dispersion": 0.01,
+                "idio_jump_profile_by_product": {},
+            },
+            "current_positions": [
+                {
+                    "product_id": "fallback_jump_product",
+                    "units": 0.0,
+                    "market_value": 100.0,
+                    "weight": 1.0,
+                    "cost_basis": None,
+                    "tradable": True,
+                }
+            ],
+            "contribution_schedule": [],
+            "withdrawal_schedule": [],
+            "rebalancing_policy": {
+                "policy_type": "none",
+                "calendar_frequency": None,
+                "threshold_band": None,
+                "execution_timing": "end_of_day_after_return",
+                "transaction_cost_bps": 0.0,
+                "min_trade_amount": None,
+            },
+            "success_event_spec": {
+                "horizon_days": 1,
+                "horizon_months": 1,
+                "target_type": "goal_amount",
+                "target_value": 98.0,
+                "drawdown_constraint": 1.0,
+                "benchmark_ref": None,
+                "contribution_policy": "none",
+                "withdrawal_policy": "none",
+                "rebalancing_policy_ref": "none",
+                "return_basis": "nominal",
+                "fee_basis": "net",
+                "success_logic": "joint_target_and_drawdown",
+            },
+            "recipes": [],
+            "evidence_bundle_ref": "evidence://fallback_jump",
+            "random_seed": 7,
+        }
+    )
+    recipe = SimulationRecipe(
+        recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+        role="primary",
+        innovation_layer="student_t",
+        volatility_layer="factor_and_product_garch",
+        dependency_layer="factor_level_dcc",
+        jump_layer="systemic_plus_idio",
+        regime_layer="markov_regime",
+        estimation_basis="daily_product_formal",
+        dependency_scope="factor",
+        path_count=1,
+    )
+
+    result = simulate_primary_paths(runtime_input, recipe)
+
+    expected_terminal = 100.0 * (1.0 - 0.02)
+    assert result.path_stats.path_count == 1
+    assert result.path_stats.terminal_value_mean == pytest.approx(expected_terminal, abs=1e-3)
 
 
 @pytest.mark.contract
