@@ -66,6 +66,7 @@ class DecisionCardBuildInput:
     audit_record: Any | None = None
     run_outcome_status: str | None = None
     resolved_result_category: str | None = None
+    probability_truth_view: dict[str, Any] = field(default_factory=dict)
     disclosure_decision: dict[str, Any] = field(default_factory=dict)
     evidence_bundle: dict[str, Any] = field(default_factory=dict)
     input_provenance: dict[str, Any] = field(default_factory=dict)
@@ -100,6 +101,7 @@ class DecisionCardBuildInput:
             audit_record=data.get("audit_record"),
             run_outcome_status=data.get("run_outcome_status"),
             resolved_result_category=data.get("resolved_result_category"),
+            probability_truth_view=dict(data.get("probability_truth_view", {})),
             disclosure_decision=dict(data.get("disclosure_decision", {})),
             evidence_bundle=dict(data.get("evidence_bundle", {})),
             input_provenance=dict(data.get("input_provenance", {})),

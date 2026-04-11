@@ -236,6 +236,98 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _mapped_probability_result_category(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    if normalized == "formal_strict_result":
+        return "formal_independent_result"
+    if normalized in {"formal_estimated_result", "degraded_formal_result"}:
+        return normalized
+    return None
+
+
+def _canonical_probability_method(
+    *,
+    resolved_result_category: str | None,
+    probability_engine_result_payload: dict[str, Any],
+) -> str:
+    normalized = str(resolved_result_category or "").strip()
+    if normalized == "formal_independent_result":
+        return "product_independent_path"
+    if normalized in {"formal_estimated_result", "degraded_formal_result"}:
+        return "product_estimated_path"
+    internal = str(probability_engine_result_payload.get("resolved_result_category") or "").strip()
+    if internal == "formal_strict_result":
+        return "product_independent_path"
+    if internal in {"formal_estimated_result", "degraded_formal_result"}:
+        return "product_estimated_path"
+    return ""
+
+
+def _canonical_probability_truth_view(
+    *,
+    result_payload: dict[str, Any],
+    probability_engine_result_payload: dict[str, Any],
+) -> dict[str, Any]:
+    evidence_bundle = _as_dict(result_payload.get("evidence_bundle"))
+    degradation_reasons = " ".join(str(item) for item in list(evidence_bundle.get("degradation_reasons") or []))
+    static_gaussian_guard = "static_gaussian" in degradation_reasons
+    probability_status = str(probability_engine_result_payload.get("run_outcome_status") or "").strip()
+    internal_category = probability_engine_result_payload.get("resolved_result_category")
+    mapped_category = _mapped_probability_result_category(internal_category)
+    if probability_status in {"success", "degraded"}:
+        if mapped_category is None:
+            return {}
+        normalized_status = "completed" if probability_status == "success" else "degraded"
+        if static_gaussian_guard and normalized_status == "degraded":
+            mapped_category = "degraded_formal_result"
+        probability_output = _as_dict(probability_engine_result_payload.get("output"))
+        disclosure_payload = _as_dict(probability_output.get("probability_disclosure_payload"))
+        return {
+            "run_outcome_status": normalized_status,
+            "resolved_result_category": mapped_category,
+            "product_probability_method": _canonical_probability_method(
+                resolved_result_category=mapped_category,
+                probability_engine_result_payload=probability_engine_result_payload,
+            ),
+            "disclosure_decision": {
+                "result_category": mapped_category,
+                "disclosure_level": disclosure_payload.get("disclosure_level"),
+                "confidence_level": disclosure_payload.get("confidence_level"),
+            },
+            "formal_path_visibility": {
+                "status": normalized_status,
+                "fallback_used": False,
+                "monthly_fallback_used": False,
+                "bucket_fallback_used": False,
+            },
+        }
+    explicit = dict(result_payload.get("probability_truth_view") or {})
+    if explicit:
+        if static_gaussian_guard and str(explicit.get("run_outcome_status") or "").strip() == "degraded":
+            explicit["resolved_result_category"] = "degraded_formal_result"
+            disclosure_decision = dict(explicit.get("disclosure_decision") or {})
+            if disclosure_decision:
+                disclosure_decision["result_category"] = "degraded_formal_result"
+                explicit["disclosure_decision"] = disclosure_decision
+        return explicit
+    top_level_status = str(result_payload.get("run_outcome_status") or "").strip()
+    top_level_category = result_payload.get("resolved_result_category")
+    if top_level_status or top_level_category:
+        if static_gaussian_guard and top_level_status == "degraded":
+            top_level_category = "degraded_formal_result"
+        return {
+            "run_outcome_status": top_level_status,
+            "resolved_result_category": top_level_category,
+            "product_probability_method": _canonical_probability_method(
+                resolved_result_category=str(top_level_category or "").strip() or None,
+                probability_engine_result_payload=probability_engine_result_payload,
+            ),
+            "disclosure_decision": dict(result_payload.get("disclosure_decision") or {}),
+            "formal_path_visibility": dict(result_payload.get("formal_path_visibility") or {}),
+        }
+    return {}
+
+
 def _profile_to_dict(profile: UserOnboardingProfile | dict[str, Any]) -> dict[str, Any]:
     if isinstance(profile, UserOnboardingProfile):
         return profile.to_dict()
@@ -852,6 +944,7 @@ def _apply_external_snapshot(
     if isinstance(merged_raw_inputs.get("account_raw"), dict) or isinstance(merged_raw_inputs.get("live_portfolio"), dict):
         account_raw = deepcopy(merged_raw_inputs.get("account_raw") or {})
         live_portfolio = deepcopy(merged_raw_inputs.get("live_portfolio") or {})
+        execution_as_of_date = str(merged_raw_inputs.get("as_of", _now_iso())).split("T", 1)[0]
         horizon = (
             live_portfolio.get("remaining_horizon_months")
             or account_raw.get("remaining_horizon_months")
@@ -874,7 +967,10 @@ def _apply_external_snapshot(
         )
         if goal_amount is not None and live_portfolio.get("total_value") is not None:
             live_portfolio["goal_gap"] = max(float(goal_amount) - float(live_portfolio["total_value"]), 0.0)
-        live_portfolio.setdefault("as_of_date", str(merged_raw_inputs.get("as_of", _now_iso())).split("T", 1)[0])
+        # External snapshot account/live data can carry a stale file timestamp, but once it is
+        # accepted as the current followup snapshot, runtime decisions must evaluate it against
+        # the current workflow execution date rather than the fixture file's embedded default.
+        live_portfolio["as_of_date"] = execution_as_of_date
         live_portfolio.setdefault("current_drawdown", 0.0)
         if account_raw:
             merged_raw_inputs["account_raw"] = account_raw
@@ -1507,13 +1603,26 @@ def _frontdesk_summary(
         result_payload.get("input_source_summary")
         or _build_input_source_summary(decision_card.get("input_provenance", {}) or {})
     )
-    formal_path_visibility = dict(
+    probability_truth_view = _canonical_probability_truth_view(
+        result_payload=result_payload,
+        probability_engine_result_payload=_as_dict(result_payload.get("probability_engine_result")),
+    )
+    classified_formal_path_visibility = dict(
         result_payload.get("formal_path_visibility")
         or _classify_formal_path_visibility(
             decision_card,
             refresh_summary,
             list(result_payload.get("audit_records") or decision_card.get("audit_records") or []),
         )
+    )
+    truth_formal_path_visibility = dict(probability_truth_view.get("formal_path_visibility") or {})
+    formal_path_visibility = dict(classified_formal_path_visibility)
+    formal_path_visibility.update(
+        {
+            key: value
+            for key, value in truth_formal_path_visibility.items()
+            if value is not None and value != ""
+        }
     )
     audit_records = list(
         result_payload.get("audit_records")
@@ -1525,12 +1634,29 @@ def _frontdesk_summary(
         profile_payload = _as_dict(profile_payload.get("profile"))
     evidence_bundle = dict(result_payload.get("evidence_bundle") or decision_card.get("evidence_bundle") or {})
     probability_engine_result = result_payload.get("probability_engine_result")
-    probability_output = _as_dict(_as_dict(probability_engine_result).get("output"))
+    probability_engine_result_payload = _as_dict(probability_engine_result)
+    probability_output = _as_dict(probability_engine_result_payload.get("output"))
     probability_disclosure_payload = dict(probability_output.get("probability_disclosure_payload") or {})
-    product_probability_method = (
-        _as_dict(decision_card.get("probability_explanation")).get("product_probability_method")
-        or _as_dict(decision_card.get("key_metrics")).get("product_probability_method")
-    )
+    goal_solver_output = _as_dict(result_payload.get("goal_solver_output"))
+    if probability_engine_result_payload:
+        product_probability_method = (
+            probability_truth_view.get("product_probability_method")
+            or _as_dict(result_payload).get("product_probability_method")
+            or _as_dict(decision_card.get("probability_explanation")).get("product_probability_method")
+            or _as_dict(decision_card.get("key_metrics")).get("product_probability_method")
+            or _canonical_probability_method(
+                resolved_result_category=resolved_result_category,
+                probability_engine_result_payload=probability_engine_result_payload,
+            )
+        )
+    else:
+        product_probability_method = (
+            probability_truth_view.get("product_probability_method")
+            or _as_dict(result_payload).get("product_probability_method")
+            or _as_dict(decision_card.get("probability_explanation")).get("product_probability_method")
+            or _as_dict(decision_card.get("key_metrics")).get("product_probability_method")
+            or _as_dict(goal_solver_output.get("recommended_result") or {}).get("product_probability_method")
+        )
     monthly_fallback_used = evidence_bundle.get("monthly_fallback_used")
     bucket_fallback_used = evidence_bundle.get("bucket_fallback_used")
     if probability_engine_result is not None:
@@ -1538,6 +1664,32 @@ def _frontdesk_summary(
             monthly_fallback_used = False
         if bucket_fallback_used is None:
             bucket_fallback_used = False
+    run_outcome_status = (
+        probability_truth_view.get("run_outcome_status")
+        or result_payload.get("run_outcome_status")
+        or probability_engine_result_payload.get("run_outcome_status")
+    )
+    resolved_result_category = (
+        probability_truth_view.get("resolved_result_category")
+        or result_payload.get("resolved_result_category")
+        or probability_engine_result_payload.get("resolved_result_category")
+    )
+    disclosure_decision = dict(
+        probability_truth_view.get("disclosure_decision")
+        or result_payload.get("disclosure_decision")
+        or (
+            {
+                "result_category": resolved_result_category,
+                "disclosure_level": probability_disclosure_payload.get("disclosure_level"),
+                "confidence_level": probability_disclosure_payload.get("confidence_level"),
+            }
+            if probability_engine_result_payload
+            else decision_card.get("disclosure_decision")
+            or {}
+        )
+    )
+    if disclosure_decision.get("result_category") is None and resolved_result_category is not None:
+        disclosure_decision["result_category"] = resolved_result_category
     summary = {
         "account_profile_id": account_profile_id,
         "display_name": display_name,
@@ -1545,15 +1697,14 @@ def _frontdesk_summary(
         "run_id": result_payload.get("run_id"),
         "workflow_type": result_payload.get("workflow_type"),
         "status": result_payload.get("status"),
-        "run_outcome_status": result_payload.get("run_outcome_status") or decision_card.get("run_outcome_status"),
-        "resolved_result_category": result_payload.get("resolved_result_category")
-        or decision_card.get("resolved_result_category"),
-        "disclosure_decision": dict(
-            result_payload.get("disclosure_decision") or decision_card.get("disclosure_decision") or {}
-        ),
+        "run_outcome_status": run_outcome_status or decision_card.get("run_outcome_status"),
+        "resolved_result_category": resolved_result_category or decision_card.get("resolved_result_category"),
+        "disclosure_decision": disclosure_decision or dict(decision_card.get("disclosure_decision") or {}),
         "evidence_bundle": evidence_bundle,
+        "probability_truth_view": probability_truth_view,
         "probability_engine_result": probability_engine_result,
         "probability_disclosure_payload": probability_disclosure_payload,
+        "runtime_telemetry": dict(result_payload.get("runtime_telemetry") or {}),
         "product_probability_method": product_probability_method,
         "monthly_fallback_used": monthly_fallback_used,
         "bucket_fallback_used": bucket_fallback_used,

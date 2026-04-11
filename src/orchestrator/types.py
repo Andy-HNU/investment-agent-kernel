@@ -127,6 +127,7 @@ class OrchestratorResult:
     persistence_plan: OrchestratorPersistencePlan | None = None
     run_outcome_status: str | None = None
     resolved_result_category: str | None = None
+    probability_truth_view: dict[str, Any] = field(default_factory=dict)
     disclosure_decision: dict[str, Any] = field(default_factory=dict)
     evidence_bundle: dict[str, Any] = field(default_factory=dict)
     evidence_invariance_report: dict[str, Any] = field(default_factory=dict)
@@ -160,6 +161,7 @@ class OrchestratorResult:
             "persistence_plan": _serialize(self.persistence_plan),
             "run_outcome_status": self.run_outcome_status,
             "resolved_result_category": self.resolved_result_category,
+            "probability_truth_view": _serialize(self.probability_truth_view),
             "disclosure_decision": _serialize(self.disclosure_decision),
             "evidence_bundle": _serialize(self.evidence_bundle),
             "evidence_invariance_report": _serialize(self.evidence_invariance_report),

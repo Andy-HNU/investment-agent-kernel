@@ -4,6 +4,7 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 from time import perf_counter
+import warnings
 
 import pytest
 
@@ -72,11 +73,14 @@ def test_v14_formal_baseline_stays_daily_and_exposes_gap_total_within_gate() -> 
     sim_input = _load_benchmark_input()
 
     started = perf_counter()
-    result = run_probability_engine(sim_input)
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        result = run_probability_engine(sim_input)
     elapsed_ms = (perf_counter() - started) * 1000.0
 
     assert sim_input["path_horizon_days"] == 756
     assert elapsed_ms < 20_000.0
+    assert not any(issubclass(item.category, RuntimeWarning) for item in caught_warnings)
     assert isinstance(result, ProbabilityEngineRunResult)
     assert result.output is not None
     assert isinstance(result.output, ProbabilityEngineOutput)

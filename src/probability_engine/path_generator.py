@@ -35,6 +35,57 @@ def _clamp_probability(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
+def _portfolio_value_cap(product_count: int) -> float:
+    # Keep the total portfolio value representable after compounding.
+    denominator = max(float(product_count + 2), 2.0)
+    return float(np.finfo(np.float64).max / denominator)
+
+
+def _abs_quantile(values: tuple[float, ...], level: float = 0.95) -> float:
+    if not values:
+        return 0.0
+    array = np.abs(np.asarray(values, dtype=float))
+    if array.size == 0:
+        return 0.0
+    return float(np.quantile(array, level))
+
+
+def _factor_return_cap_from_variance(long_run_variance: float) -> float:
+    sigma = float(np.sqrt(max(float(long_run_variance), 1e-12)))
+    return float(min(0.18, max(0.025, 8.0 * sigma)))
+
+
+def _product_return_cap_from_observed(
+    observed_daily_returns: tuple[float, ...],
+    *,
+    long_run_variance: float,
+) -> float:
+    empirical_tail = _abs_quantile(observed_daily_returns, 0.95)
+    sigma = float(np.sqrt(max(float(long_run_variance), 1e-12)))
+    return float(min(0.25, max(0.02, 4.0 * empirical_tail, 8.0 * sigma)))
+
+
+def _product_residual_cap(
+    *,
+    product_return_cap: float,
+    long_run_variance: float,
+) -> float:
+    sigma = float(np.sqrt(max(float(long_run_variance), 1e-12)))
+    return float(min(0.15, max(0.01, min(product_return_cap * 0.75, 6.0 * sigma))))
+
+
+def _compound_product_values(
+    product_values: np.ndarray,
+    product_returns_array: np.ndarray,
+    *,
+    value_cap: float,
+) -> np.ndarray:
+    with np.errstate(over="ignore", invalid="ignore"):
+        compounded = product_values * (1.0 + product_returns_array)
+    compounded = np.nan_to_num(compounded, nan=0.0, posinf=value_cap, neginf=0.0)
+    return np.clip(compounded, 0.0, value_cap)
+
+
 def _quantile(values: np.ndarray, level: float) -> float:
     return float(np.quantile(values, level))
 
@@ -106,6 +157,15 @@ def _sum_profile_values(profile: dict[str, float]) -> float:
     return float(sum(float(value) for value in dict(profile).values()))
 
 
+def _coerce_float_series(value: Any) -> tuple[float, ...]:
+    if value is None:
+        return ()
+    series = list(value)
+    if series and isinstance(series[0], dict):
+        return tuple(float(item.get("return", 0.0)) for item in series)
+    return tuple(float(item) for item in series)
+
+
 def _annualized_cagr(initial_value: float, terminal_value: float, horizon_days: int) -> float:
     if initial_value <= 0.0 or terminal_value <= 0.0 or horizon_days <= 0:
         return -1.0
@@ -145,6 +205,7 @@ class ProductMarginalSpec:
     product_id: str
     asset_bucket: str
     factor_betas: dict[str, float]
+    observed_daily_returns: tuple[float, ...]
     innovation_family: str
     tail_df: float | None
     volatility_process: str
@@ -156,6 +217,8 @@ class ProductMarginalSpec:
     factor_mapping_source: str
     factor_mapping_evidence: list[Any]
     observed_series_ref: str
+    observed_return_series: list[float]
+    observed_dates: list[str]
 
     @classmethod
     def from_any(cls, value: "ProductMarginalSpec | dict[str, Any]") -> "ProductMarginalSpec":
@@ -166,6 +229,9 @@ class ProductMarginalSpec:
             product_id=str(payload.get("product_id", "")).strip(),
             asset_bucket=str(payload.get("asset_bucket", "")).strip(),
             factor_betas={str(key): float(item) for key, item in dict(payload.get("factor_betas") or {}).items()},
+            observed_daily_returns=_coerce_float_series(
+                payload.get("observed_daily_returns") if payload.get("observed_daily_returns") is not None else payload.get("return_series")
+            ),
             innovation_family=str(payload.get("innovation_family", "student_t")).strip(),
             tail_df=None if payload.get("tail_df") is None else float(payload.get("tail_df")),
             volatility_process=str(payload.get("volatility_process", "")).strip(),
@@ -177,6 +243,12 @@ class ProductMarginalSpec:
             factor_mapping_source=str(payload.get("factor_mapping_source", "")).strip(),
             factor_mapping_evidence=list(payload.get("factor_mapping_evidence") or []),
             observed_series_ref=str(payload.get("observed_series_ref", "")).strip(),
+            observed_return_series=[
+                float(item) for item in list(payload.get("observed_return_series") or [])
+            ],
+            observed_dates=[
+                str(item).strip() for item in list(payload.get("observed_dates") or []) if str(item).strip()
+            ],
         )
 
 
@@ -197,6 +269,12 @@ class DailyEngineRuntimeInput:
     recipes: list[Any]
     evidence_bundle_ref: str
     random_seed: int
+    challenger_regime_labels: list[str]
+    observed_regime_labels: tuple[str, ...] = ()
+    observed_current_regime: str | None = None
+    challenger_block_size: int | None = None
+    challenger_path_count: int | None = None
+    stress_path_count: int | None = None
 
     def trading_step_dates(self) -> list[str]:
         return _trading_step_dates(self.as_of, self.trading_calendar, self.path_horizon_days)
@@ -216,6 +294,21 @@ class DailyEngineRuntimeInput:
             path_horizon_days=int(payload.get("path_horizon_days", 0)),
             trading_calendar=[str(item).strip() for item in list(payload.get("trading_calendar") or []) if str(item).strip()],
             products=[ProductMarginalSpec.from_any(item) for item in list(payload.get("products") or [])],
+            observed_regime_labels=tuple(
+                str(item).strip() for item in list(payload.get("observed_regime_labels") or []) if str(item).strip()
+            ),
+            observed_current_regime=(
+                None
+                if payload.get("observed_current_regime") is None
+                else str(payload.get("observed_current_regime", "")).strip() or None
+            ),
+            challenger_block_size=(
+                None if payload.get("challenger_block_size") is None else int(payload.get("challenger_block_size"))
+            ),
+            challenger_path_count=(
+                None if payload.get("challenger_path_count") is None else int(payload.get("challenger_path_count"))
+            ),
+            stress_path_count=None if payload.get("stress_path_count") is None else int(payload.get("stress_path_count")),
             factor_dynamics=FactorDynamicsSpec.from_any(payload.get("factor_dynamics")),
             regime_state=RegimeStateSpec.from_any(payload.get("regime_state")),
             jump_state=JumpStateSpec.from_any(payload.get("jump_state")),
@@ -227,7 +320,21 @@ class DailyEngineRuntimeInput:
             recipes=list(payload.get("recipes") or []),
             evidence_bundle_ref=str(payload.get("evidence_bundle_ref", "")).strip(),
             random_seed=int(payload.get("random_seed", 17)),
+            challenger_regime_labels=[
+                str(item).strip() for item in list(payload.get("challenger_regime_labels") or []) if str(item).strip()
+            ],
         )
+
+    def observed_history_matrix(self) -> list[list[float]] | None:
+        if not self.products:
+            return None
+        matrix = [list(product.observed_daily_returns) for product in self.products]
+        if any(not row for row in matrix):
+            return None
+        expected_length = len(matrix[0])
+        if any(len(row) != expected_length for row in matrix):
+            raise ValueError("observed_daily_returns must align across products")
+        return matrix
 
 
 @dataclass(frozen=True)
@@ -248,6 +355,8 @@ class _CompiledRuntimeContext:
     factor_omega: np.ndarray
     factor_alpha: np.ndarray
     factor_beta: np.ndarray
+    factor_return_cap: np.ndarray
+    factor_variance_cap: np.ndarray
     factor_is_student_t: bool
     factor_tail_df: float | None
     q_bar_matrix: np.ndarray
@@ -263,6 +372,9 @@ class _CompiledRuntimeContext:
     product_omega: np.ndarray
     product_alpha: np.ndarray
     product_garch_beta: np.ndarray
+    product_return_cap: np.ndarray
+    product_residual_cap: np.ndarray
+    product_variance_cap: np.ndarray
     product_student_t_mask: np.ndarray
     product_tail_df: np.ndarray
     product_base_jump_probability: np.ndarray
@@ -333,6 +445,21 @@ def _compiled_runtime_context(runtime_input: DailyEngineRuntimeInput) -> _Compil
         [float(factor_garch.get(factor_name, {}).get("beta", 0.0)) for factor_name in factor_names],
         dtype=float,
     )
+    factor_return_cap = np.asarray(
+        [
+            _factor_return_cap_from_variance(
+                float(
+                    factor_garch.get(factor_name, {}).get(
+                        "long_run_variance",
+                        factor_long_run_covariance.get(factor_name, {}).get(factor_name, 1e-6),
+                    )
+                )
+            )
+            for factor_name in factor_names
+        ],
+        dtype=float,
+    )
+    factor_variance_cap = np.maximum(np.square(factor_return_cap), factor_initial_variances * 25.0)
     q_bar_matrix = np.asarray(_covariance_to_correlation(factor_long_run_covariance, factor_names), dtype=float)
 
     products = list(runtime_input.products)
@@ -380,6 +507,27 @@ def _compiled_runtime_context(runtime_input: DailyEngineRuntimeInput) -> _Compil
         [float(product.garch_params.get("beta", 0.0)) for product in products],
         dtype=float,
     )
+    product_return_cap = np.asarray(
+        [
+            _product_return_cap_from_observed(
+                product.observed_daily_returns,
+                long_run_variance=float(product.garch_params.get("long_run_variance", 1e-4)),
+            )
+            for product in products
+        ],
+        dtype=float,
+    )
+    product_residual_cap = np.asarray(
+        [
+            _product_residual_cap(
+                product_return_cap=float(product_return_cap[index]),
+                long_run_variance=float(product.garch_params.get("long_run_variance", 1e-4)),
+            )
+            for index, product in enumerate(products)
+        ],
+        dtype=float,
+    )
+    product_variance_cap = np.maximum(np.square(product_residual_cap), product_initial_variances * 25.0)
     product_student_t_mask = np.asarray(
         [str(product.innovation_family).strip().lower() == "student_t" for product in products],
         dtype=bool,
@@ -505,6 +653,8 @@ def _compiled_runtime_context(runtime_input: DailyEngineRuntimeInput) -> _Compil
         factor_omega=factor_omega,
         factor_alpha=factor_alpha,
         factor_beta=factor_beta,
+        factor_return_cap=factor_return_cap,
+        factor_variance_cap=factor_variance_cap,
         factor_is_student_t=str(runtime_input.factor_dynamics.innovation_family).strip().lower() == "student_t",
         factor_tail_df=runtime_input.factor_dynamics.tail_df,
         q_bar_matrix=q_bar_matrix,
@@ -520,6 +670,9 @@ def _compiled_runtime_context(runtime_input: DailyEngineRuntimeInput) -> _Compil
         product_omega=product_omega,
         product_alpha=product_alpha,
         product_garch_beta=product_garch_beta,
+        product_return_cap=product_return_cap,
+        product_residual_cap=product_residual_cap,
+        product_variance_cap=product_variance_cap,
         product_student_t_mask=product_student_t_mask,
         product_tail_df=product_tail_df,
         product_base_jump_probability=product_base_jump_probability,
@@ -964,6 +1117,7 @@ def _simulate_paths_batch(
     q_matrix = np.tile(compiled.q_bar_matrix[None, :, :], (path_count, 1, 1))
     regime_indices = np.full(path_count, compiled.initial_regime_index, dtype=int)
     previous_step_date = runtime_input.as_of
+    value_cap = _portfolio_value_cap(path_product_values.shape[1])
 
     for step_date in compiled.step_dates:
         transition_rows = compiled.regime_transition_matrix[regime_indices]
@@ -989,8 +1143,16 @@ def _simulate_paths_batch(
         )
         previous_factor_variances = np.array(factor_variances, copy=True)
         factor_sigmas = np.sqrt(np.maximum(previous_factor_variances, 1e-12)) * volatility_multiplier[:, None]
-        factor_residuals = factor_sigmas * factor_shocks
-        factor_returns = factor_residuals + mean_shift[:, None]
+        factor_residuals = np.clip(
+            factor_sigmas * factor_shocks,
+            -compiled.factor_return_cap[None, :],
+            compiled.factor_return_cap[None, :],
+        )
+        factor_returns = np.clip(
+            factor_residuals + mean_shift[:, None],
+            -compiled.factor_return_cap[None, :],
+            compiled.factor_return_cap[None, :],
+        )
 
         systemic_jump_probability = np.clip(
             compiled.systemic_jump_probability_base
@@ -1007,11 +1169,16 @@ def _simulate_paths_batch(
 
         previous_product_variances = np.array(product_variances, copy=True)
         product_sigmas = np.sqrt(np.maximum(previous_product_variances, 1e-12)) * volatility_multiplier[:, None]
-        product_idio_residuals = product_sigmas * _draw_product_idiosyncratic_shocks_batch(
-            rng,
-            path_count=path_count,
-            student_t_mask=compiled.product_student_t_mask,
-            tail_df=compiled.product_tail_df,
+        product_idio_residuals = np.clip(
+            product_sigmas
+            * _draw_product_idiosyncratic_shocks_batch(
+                rng,
+                path_count=path_count,
+                student_t_mask=compiled.product_student_t_mask,
+                tail_df=compiled.product_tail_df,
+            ),
+            -compiled.product_residual_cap[None, :],
+            compiled.product_residual_cap[None, :],
         )
         pre_jump_returns = factor_returns @ compiled.product_beta_matrix.T + product_idio_residuals
 
@@ -1061,8 +1228,16 @@ def _simulate_paths_batch(
         idio_draws = rng.normal(loc=idio_jump_means, scale=idio_jump_stds)
         idio_components = np.where(idio_jump_mask, idio_draws, 0.0)
 
-        product_returns_array = pre_jump_returns + systemic_components + idio_components + compiled.product_drags[None, :]
-        path_product_values = np.maximum(0.0, path_product_values * (1.0 + product_returns_array))
+        product_returns_array = np.clip(
+            pre_jump_returns + systemic_components + idio_components + compiled.product_drags[None, :],
+            -0.95,
+            compiled.product_return_cap[None, :],
+        )
+        path_product_values = _compound_product_values(
+            path_product_values,
+            product_returns_array,
+            value_cap=value_cap,
+        )
         contributions = compiled.contribution_schedule_by_date.get(step_date, [])
         withdrawals = compiled.withdrawal_schedule_by_date.get(step_date, [])
         if contributions:
@@ -1101,22 +1276,24 @@ def _simulate_paths_batch(
             1.0 - np.divide(current_net_values, peak_values, out=np.ones_like(current_net_values), where=peak_values > 0.0),
         )
 
-        factor_variances = np.maximum(
+        factor_variances = np.clip(
             (compiled.factor_omega[None, :] * (volatility_multiplier[:, None] ** 2))
             + (compiled.factor_alpha[None, :] * np.square(factor_residuals))
             + (compiled.factor_beta[None, :] * previous_factor_variances),
             1e-12,
+            compiled.factor_variance_cap[None, :],
         )
         q_matrix = (
             (1.0 - compiled.dcc_alpha - compiled.dcc_beta) * compiled.q_bar_matrix[None, :, :]
             + compiled.dcc_alpha * np.einsum("pi,pj->pij", factor_shocks, factor_shocks)
             + compiled.dcc_beta * q_matrix
         )
-        product_variances = np.maximum(
+        product_variances = np.clip(
             (compiled.product_omega[None, :] * (volatility_multiplier[:, None] ** 2))
             + (compiled.product_alpha[None, :] * np.square(product_idio_residuals))
             + (compiled.product_garch_beta[None, :] * previous_product_variances),
             1e-12,
+            compiled.product_variance_cap[None, :],
         )
         regime_indices = next_regime_indices
         previous_step_date = step_date
@@ -1168,6 +1345,7 @@ def _simulate_single_path(
     q_matrix = np.array(compiled.q_bar_matrix, copy=True)
     regime_index = compiled.initial_regime_index
     previous_step_date = runtime_input.as_of
+    value_cap = _portfolio_value_cap(product_values.shape[0])
 
     for step_date in compiled.step_dates:
         next_regime_index = int(rng.choice(len(compiled.regime_names), p=compiled.regime_transition_matrix[regime_index]))
@@ -1184,8 +1362,16 @@ def _simulate_single_path(
         )
         previous_factor_variances = np.array(factor_variances, copy=True)
         factor_sigmas = np.sqrt(np.maximum(previous_factor_variances, 1e-12)) * volatility_multiplier
-        factor_residuals = factor_sigmas * factor_shocks
-        factor_returns = factor_residuals + mean_shift
+        factor_residuals = np.clip(
+            factor_sigmas * factor_shocks,
+            -compiled.factor_return_cap,
+            compiled.factor_return_cap,
+        )
+        factor_returns = np.clip(
+            factor_residuals + mean_shift,
+            -compiled.factor_return_cap,
+            compiled.factor_return_cap,
+        )
 
         systemic_jump_probability = _clamp_probability(
             compiled.systemic_jump_probability_base
@@ -1200,10 +1386,15 @@ def _simulate_single_path(
 
         previous_product_variances = np.array(product_variances, copy=True)
         product_sigmas = np.sqrt(np.maximum(previous_product_variances, 1e-12)) * volatility_multiplier
-        product_idio_residuals = product_sigmas * _draw_product_idiosyncratic_shocks(
-            rng,
-            compiled.product_student_t_mask,
-            compiled.product_tail_df,
+        product_idio_residuals = np.clip(
+            product_sigmas
+            * _draw_product_idiosyncratic_shocks(
+                rng,
+                compiled.product_student_t_mask,
+                compiled.product_tail_df,
+            ),
+            -compiled.product_residual_cap,
+            compiled.product_residual_cap,
         )
         pre_jump_returns = compiled.product_beta_matrix @ factor_returns + product_idio_residuals
 
@@ -1241,8 +1432,16 @@ def _simulate_single_path(
                 scale=idio_jump_stds[idio_jump_mask],
             )
 
-        product_returns_array = pre_jump_returns + systemic_components + idio_components + compiled.product_drags
-        product_values = np.maximum(0.0, product_values * (1.0 + product_returns_array))
+        product_returns_array = np.clip(
+            pre_jump_returns + systemic_components + idio_components + compiled.product_drags,
+            -0.95,
+            compiled.product_return_cap,
+        )
+        product_values = _compound_product_values(
+            product_values,
+            product_returns_array,
+            value_cap=value_cap,
+        )
         contributions = compiled.contribution_schedule_by_date.get(step_date, [])
         withdrawals = compiled.withdrawal_schedule_by_date.get(step_date, [])
         if contributions:
@@ -1279,22 +1478,24 @@ def _simulate_single_path(
         if peak_value > 0.0:
             max_drawdown = max(max_drawdown, 1.0 - (current_net_value / peak_value))
 
-        factor_variances = np.maximum(
+        factor_variances = np.clip(
             (compiled.factor_omega * (volatility_multiplier**2))
             + (compiled.factor_alpha * np.square(factor_residuals))
             + (compiled.factor_beta * previous_factor_variances),
             1e-12,
+            compiled.factor_variance_cap,
         )
         q_matrix = (
             (1.0 - compiled.dcc_alpha - compiled.dcc_beta) * compiled.q_bar_matrix
             + compiled.dcc_alpha * np.outer(factor_shocks, factor_shocks)
             + compiled.dcc_beta * q_matrix
         )
-        product_variances = np.maximum(
+        product_variances = np.clip(
             (compiled.product_omega * (volatility_multiplier**2))
             + (compiled.product_alpha * np.square(product_idio_residuals))
             + (compiled.product_garch_beta * previous_product_variances),
             1e-12,
+            compiled.product_variance_cap,
         )
         regime_index = next_regime_index
         previous_step_date = step_date

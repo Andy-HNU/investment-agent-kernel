@@ -166,6 +166,12 @@ class DailyProbabilityEngineInput:
     success_event_spec: SuccessEventSpec
     recipes: list[Any]
     evidence_bundle_ref: str
+    challenger_regime_labels: list[str] | None = None
+    observed_regime_labels: list[str] = field(default_factory=list)
+    observed_current_regime: str | None = None
+    challenger_block_size: int | None = None
+    challenger_path_count: int | None = None
+    stress_path_count: int | None = None
 
 
 @dataclass(frozen=True)

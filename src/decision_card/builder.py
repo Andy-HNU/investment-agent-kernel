@@ -200,19 +200,31 @@ def _disclosed_percent_fields(
     inp: DecisionCardBuildInput,
     goal_output: dict[str, Any],
     kind: str,
+    published_point: Any = None,
+    published_range: Any = None,
+    disclosure_level_override: str | None = None,
+    confidence_level_override: str | None = None,
 ) -> tuple[str, str]:
-    disclosure_level = _disclosure_level(inp)
+    disclosure_level = disclosure_level_override or _disclosure_level(inp)
     if disclosure_level in {"diagnostic_only", "unavailable"}:
         return "", ""
-    point = _percent_metric(value) if disclosure_level == "point_and_range" else ""
+    point_source = published_point if published_point is not None else value
+    point = _percent_metric(point_source) if disclosure_level == "point_and_range" else ""
     range_display = ""
     if disclosure_level in {"point_and_range", "range_only"}:
-        range_display = _percent_range_metric(
-            value,
-            confidence_level=_confidence_level(inp),
-            calibration_quality=_calibration_quality(inp, goal_output),
-            kind=kind,
-        )
+        pair = _tuple_pair(published_range)
+        if pair is not None:
+            lower = _float_metric(pair[0])
+            upper = _float_metric(pair[1])
+            if lower is not None and upper is not None:
+                range_display = f"{lower * 100:.2f}% ~ {upper * 100:.2f}%"
+        if not range_display:
+            range_display = _percent_range_metric(
+                value,
+                confidence_level=confidence_level_override or _confidence_level(inp),
+                calibration_quality=_calibration_quality(inp, goal_output),
+                kind=kind,
+            )
     return point, range_display
 
 
@@ -230,6 +242,15 @@ def _float_metric(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _tuple_pair(value: Any) -> tuple[Any, Any] | None:
+    if value is None:
+        return None
+    pair = tuple(value)
+    if len(pair) != 2:
+        return None
+    return pair
 
 
 def _coalesce_metric(value: Any, fallback: float) -> float:
@@ -258,6 +279,77 @@ def _product_proxy_success_value(data: dict[str, Any]) -> Any:
         if value not in (None, ""):
             return value
     return None
+
+
+def _probability_engine_formal_surface(inp: DecisionCardBuildInput) -> dict[str, Any]:
+    probability_engine_result = _obj(inp.probability_engine_result or {})
+    probability_output = _obj(probability_engine_result.get("output") or {})
+    primary_result = _obj(probability_output.get("primary_result") or {})
+    disclosure_payload = _obj(probability_output.get("probability_disclosure_payload") or {})
+    primary_path_stats = _obj(primary_result.get("path_stats") or {})
+    return {
+        "primary_result": primary_result,
+        "disclosure_payload": disclosure_payload,
+        "published_point": disclosure_payload.get("published_point"),
+        "published_range": disclosure_payload.get("published_range"),
+        "disclosure_level": _metric(disclosure_payload.get("disclosure_level")) or "",
+        "confidence_level": _metric(disclosure_payload.get("confidence_level")) or "",
+        "annual_return_point": _float_metric(primary_path_stats.get("cagr_p50")),
+        "annual_return_range": _tuple_pair(primary_result.get("cagr_range")),
+        "product_probability_method": _canonical_product_probability_method(inp),
+    }
+
+
+def _canonical_product_probability_method(inp: DecisionCardBuildInput) -> str:
+    probability_engine_result = _obj(getattr(inp, "probability_engine_result", {}) or {})
+    internal_category = _metric(probability_engine_result.get("resolved_result_category"))
+    if internal_category:
+        if internal_category == "formal_strict_result":
+            return "product_independent_path"
+        if internal_category in {"formal_estimated_result", "degraded_formal_result"}:
+            return "product_estimated_path"
+        return ""
+    truth_view = _obj(getattr(inp, "probability_truth_view", {}) or {})
+    method = _metric(truth_view.get("product_probability_method"))
+    if method:
+        return method
+    evidence_bundle = _obj(getattr(inp, "evidence_bundle", {}) or {})
+    coverage_summary = _obj(evidence_bundle.get("coverage_summary") or {})
+    monthly_fallback_used = str(evidence_bundle.get("monthly_fallback_used") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    bucket_fallback_used = str(evidence_bundle.get("bucket_fallback_used") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if (
+        not monthly_fallback_used
+        and not bucket_fallback_used
+        and (_float_metric(coverage_summary.get("independent_weight_adjusted_coverage")) or 0.0) >= 0.999
+        and (_float_metric(coverage_summary.get("independent_horizon_complete_coverage")) or 0.0) >= 0.999
+        and (_float_metric(coverage_summary.get("distribution_ready_coverage")) or 0.0) >= 0.999
+        and int(_float_metric(coverage_summary.get("selected_product_count")) or 0) > 0
+    ):
+        return "product_independent_path"
+    mapped_category = _metric(inp.resolved_result_category)
+    if mapped_category == "formal_independent_result":
+        return "product_independent_path"
+    if mapped_category in {"formal_estimated_result", "degraded_formal_result"}:
+        return "product_estimated_path"
+    goal_output = _obj(inp.goal_solver_output or {})
+    recommended_result = _obj(goal_output.get("recommended_result") or {})
+    method = _metric(recommended_result.get("product_probability_method"))
+    if method:
+        return method
+    frontier_analysis = _obj(goal_output.get("frontier_analysis") or {})
+    for key in ("recommended", "highest_probability", "target_return_priority", "drawdown_priority"):
+        method = _metric(_obj(frontier_analysis.get(key) or {}).get("product_probability_method"))
+        if method:
+            return method
+    return ""
 
 
 def _product_probability_disclosure(probability_method: str) -> str:
@@ -1031,9 +1123,9 @@ def _build_probability_evidence_summary(
         if (_metric(payload.get("data_status")) or "") == "computed_from_observed":
             computed_inputs += 1
     prior_default_inputs = len(list(_obj(inp.input_provenance or {}).get("default_assumed") or []))
+    canonical_probability_method = _canonical_product_probability_method(inp)
     return {
-        "product_probability_method": _metric(recommended_result.get("product_probability_method"))
-        or "bucket_only_no_product_proxy_adjustment",
+        "product_probability_method": canonical_probability_method or "bucket_only_no_product_proxy_adjustment",
         "product_universe_source_status": _metric(
             _obj(execution_summary.get("product_universe_audit_summary") or {}).get("source_status")
         )
@@ -1318,30 +1410,44 @@ def _build_probability_explanation(
     scenario_status = _obj(frontier_analysis.get("scenario_status", {}))
     frontier_diagnostics = _obj(frontier_analysis.get("frontier_diagnostics", {}))
     recommended_result = _obj(goal_output.get("recommended_result", {}))
-    probability_method = _metric(recommended_result.get("product_probability_method")) or "bucket_only_no_product_proxy_adjustment"
+    formal_surface = _probability_engine_formal_surface(inp)
+    formal_result = _obj(formal_surface.get("primary_result") or recommended_result)
+    probability_method = formal_surface.get("product_probability_method") or "bucket_only_no_product_proxy_adjustment"
     recommended_name = _metric(recommended_result.get("allocation_name"))
     recommended_label = (
         frontier_analysis.get("recommended", {}).get("label")
         or (_metric(candidate_options[0].get("label")) if candidate_options else _candidate_label(recommended_name))
     )
-    recommended_probability = _percent_metric(
-        _product_layer_success_value(recommended_result)
-    )
+    recommended_probability = _percent_metric(_product_layer_success_value(formal_result))
     recommended_probability_point, recommended_probability_range = _disclosed_percent_fields(
-        _product_layer_success_value(recommended_result),
+        _product_layer_success_value(formal_result),
         inp=inp,
         goal_output=goal_output,
         kind="probability",
+        published_point=formal_surface.get("published_point"),
+        published_range=formal_surface.get("published_range"),
+        disclosure_level_override=formal_surface.get("disclosure_level") or None,
+        confidence_level_override=formal_surface.get("confidence_level") or None,
     )
     recommended_independent_probability = _percent_metric(
         recommended_result.get("product_independent_success_probability")
     )
-    recommended_expected_annual_return = _metric(frontier_analysis.get("recommended", {}).get("expected_annual_return")) or ""
+    recommended_expected_annual_return = _percent_metric(formal_surface.get("annual_return_point")) or _metric(
+        frontier_analysis.get("recommended", {}).get("expected_annual_return")
+    ) or ""
     recommended_expected_annual_return_point, recommended_expected_annual_return_range = _disclosed_percent_fields(
-        recommended_result.get("expected_annual_return", _obj(goal_output.get("frontier_analysis", {})).get("recommended", {}).get("expected_annual_return")),
+        formal_surface.get("annual_return_point")
+        if formal_surface.get("annual_return_point") is not None
+        else recommended_result.get(
+            "expected_annual_return", _obj(goal_output.get("frontier_analysis", {})).get("recommended", {}).get("expected_annual_return")
+        ),
         inp=inp,
         goal_output=goal_output,
         kind="annual_return",
+        published_point=formal_surface.get("annual_return_point"),
+        published_range=formal_surface.get("annual_return_range"),
+        disclosure_level_override=formal_surface.get("disclosure_level") or None,
+        confidence_level_override=formal_surface.get("confidence_level") or None,
     )
     highest_frontier = frontier_analysis.get("highest_probability", {})
     highest_name = _metric(highest_frontier.get("allocation_name"))
@@ -2101,6 +2207,9 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     goal_output = _obj(inp.goal_solver_output or {})
     recommended = _obj(goal_output.get("recommended_allocation", {}))
     result = _obj(goal_output.get("recommended_result", {}))
+    formal_surface = _probability_engine_formal_surface(inp)
+    formal_result = _obj(formal_surface.get("primary_result") or result)
+    canonical_probability_method = formal_surface.get("product_probability_method") or "bucket_only_no_product_proxy_adjustment"
     risk_summary = _obj(result.get("risk_summary", {}))
     candidate_options = _build_goal_candidate_options(inp, goal_output)
     fallback_options = _build_goal_fallback_options(goal_output)
@@ -2170,16 +2279,26 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         review_conditions = _unique(review_conditions + ["after_relaxing_goal_or_drawdown"])
         next_steps = _unique(["reassess_goal_constraints"] + next_steps)
     success_probability_point, success_probability_range = _disclosed_percent_fields(
-        _product_layer_success_value(result),
+        _product_layer_success_value(formal_result),
         inp=inp,
         goal_output=goal_output,
         kind="probability",
+        published_point=formal_surface.get("published_point"),
+        published_range=formal_surface.get("published_range"),
+        disclosure_level_override=formal_surface.get("disclosure_level") or None,
+        confidence_level_override=formal_surface.get("confidence_level") or None,
     )
     expected_annual_return_point, expected_annual_return_range = _disclosed_percent_fields(
-        result.get("expected_annual_return", raw_recommended_frontier.get("expected_annual_return")),
+        formal_surface.get("annual_return_point")
+        if formal_surface.get("annual_return_point") is not None
+        else result.get("expected_annual_return", raw_recommended_frontier.get("expected_annual_return")),
         inp=inp,
         goal_output=goal_output,
         kind="annual_return",
+        published_point=formal_surface.get("annual_return_point"),
+        published_range=formal_surface.get("annual_return_range"),
+        disclosure_level_override=formal_surface.get("disclosure_level") or None,
+        confidence_level_override=formal_surface.get("confidence_level") or None,
     )
     card = DecisionCard(
         card_id=inp.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
@@ -2203,8 +2322,7 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
             "product_proxy_adjusted_success_probability": _percent_metric(
                 _product_proxy_success_value(result)
             ),
-            "product_probability_method": _metric(result.get("product_probability_method"))
-            or "bucket_only_no_product_proxy_adjustment",
+            "product_probability_method": canonical_probability_method,
             "implied_required_annual_return": _percent_metric(result.get("implied_required_annual_return")),
             "expected_annual_return": expected_annual_return_point,
             "expected_annual_return_range": expected_annual_return_range,
@@ -2285,6 +2403,9 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
     goal_output = _obj(inp.goal_solver_output or {})
     ev_report = _obj(runtime_result.get("ev_report", {}))
     result = _obj(goal_output.get("recommended_result", {}))
+    formal_surface = _probability_engine_formal_surface(inp)
+    formal_result = _obj(formal_surface.get("primary_result") or result)
+    canonical_probability_method = formal_surface.get("product_probability_method") or "bucket_only_no_product_proxy_adjustment"
     ranked_actions = _ranked_entries(ev_report)
     quarterly_runtime_action = _action_type(
         ev_report.get("recommended_action") or (ranked_actions[0].get("action") if ranked_actions else None)
@@ -2336,9 +2457,9 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         recommendation_reason=reasons,
         not_recommended_reason=not_recommended_reason,
         key_metrics={
-            "new_baseline_success_probability": _percent_metric(result.get("success_probability")),
+            "new_baseline_success_probability": _percent_metric(_product_layer_success_value(formal_result)),
             "bucket_success_probability": _percent_metric(
-                result.get("bucket_success_probability", result.get("success_probability"))
+                formal_result.get("bucket_success_probability", _product_layer_success_value(formal_result))
             ),
             "product_independent_success_probability": _percent_metric(
                 result.get("product_independent_success_probability")
@@ -2346,10 +2467,11 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
             "product_proxy_adjusted_success_probability": _percent_metric(
                 _product_proxy_success_value(result)
             ),
-            "product_probability_method": _metric(result.get("product_probability_method"))
-            or "bucket_only_no_product_proxy_adjustment",
+            "product_probability_method": canonical_probability_method,
             "implied_required_annual_return": _percent_metric(result.get("implied_required_annual_return")),
-            "new_baseline_max_drawdown_90pct": _percent_metric(risk_summary.get("max_drawdown_90pct")),
+            "new_baseline_max_drawdown_90pct": _percent_metric(
+                risk_summary.get("max_drawdown_90pct")
+            ),
             "quarterly_action_confidence": _metric(ev_report.get("confidence_flag")),
             "quarterly_runtime_action": quarterly_runtime_action,
         },

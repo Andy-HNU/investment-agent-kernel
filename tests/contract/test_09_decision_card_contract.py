@@ -190,6 +190,7 @@ def test_quarterly_review_card_keeps_review_action_and_consumes_dual_evidence():
     assert card["recommended_action"] == "review"
     assert card["primary_recommendation"] == "review"
     assert card["key_metrics"]["quarterly_runtime_action"] == "observe"
+    assert card["key_metrics"]["new_baseline_max_drawdown_90pct"] == "18.00%"
     assert "success_probability=0.71" in card["evidence_highlights"]
     assert card["runner_up_action"] is None
 

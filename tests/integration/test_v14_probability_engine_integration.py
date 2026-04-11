@@ -25,10 +25,21 @@ from probability_engine.recipes import PRIMARY_RECIPE_V14
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "v14" / "formal_daily_engine_input.json"
+_MIN_LIVE_HISTORY_DAYS = 40
 
 
 def _load_v14_formal_daily_input() -> dict[str, object]:
-    return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    labels = list(payload.get("observed_regime_labels") or [])
+    target_days = max(_MIN_LIVE_HISTORY_DAYS, int(payload.get("path_horizon_days") or 0))
+    if labels and len(labels) < target_days:
+        repeats = (target_days + len(labels) - 1) // len(labels)
+        payload["observed_regime_labels"] = (labels * repeats)[:target_days]
+        for product in list(payload.get("products") or []):
+            returns = list(product.get("observed_daily_returns") or [])
+            if returns:
+                product["observed_daily_returns"] = (returns * repeats)[:target_days]
+    return payload
 
 
 def test_primary_recipe_returns_formal_output_for_full_daily_input() -> None:
@@ -42,6 +53,21 @@ def test_primary_recipe_returns_formal_output_for_full_daily_input() -> None:
     assert result.output.primary_result.sample_count == 4000
     assert result.output.primary_result.path_stats.path_count == 4000
     assert result.output.probability_disclosure_payload is not None
+
+
+def test_primary_recipe_populates_live_challenger_and_stress_gap_signals() -> None:
+    result = run_probability_engine(_load_v14_formal_daily_input())
+
+    assert result.output is not None
+    assert result.output.challenger_results, "expected live challenger_results to be populated"
+    assert result.output.stress_results, "expected live stress_results to be populated"
+    assert result.output.model_disagreement["gap_total"] is not None
+
+    disclosure_payload = result.output.probability_disclosure_payload
+    assert disclosure_payload is not None
+    assert disclosure_payload.challenger_gap is not None
+    assert disclosure_payload.stress_gap is not None
+    assert disclosure_payload.gap_total is not None
 
 
 def test_same_month_twenty_trading_day_path_accepts_horizon_months_one() -> None:

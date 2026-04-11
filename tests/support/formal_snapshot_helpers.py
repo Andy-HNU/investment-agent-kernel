@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import asdict
 import json
 from pathlib import Path
 from typing import Any
 
+from probability_engine.factor_library import load_factor_library_snapshot
+from probability_engine.factor_mapping import (
+    ProductHolding,
+    ProductMappingProduct,
+    ProductReturnObservation,
+    build_factor_mapping,
+)
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 
 
@@ -16,17 +24,310 @@ DEFAULT_AUDIT_WINDOW = {
     "observed_days": 491,
     "inferred_days": 0,
 }
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "v14"
+FACTOR_LIBRARY_SNAPSHOT_PATH = FIXTURE_DIR / "factor_library_snapshot.json"
+
+
+def _weighted_return(factor_returns: dict[str, float], weights: dict[str, float]) -> float:
+    return sum(float(weights.get(factor_id, 0.0)) * float(factor_returns.get(factor_id, 0.0)) for factor_id in weights)
+
+
+def _repeat_pattern(pattern: list[float], length: int) -> list[float]:
+    if length <= 0:
+        return []
+    if not pattern:
+        return [0.0] * length
+    repeats = (length + len(pattern) - 1) // len(pattern)
+    return (pattern * repeats)[:length]
+
+
+def _build_probability_factor_mapping_payload() -> dict[str, Any]:
+    factor_library = load_factor_library_snapshot(FACTOR_LIBRARY_SNAPSHOT_PATH)
+    factor_history = list(factor_library.factor_return_history)
+    observation_dates = [row.date for row in factor_history]
+    observed_series_templates: dict[str, list[float]] = {
+        # Keep the helper snapshot realistic enough for acceptance runs:
+        # balanced daily returns, modest drift, and visible drawdowns.
+        "cn_equity_dividend_etf": [0.0035, -0.0040, 0.0022, -0.0025, 0.0014, -0.0016, 0.0028, 0.0004],
+        "cn_bond_gov_etf": [0.0006, 0.0003, -0.0004, 0.0005, 0.0003, -0.0001, 0.0004, 0.0002],
+        "cn_gold_etf": [0.0025, -0.0030, 0.0018, -0.0017, 0.0012, -0.0014, 0.0022, 0.0003],
+        "cn_satellite_energy_etf": [0.0050, -0.0060, 0.0030, -0.0035, 0.0020, -0.0025, 0.0040, 0.0006],
+    }
+
+    product_specs: list[dict[str, Any]] = [
+        {
+            "product_id": "cn_equity_dividend_etf",
+            "product_name": "红利ETF",
+            "asset_bucket": "equity_cn",
+            "asset_class": "equity",
+            "region": "CN",
+            "style": "dividend",
+            "benchmark": "CSI300",
+            "wrapper_type": "etf",
+            "category": "cn_equity",
+            "cluster_id": "cn_equity_cluster",
+            "history_days": 252,
+            "holdings_coverage": 0.90,
+            "holdings_freshness": 0.92,
+            "factor_weights": {
+                "CN_EQ_BROAD": 0.78,
+                "CN_EQ_GROWTH": 0.12,
+                "CN_EQ_VALUE": 0.06,
+                "GOLD_GLOBAL": 0.04,
+            },
+            "cluster_anchor_betas": {
+                "CN_EQ_BROAD": 0.82,
+                "CN_EQ_GROWTH": 0.08,
+                "CN_EQ_VALUE": 0.04,
+                "GOLD_GLOBAL": 0.02,
+            },
+            "holdings": [
+                {
+                    "security_id": "510880.SS",
+                    "security_name": "红利ETF底仓",
+                    "weight": 0.52,
+                    "factor_exposures": {
+                        "CN_EQ_BROAD": 0.95,
+                        "CN_EQ_VALUE": 0.10,
+                    },
+                },
+                {
+                    "security_id": "000001.SZ",
+                    "security_name": "平安银行",
+                    "weight": 0.38,
+                    "factor_exposures": {
+                        "CN_EQ_BROAD": 0.90,
+                        "CN_EQ_GROWTH": 0.08,
+                    },
+                },
+            ],
+        },
+        {
+            "product_id": "cn_bond_gov_etf",
+            "product_name": "国债ETF",
+            "asset_bucket": "bond_cn",
+            "asset_class": "bond",
+            "region": "CN",
+            "style": "defense",
+            "benchmark": "CDBond",
+            "wrapper_type": "etf",
+            "category": "cn_bond",
+            "cluster_id": "cn_bond_cluster",
+            "history_days": 252,
+            "holdings_coverage": 0.88,
+            "holdings_freshness": 0.93,
+            "factor_weights": {
+                "CN_RATE_DURATION": 0.72,
+                "CN_CREDIT_SPREAD": 0.14,
+                "GOLD_GLOBAL": 0.08,
+                "USD_CNH": 0.06,
+            },
+            "cluster_anchor_betas": {
+                "CN_RATE_DURATION": 0.75,
+                "CN_CREDIT_SPREAD": 0.12,
+                "GOLD_GLOBAL": 0.06,
+                "USD_CNH": 0.03,
+            },
+            "holdings": [
+                {
+                    "security_id": "511010.SS",
+                    "security_name": "国债ETF底仓",
+                    "weight": 0.50,
+                    "factor_exposures": {
+                        "CN_RATE_DURATION": 0.96,
+                        "CN_CREDIT_SPREAD": 0.08,
+                    },
+                },
+                {
+                    "security_id": "180019.OF",
+                    "security_name": "债券增强",
+                    "weight": 0.38,
+                    "factor_exposures": {
+                        "CN_RATE_DURATION": 0.82,
+                        "CN_CREDIT_SPREAD": 0.18,
+                    },
+                },
+            ],
+        },
+        {
+            "product_id": "cn_gold_etf",
+            "product_name": "黄金ETF",
+            "asset_bucket": "gold",
+            "asset_class": "commodity",
+            "region": "GLOBAL",
+            "style": "gold",
+            "benchmark": "XAU",
+            "wrapper_type": "etf",
+            "category": "gold",
+            "cluster_id": "gold_cluster",
+            "history_days": 252,
+            "holdings_coverage": 0.86,
+            "holdings_freshness": 0.94,
+            "factor_weights": {
+                "GOLD_GLOBAL": 0.96,
+                "USD_CNH": 0.04,
+            },
+            "cluster_anchor_betas": {
+                "GOLD_GLOBAL": 0.95,
+                "USD_CNH": 0.05,
+            },
+            "holdings": [
+                {
+                    "security_id": "518880.SS",
+                    "security_name": "黄金ETF底仓",
+                    "weight": 0.60,
+                    "factor_exposures": {
+                        "GOLD_GLOBAL": 0.98,
+                    },
+                },
+                {
+                    "security_id": "AU9999.SGE",
+                    "security_name": "黄金现货",
+                    "weight": 0.30,
+                    "factor_exposures": {
+                        "GOLD_GLOBAL": 0.92,
+                        "USD_CNH": 0.04,
+                    },
+                },
+            ],
+        },
+        {
+            "product_id": "cn_satellite_energy_etf",
+            "product_name": "能源ETF",
+            "asset_bucket": "satellite",
+            "asset_class": "equity",
+            "region": "CN",
+            "style": "satellite",
+            "benchmark": "CSI500",
+            "wrapper_type": "etf",
+            "category": "satellite",
+            "cluster_id": "satellite_cluster",
+            "history_days": 252,
+            "holdings_coverage": 0.89,
+            "holdings_freshness": 0.91,
+            "factor_weights": {
+                "CN_EQ_BROAD": 0.84,
+                "US_EQ_BROAD": 0.06,
+                "GOLD_GLOBAL": 0.05,
+                "USD_CNH": 0.05,
+            },
+            "cluster_anchor_betas": {
+                "CN_EQ_BROAD": 0.86,
+                "US_EQ_BROAD": 0.04,
+                "GOLD_GLOBAL": 0.05,
+                "USD_CNH": 0.05,
+            },
+            "holdings": [
+                {
+                    "security_id": "159930.SZ",
+                    "security_name": "能源ETF底仓",
+                    "weight": 0.55,
+                    "factor_exposures": {
+                        "CN_EQ_BROAD": 0.88,
+                        "US_EQ_BROAD": 0.06,
+                    },
+                },
+                {
+                    "security_id": "600028.SH",
+                    "security_name": "中国石化",
+                    "weight": 0.34,
+                    "factor_exposures": {
+                        "CN_EQ_BROAD": 0.80,
+                        "GOLD_GLOBAL": 0.06,
+                    },
+                },
+            ],
+        },
+    ]
+
+    products: list[ProductMappingProduct] = []
+    series_tracks: dict[str, Any] = {
+        "observation_dates": list(observation_dates),
+        "by_product_id": {},
+        "by_bucket": {},
+    }
+    for spec in product_specs:
+        factor_history_series = [
+            _weighted_return(row.factor_returns, dict(spec["factor_weights"]))
+            for row in factor_history
+        ]
+        series = _repeat_pattern(
+            observed_series_templates.get(str(spec["product_id"]), factor_history_series[:8]),
+            len(observation_dates),
+        )
+        series_tracks["by_product_id"][str(spec["product_id"])] = {
+            "return_series": list(series),
+            "observation_dates": list(observation_dates),
+        }
+        series_tracks["by_bucket"][str(spec["asset_bucket"])] = list(series)
+        products.append(
+            ProductMappingProduct(
+                product_id=str(spec["product_id"]),
+                product_name=str(spec["product_name"]),
+                asset_class=str(spec["asset_class"]),
+                region=str(spec["region"]),
+                style=str(spec["style"]),
+                benchmark=str(spec["benchmark"]),
+                wrapper_type=str(spec["wrapper_type"]),
+                category=str(spec["category"]),
+                cluster_id=str(spec["cluster_id"]),
+                history_days=int(spec["history_days"]),
+                holdings_coverage=float(spec["holdings_coverage"]),
+                holdings_freshness=float(spec["holdings_freshness"]),
+                holdings=tuple(
+                    ProductHolding(
+                        security_id=str(holding["security_id"]),
+                        security_name=str(holding["security_name"]),
+                        weight=float(holding["weight"]),
+                        factor_exposures={
+                            str(key): float(value)
+                            for key, value in dict(holding["factor_exposures"]).items()
+                        },
+                    )
+                    for holding in spec["holdings"]
+                ),
+                return_series=tuple(
+                    ProductReturnObservation(
+                        date=row.date,
+                        product_return=series[index],
+                    )
+                    for index, row in enumerate(factor_history)
+                ),
+                cluster_anchor_betas={
+                    str(key): float(value)
+                    for key, value in dict(spec["cluster_anchor_betas"]).items()
+                },
+            )
+        )
+
+    mapping_results = build_factor_mapping(products, factor_library, as_of=factor_library.as_of)
+    return {
+        "probability_engine": {
+            "factor_mapping": {
+                "snapshot_id": factor_library.snapshot_id,
+                "as_of": factor_library.as_of,
+                "source_name": "observed_product_level_factor_mapping",
+                "source_ref": f"observed://factor_mapping/{factor_library.snapshot_id}",
+                "products": [asdict(result) for result in mapping_results],
+            }
+        },
+        "series_tracks": series_tracks,
+    }
 
 
 def formal_market_raw_overrides() -> dict[str, object]:
     audit_window = deepcopy(DEFAULT_AUDIT_WINDOW)
-    observation_dates = [
-        "2026-03-27",
-        "2026-03-30",
-        "2026-03-31",
-        "2026-04-01",
-        "2026-04-02",
-    ]
+    probability_bundle = _build_probability_factor_mapping_payload()
+    series_tracks = dict(probability_bundle.get("series_tracks") or {})
+    observation_dates = list(series_tracks.get("observation_dates") or [])
+    bucket_series = dict(series_tracks.get("by_bucket") or {})
+    equity_series = list(bucket_series.get("equity_cn") or [])
+    bond_series = list(bucket_series.get("bond_cn") or [])
+    gold_series = list(bucket_series.get("gold") or [])
+    satellite_series = list(bucket_series.get("satellite") or [])
+    if observation_dates:
+        audit_window["trading_days"] = len(observation_dates)
+        audit_window["observed_days"] = len(observation_dates)
     runtime_candidates = [
         {
             "product_id": "cn_equity_dividend_etf",
@@ -102,10 +403,10 @@ def formal_market_raw_overrides() -> dict[str, object]:
             "source_ref": "observed://market_history?profile=formal_test",
             "lookback_months": 24,
             "return_series": {
-                "equity_cn": [0.01, -0.02, 0.03, 0.015, -0.01],
-                "bond_cn": [0.002, -0.001, 0.001, 0.002, 0.001],
-                "gold": [0.005, 0.002, -0.001, 0.004, -0.002],
-                "satellite": [0.03, -0.04, 0.02, 0.01, -0.015],
+                "equity_cn": list(equity_series),
+                "bond_cn": list(bond_series),
+                "gold": list(gold_series),
+                "satellite": list(satellite_series),
             },
             "coverage_status": "verified",
             "cached_at": "2026-04-05T08:00:00Z",
@@ -126,56 +427,56 @@ def formal_market_raw_overrides() -> dict[str, object]:
                         "product_id": "cn_equity_dividend_etf",
                         "asset_bucket": "equity_cn",
                         "target_weight": 0.0,
-                        "return_series": [0.012, -0.006, 0.009, 0.004, 0.007],
+                        "return_series": list(equity_series),
                         "observation_dates": list(observation_dates),
                         "source_ref": "observed://product_returns/cn_equity_dividend_etf",
                         "data_status": "observed",
                         "frequency": "daily",
-                        "observed_start_date": "2026-03-27",
-                        "observed_end_date": "2026-04-02",
-                        "observed_points": 5,
+                        "observed_start_date": observation_dates[0] if observation_dates else "2026-03-27",
+                        "observed_end_date": observation_dates[-1] if observation_dates else "2026-04-02",
+                        "observed_points": len(equity_series),
                         "inferred_points": 0,
                     },
                     {
                         "product_id": "cn_bond_gov_etf",
                         "asset_bucket": "bond_cn",
                         "target_weight": 0.0,
-                        "return_series": [0.001, 0.0005, 0.0012, 0.0008, 0.0011],
+                        "return_series": list(bond_series),
                         "observation_dates": list(observation_dates),
                         "source_ref": "observed://product_returns/cn_bond_gov_etf",
                         "data_status": "observed",
                         "frequency": "daily",
-                        "observed_start_date": "2026-03-27",
-                        "observed_end_date": "2026-04-02",
-                        "observed_points": 5,
+                        "observed_start_date": observation_dates[0] if observation_dates else "2026-03-27",
+                        "observed_end_date": observation_dates[-1] if observation_dates else "2026-04-02",
+                        "observed_points": len(bond_series),
                         "inferred_points": 0,
                     },
                     {
                         "product_id": "cn_gold_etf",
                         "asset_bucket": "gold",
                         "target_weight": 0.0,
-                        "return_series": [0.004, -0.003, 0.002, 0.001, -0.001],
+                        "return_series": list(gold_series),
                         "observation_dates": list(observation_dates),
                         "source_ref": "observed://product_returns/cn_gold_etf",
                         "data_status": "observed",
                         "frequency": "daily",
-                        "observed_start_date": "2026-03-27",
-                        "observed_end_date": "2026-04-02",
-                        "observed_points": 5,
+                        "observed_start_date": observation_dates[0] if observation_dates else "2026-03-27",
+                        "observed_end_date": observation_dates[-1] if observation_dates else "2026-04-02",
+                        "observed_points": len(gold_series),
                         "inferred_points": 0,
                     },
                     {
                         "product_id": "cn_satellite_energy_etf",
                         "asset_bucket": "satellite",
                         "target_weight": 0.0,
-                        "return_series": [0.016, -0.011, 0.013, 0.006, 0.009],
+                        "return_series": list(satellite_series),
                         "observation_dates": list(observation_dates),
                         "source_ref": "observed://product_returns/cn_satellite_energy_etf",
                         "data_status": "observed",
                         "frequency": "daily",
-                        "observed_start_date": "2026-03-27",
-                        "observed_end_date": "2026-04-02",
-                        "observed_points": 5,
+                        "observed_start_date": observation_dates[0] if observation_dates else "2026-03-27",
+                        "observed_end_date": observation_dates[-1] if observation_dates else "2026-04-02",
+                        "observed_points": len(satellite_series),
                         "inferred_points": 0,
                     },
                 ],
@@ -231,6 +532,7 @@ def formal_market_raw_overrides() -> dict[str, object]:
                 "cn_cash_money_fund": {"status": "not_applicable"},
             },
         },
+        "probability_engine": probability_bundle["probability_engine"],
     }
 
 

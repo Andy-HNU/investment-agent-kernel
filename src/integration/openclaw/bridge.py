@@ -47,10 +47,12 @@ def handle_task(task: str, *, db_path: str | Path = DEFAULT_DB_PATH, now: Option
         payload = parse_onboarding(task)
         profile = UserOnboardingProfile(**payload)
         external_snapshot_source = str(os.getenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", "")).strip() or None
+        external_data_config = str(os.getenv("OPENCLAW_BRIDGE_EXTERNAL_DATA_CONFIG", "")).strip() or None
         summary = run_frontdesk_onboarding(
             profile,
             db_path=db_path,
             external_snapshot_source=external_snapshot_source,
+            external_data_config=external_data_config,
         )
         invocation = {"tool": "frontdesk.onboarding", **payload}
         result = dict(summary)

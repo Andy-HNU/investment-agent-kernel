@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
 
 from probability_engine.contracts import PathStatsSummary, RecipeSimulationResult, SuccessEventSpec
+from probability_engine.path_generator import DailyEngineRuntimeInput, simulate_primary_paths
 from probability_engine.portfolio_policy import CurrentPosition, PortfolioState, initialize_portfolio_state
 from probability_engine.recipes import SimulationRecipe
+from probability_engine.regime import RegimeStateSpec
+from probability_engine.jumps import JumpStateSpec
+from probability_engine.volatility import FactorDynamicsSpec
 
 
 def _clamp_probability(value: float) -> float:
@@ -257,6 +262,174 @@ STRESS_RECIPE_V14 = SimulationRecipe(
 )
 
 
+_STRESS_PARAMETER_TABLE = {
+    "tail_df_multiplier": 0.75,
+    "systemic_jump_probability_multiplier": 1.45,
+    "systemic_jump_dispersion_multiplier": 1.25,
+    "idio_jump_probability_multiplier": 1.20,
+    "idio_loss_multiplier": 1.10,
+    "idio_loss_std_multiplier": 1.10,
+    "risk_off_persistence_multiplier": 1.30,
+    "stress_persistence_multiplier": 1.15,
+    "regime_mean_shift_offset": {
+        "normal": 0.00025,
+        "risk_off": 0.00150,
+        "stress": 0.00200,
+    },
+    "regime_volatility_multiplier": {
+        "normal": 1.08,
+        "risk_off": 1.25,
+        "stress": 1.35,
+    },
+    "regime_jump_probability_multiplier": {
+        "normal": 1.10,
+        "risk_off": 1.25,
+        "stress": 1.35,
+    },
+}
+
+
+def _scaled_positive(value: float | None, multiplier: float, *, minimum: float = 1e-12) -> float:
+    base = 1.0 if value is None else float(value)
+    return max(float(minimum), base * float(multiplier))
+
+
+def _stress_tail_df(tail_df: float | None) -> float | None:
+    if tail_df is None:
+        return None
+    return max(2.5, float(tail_df) * float(_STRESS_PARAMETER_TABLE["tail_df_multiplier"]))
+
+
+def _stress_regime_state(regime_state: RegimeStateSpec) -> RegimeStateSpec:
+    regime_names = list(regime_state.regime_names)
+    transition_matrix = [list(row) for row in regime_state.transition_matrix]
+    risk_off_index = regime_names.index("risk_off") if "risk_off" in regime_names else None
+    stress_index = regime_names.index("stress") if "stress" in regime_names else None
+    for row_index, row in enumerate(transition_matrix):
+        row_name = regime_names[row_index]
+        if risk_off_index is not None:
+            multiplier = _STRESS_PARAMETER_TABLE["risk_off_persistence_multiplier"] if row_name == "risk_off" else 1.12
+            row[risk_off_index] *= float(multiplier)
+        if stress_index is not None:
+            multiplier = _STRESS_PARAMETER_TABLE["stress_persistence_multiplier"] if row_name == "stress" else 1.05
+            row[stress_index] *= float(multiplier)
+        transition_matrix[row_index] = row
+
+    regime_mean_adjustments: dict[str, dict[str, float]] = {}
+    regime_vol_adjustments: dict[str, dict[str, float]] = {}
+    regime_jump_adjustments: dict[str, dict[str, float]] = {}
+    for regime_name in regime_names:
+        mean_adjustments = dict(regime_state.regime_mean_adjustments.get(regime_name, {}))
+        mean_adjustments["mean_shift"] = float(mean_adjustments.get("mean_shift", 0.0)) - float(
+            _STRESS_PARAMETER_TABLE["regime_mean_shift_offset"].get(regime_name, 0.00025)
+        )
+        if regime_name in {"risk_off", "stress"}:
+            mean_adjustments["mean_shift"] -= float(_STRESS_PARAMETER_TABLE["regime_mean_shift_offset"]["risk_off"])
+        regime_mean_adjustments[regime_name] = mean_adjustments
+
+        vol_adjustments = dict(regime_state.regime_vol_adjustments.get(regime_name, {}))
+        vol_multiplier = float(_STRESS_PARAMETER_TABLE["regime_volatility_multiplier"].get(regime_name, 1.08))
+        vol_adjustments["volatility_multiplier"] = float(vol_adjustments.get("volatility_multiplier", 1.0)) * vol_multiplier
+        regime_vol_adjustments[regime_name] = vol_adjustments
+
+        jump_adjustments = dict(regime_state.regime_jump_adjustments.get(regime_name, {}))
+        jump_multiplier = float(_STRESS_PARAMETER_TABLE["regime_jump_probability_multiplier"].get(regime_name, 1.10))
+        jump_adjustments["systemic_jump_probability_multiplier"] = float(
+            jump_adjustments.get("systemic_jump_probability_multiplier", 1.0)
+        ) * jump_multiplier
+        jump_adjustments["systemic_jump_dispersion_multiplier"] = float(
+            jump_adjustments.get("systemic_jump_dispersion_multiplier", 1.0)
+        ) * 1.10
+        jump_adjustments["idio_jump_probability_multiplier"] = float(
+            jump_adjustments.get("idio_jump_probability_multiplier", 1.0)
+        ) * float(_STRESS_PARAMETER_TABLE["idio_jump_probability_multiplier"])
+        jump_adjustments["idio_loss_multiplier"] = float(jump_adjustments.get("idio_loss_multiplier", 1.0)) * float(
+            _STRESS_PARAMETER_TABLE["idio_loss_multiplier"]
+        )
+        jump_adjustments["idio_loss_std_multiplier"] = float(
+            jump_adjustments.get("idio_loss_std_multiplier", 1.0)
+        ) * float(_STRESS_PARAMETER_TABLE["idio_loss_std_multiplier"])
+        regime_jump_adjustments[regime_name] = jump_adjustments
+
+    return replace(
+        regime_state,
+        transition_matrix=transition_matrix,
+        regime_mean_adjustments=regime_mean_adjustments,
+        regime_vol_adjustments=regime_vol_adjustments,
+        regime_jump_adjustments=regime_jump_adjustments,
+    )
+
+
+def _stress_factor_dynamics(factor_dynamics: FactorDynamicsSpec) -> FactorDynamicsSpec:
+    return replace(
+        factor_dynamics,
+        tail_df=_stress_tail_df(factor_dynamics.tail_df),
+    )
+
+
+def _stress_jump_state(jump_state: JumpStateSpec) -> JumpStateSpec:
+    stressed_profiles: dict[str, dict[str, float]] = {}
+    for product_id, profile in dict(jump_state.idio_jump_profile_by_product or {}).items():
+        stressed_profile = dict(profile)
+        if "probability_1d" in stressed_profile:
+            stressed_profile["probability_1d"] = min(
+                1.0,
+                float(stressed_profile["probability_1d"]) * float(_STRESS_PARAMETER_TABLE["idio_jump_probability_multiplier"]),
+            )
+        if "loss_mean" in stressed_profile:
+            stressed_profile["loss_mean"] = float(stressed_profile["loss_mean"]) * float(
+                _STRESS_PARAMETER_TABLE["idio_loss_multiplier"]
+            )
+        if "loss_std" in stressed_profile:
+            stressed_profile["loss_std"] = _scaled_positive(
+                stressed_profile["loss_std"],
+                float(_STRESS_PARAMETER_TABLE["idio_loss_std_multiplier"]),
+            )
+        stressed_profiles[product_id] = stressed_profile
+
+    return replace(
+        jump_state,
+        systemic_jump_probability_1d=min(
+            1.0,
+            float(jump_state.systemic_jump_probability_1d)
+            * float(_STRESS_PARAMETER_TABLE["systemic_jump_probability_multiplier"]),
+        ),
+        systemic_jump_dispersion=_scaled_positive(
+            jump_state.systemic_jump_dispersion,
+            float(_STRESS_PARAMETER_TABLE["systemic_jump_dispersion_multiplier"]),
+        ),
+        idio_jump_profile_by_product=stressed_profiles,
+    )
+
+
+def _stress_runtime_input(runtime_input: DailyEngineRuntimeInput) -> DailyEngineRuntimeInput:
+    return replace(
+        runtime_input,
+        factor_dynamics=_stress_factor_dynamics(runtime_input.factor_dynamics),
+        regime_state=_stress_regime_state(runtime_input.regime_state),
+        jump_state=_stress_jump_state(runtime_input.jump_state),
+    )
+
+
+def build_stress_recipe_result_from_runtime_input(
+    runtime_input: DailyEngineRuntimeInput,
+    *,
+    path_count: int | None = None,
+    recipe: SimulationRecipe | None = None,
+) -> RecipeSimulationResult:
+    candidate_recipe = recipe or STRESS_RECIPE_V14
+    effective_path_count = int(path_count if path_count is not None else runtime_input.stress_path_count or candidate_recipe.path_count)
+    if effective_path_count <= 0:
+        raise ValueError("path_count must be positive")
+    stressed_recipe = replace(candidate_recipe, path_count=effective_path_count)
+    stressed_runtime_input = _stress_runtime_input(runtime_input)
+    stressed_result = simulate_primary_paths(stressed_runtime_input, stressed_recipe)
+    return replace(
+        stressed_result,
+        calibration_link_ref=f"stress://{stressed_recipe.recipe_name}",
+    )
+
+
 @dataclass(frozen=True)
 class ChallengerBootstrapDiagnostics:
     result: RecipeSimulationResult
@@ -292,12 +465,14 @@ def run_challenger_bootstrap(
         raise ValueError("regime_labels must align with the history_matrix columns")
     if int(block_size) <= 0:
         raise ValueError("block_size must be positive")
+    if int(block_size) != 20:
+        raise ValueError("challenger bootstrap block_size must be 20 for v1.4")
     if int(path_count) <= 0:
         raise ValueError("path_count must be positive")
     if int(horizon_days) <= 0:
         raise ValueError("horizon_days must be positive")
     if matrix.shape[1] < 2 * int(block_size):
-        raise ValueError("history is too short for challenger bootstrap")
+        raise ValueError("history is too short for challenger bootstrap (needs at least 2 * block_size columns)")
 
     initial_state, product_ids, normalized_weights, effective_initial_value = _portfolio_state_from_positions(
         num_products=matrix.shape[0],

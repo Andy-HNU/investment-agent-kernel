@@ -209,6 +209,7 @@ def apply_external_snapshot_overrides(
     account_raw = dict(merged.get("account_raw") or {})
     account_override_present = "account_raw" in overrides
     live_override_present = "live_portfolio" in overrides
+    execution_as_of_date = str(merged.get("as_of", ""))[:10]
 
     if live_portfolio or account_raw:
         if live_override_present:
@@ -228,7 +229,10 @@ def apply_external_snapshot_overrides(
         remaining_horizon = _remaining_horizon(merged, goal_solver_input)
         if remaining_horizon is not None:
             live_portfolio.setdefault("remaining_horizon_months", remaining_horizon)
-        live_portfolio.setdefault("as_of_date", str(merged.get("as_of", ""))[:10])
+        # Provider-fetched account snapshots are consumed as the current review input for this
+        # run; runtime optimizer staleness checks must therefore evaluate them against the
+        # current workflow execution date rather than the provider fixture's embedded default.
+        live_portfolio["as_of_date"] = execution_as_of_date
         live_portfolio.setdefault("current_drawdown", 0.0)
         if "goal_gap" not in live_portfolio and live_portfolio.get("total_value") is not None:
             goal_amount = _goal_amount(merged, goal_solver_input)

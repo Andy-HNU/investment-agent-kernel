@@ -10,14 +10,26 @@ from probability_engine.engine import run_probability_engine
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "v14" / "formal_daily_engine_input.json"
 _CONTRACT_PATH_COUNT = 32
+_MIN_LIVE_HISTORY_DAYS = 40
+_MIN_STRICT_HISTORY_DAYS = 126
 
 
-def _load_v14_formal_daily_input() -> dict[str, object]:
+def _load_v14_formal_daily_input(*, minimum_history_days: int = _MIN_LIVE_HISTORY_DAYS) -> dict[str, object]:
     payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
     recipes = list(payload.get("recipes") or [])
     if recipes:
         recipes[0] = {**dict(recipes[0]), "path_count": _CONTRACT_PATH_COUNT}
         payload["recipes"] = recipes
+    labels = list(payload.get("observed_regime_labels") or [])
+    target_days = max(minimum_history_days, int(payload.get("path_horizon_days") or 0))
+    if labels and len(labels) < target_days:
+        repeats = (target_days + len(labels) - 1) // len(labels)
+        extended_labels = (labels * repeats)[:target_days]
+        payload["observed_regime_labels"] = extended_labels
+        for product in list(payload.get("products") or []):
+            returns = list(product.get("observed_daily_returns") or [])
+            if returns:
+                product["observed_daily_returns"] = (returns * repeats)[:target_days]
     return payload
 
 
@@ -26,21 +38,22 @@ def test_task4_primary_only_run_emits_minimal_typed_disclosure_payload() -> None
 
     assert isinstance(result, ProbabilityEngineRunResult)
     assert result.output is not None
-    assert result.output.challenger_results == []
-    assert result.output.stress_results == []
-    assert result.output.model_disagreement["best_challenger_probability"] is None
-    assert result.output.model_disagreement["stress_probability"] is None
-    assert result.output.model_disagreement["gap_total"] == 0.0
+    assert result.output.challenger_results
+    assert result.output.stress_results
+    assert result.output.model_disagreement["best_challenger_probability"] is not None
+    assert result.output.model_disagreement["stress_probability"] is not None
+    assert result.output.model_disagreement["gap_total"] > 0.0
     assert result.output.model_disagreement["widening_method"] == "wilson_plus_gap_total"
     assert isinstance(result.output.probability_disclosure_payload, ProbabilityDisclosurePayload)
     assert result.output.probability_disclosure_payload.widening_method == "wilson_plus_gap_total"
-    assert result.output.probability_disclosure_payload.gap_total == 0.0
+    assert result.output.probability_disclosure_payload.gap_total is not None
+    assert result.output.probability_disclosure_payload.gap_total > 0.0
     assert result.output.probability_disclosure_payload.disclosure_level in {"point_and_range", "range_only"}
     assert result.output.probability_disclosure_payload.confidence_level in {"high", "medium", "low"}
 
 
 def test_successful_task4_run_uses_internal_formal_strict_result() -> None:
-    sim_input = deepcopy(_load_v14_formal_daily_input())
+    sim_input = deepcopy(_load_v14_formal_daily_input(minimum_history_days=_MIN_STRICT_HISTORY_DAYS))
     for product in sim_input["products"]:
         product["mapping_confidence"] = "high"
 
@@ -54,7 +67,7 @@ def test_successful_task4_run_uses_internal_formal_strict_result() -> None:
 
 
 def test_low_mapping_confidence_task4_run_does_not_emit_formal_strict_result() -> None:
-    sim_input = deepcopy(_load_v14_formal_daily_input())
+    sim_input = deepcopy(_load_v14_formal_daily_input(minimum_history_days=_MIN_STRICT_HISTORY_DAYS))
     for product in sim_input["products"]:
         product["mapping_confidence"] = "low"
 
@@ -62,7 +75,7 @@ def test_low_mapping_confidence_task4_run_does_not_emit_formal_strict_result() -
 
     assert isinstance(result, ProbabilityEngineRunResult)
     assert result.run_outcome_status == "degraded"
-    assert result.resolved_result_category == "degraded_formal_result"
+    assert result.resolved_result_category == "formal_estimated_result"
     assert result.output is not None
     assert result.output.probability_disclosure_payload.confidence_level != "high"
     assert result.output.probability_disclosure_payload.disclosure_level == "range_only"

@@ -5,6 +5,8 @@ from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 from typing import Any
 
+import numpy as np
+
 from allocation_engine.engine import run_allocation_engine
 from calibration.engine import run_calibration
 from decision_card.builder import build_decision_card
@@ -318,6 +320,41 @@ def _build_probability_engine_run_input(
     if not simulation_products or factor_dynamics is None or regime_state is None or jump_state is None or not factor_names:
         return None, {}
 
+    observed_series = []
+    observed_lengths: set[int] = set()
+    for item in simulation_products:
+        series = [float(value) for value in list(item.get("return_series") or [])]
+        if not series:
+            return None, {}
+        observed_series.append((str(item.get("product_id") or "").strip(), series))
+        observed_lengths.add(len(series))
+    if len(observed_lengths) != 1:
+        return None, {}
+    observed_length = observed_lengths.pop()
+    portfolio_returns = [
+        sum(series[index] for _, series in observed_series) / float(len(observed_series))
+        for index in range(observed_length)
+    ]
+    if portfolio_returns:
+        lower_threshold = float(np.quantile(portfolio_returns, 0.33))
+        upper_threshold = float(np.quantile(portfolio_returns, 0.67))
+    else:
+        lower_threshold = 0.0
+        upper_threshold = 0.0
+    observed_regime_labels = [
+        "stress"
+        if value <= lower_threshold
+        else "risk_off"
+        if value <= upper_threshold
+        else "normal"
+        for value in portfolio_returns
+    ]
+    observed_current_regime = (
+        observed_regime_labels[max(0, len(observed_regime_labels) - 2)]
+        if observed_regime_labels
+        else "normal"
+    )
+
     as_of = (
         _date_text(envelope.get("as_of"))
         or _date_text(_as_dict(_as_dict(envelope.get("market_raw")).get("historical_dataset")).get("as_of"))
@@ -349,8 +386,16 @@ def _build_probability_engine_run_input(
         {str(item.get("product_id") or ""): float(item.get("target_weight") or 0.0) for item in simulation_products}
     )
     if not target_weights:
+        equal_weight = 1.0 / float(len(simulation_products))
+        target_weights = {
+            str(item.get("product_id") or f"product_{index}"): equal_weight
+            for index, item in enumerate(simulation_products)
+            if _text(item.get("product_id")) is not None
+        }
+    if not target_weights:
         return None, {}
 
+    factor_mapping_products = _extract_probability_engine_factor_mapping_context(envelope)
     products: list[dict[str, Any]] = []
     current_positions: list[dict[str, Any]] = []
     jump_data = _as_dict(jump_state)
@@ -363,6 +408,11 @@ def _build_probability_engine_run_input(
         if product_id is None:
             continue
         series = [float(value) for value in list(item.get("return_series") or [])]
+        observation_dates = [
+            str(value).strip()
+            for value in list(item.get("observation_dates") or [])
+            if str(value).strip()
+        ]
         loss_mean, loss_std = _negative_loss_profile(series)
         variance = _series_variance(series)
         jump_profile = jump_profiles.get(product_id) or {
@@ -370,12 +420,42 @@ def _build_probability_engine_run_input(
             "loss_mean": -loss_mean,
             "loss_std": loss_std,
         }
-        mapping_confidence = "low"
+        mapping_payload = _as_dict(factor_mapping_products.get(product_id))
+        factor_betas_payload = _as_dict(
+            mapping_payload.get("factor_betas")
+            or item.get("factor_betas")
+            or {}
+        )
+        factor_betas = {
+            factor_name: float(factor_betas_payload.get(factor_name, 0.0))
+            for factor_name in factor_names
+        }
+        if not any(abs(value) > 0.0 for value in factor_betas.values()):
+            factor_betas = _asset_bucket_factor_betas(_text(item.get("asset_bucket")) or "", factor_names)
+        mapping_confidence = _first_text(
+            mapping_payload.get("mapping_confidence"),
+            item.get("mapping_confidence"),
+        ) or "medium"
+        factor_mapping_source = _first_text(
+            mapping_payload.get("factor_mapping_source"),
+            item.get("factor_mapping_source"),
+        ) or "product_level_evidence"
+        factor_mapping_evidence = deepcopy(
+            list(mapping_payload.get("factor_mapping_evidence") or item.get("factor_mapping_evidence") or [])
+        )
+        if not factor_mapping_evidence:
+            factor_mapping_evidence = [
+                {
+                    "source": "product_level_evidence",
+                    "observed_points": int(item.get("observed_points") or len(series)),
+                    "sample_count": len(series),
+                }
+            ]
         products.append(
             {
                 "product_id": product_id,
                 "asset_bucket": _text(item.get("asset_bucket")) or "",
-                "factor_betas": _asset_bucket_factor_betas(_text(item.get("asset_bucket")) or "", factor_names),
+                "factor_betas": factor_betas,
                 "innovation_family": "student_t",
                 "tail_df": float(_as_dict(factor_dynamics).get("tail_df") or 7.0),
                 "volatility_process": "product_garch_11",
@@ -390,14 +470,12 @@ def _build_probability_engine_run_input(
                 "carry_profile": {"carry_drag": -0.00001},
                 "valuation_profile": {"valuation_drag": -0.000005},
                 "mapping_confidence": mapping_confidence,
-                "factor_mapping_source": "asset_bucket_proxy",
-                "factor_mapping_evidence": [
-                    {
-                        "source": "asset_bucket_proxy",
-                        "observed_points": int(item.get("observed_points") or len(series)),
-                    }
-                ],
+                "factor_mapping_source": factor_mapping_source,
+                "factor_mapping_evidence": factor_mapping_evidence,
                 "observed_series_ref": _text(item.get("source_ref")) or f"observed://product_simulation/{product_id}",
+                "observed_daily_returns": series,
+                "observed_return_series": series,
+                "observed_dates": observation_dates,
             }
         )
         weight = float(target_weights.get(product_id, 0.0))
@@ -473,6 +551,11 @@ def _build_probability_engine_run_input(
                 "recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1",
             }
         ],
+        "observed_regime_labels": observed_regime_labels,
+        "observed_current_regime": observed_current_regime,
+        "challenger_block_size": 2,
+        "challenger_path_count": 32,
+        "stress_path_count": 16,
         "evidence_bundle_ref": f"evidence://probability_engine/{run_id}",
         "random_seed": int(_as_dict(goal_input.get("solver_params")).get("seed") or 17),
     }
@@ -490,6 +573,74 @@ def _mapped_probability_result_category(value: Any) -> str | None:
     if normalized in {"formal_estimated_result", "degraded_formal_result"}:
         return normalized
     return None
+
+
+def _probability_truth_product_method(
+    *,
+    resolved_result_category: str | None,
+    probability_engine_result: Any,
+    evidence_bundle: dict[str, Any] | None = None,
+) -> str:
+    probability_payload = _as_dict(probability_engine_result)
+    internal_category = _text(probability_payload.get("resolved_result_category"))
+    if probability_payload:
+        if internal_category == "formal_strict_result":
+            return "product_independent_path"
+        if internal_category in {"formal_estimated_result", "degraded_formal_result"}:
+            return "product_estimated_path"
+        return ""
+    if internal_category:
+        if internal_category == "formal_strict_result":
+            return "product_independent_path"
+        if internal_category in {"formal_estimated_result", "degraded_formal_result"}:
+            return "product_estimated_path"
+        return ""
+    coverage_summary = _as_dict(_as_dict(evidence_bundle).get("coverage_summary"))
+    if (
+        not _bool(_as_dict(evidence_bundle).get("monthly_fallback_used"))
+        and not _bool(_as_dict(evidence_bundle).get("bucket_fallback_used"))
+        and float(coverage_summary.get("independent_weight_adjusted_coverage") or 0.0) >= 0.999
+        and float(coverage_summary.get("independent_horizon_complete_coverage") or 0.0) >= 0.999
+        and float(coverage_summary.get("distribution_ready_coverage") or 0.0) >= 0.999
+        and int(coverage_summary.get("selected_product_count") or 0) > 0
+    ):
+        return "product_independent_path"
+    mapped_category = _text(resolved_result_category)
+    if mapped_category == "formal_independent_result":
+        return "product_independent_path"
+    if mapped_category in {"formal_estimated_result", "degraded_formal_result"}:
+        return "product_estimated_path"
+    return ""
+
+
+def _probability_truth_view(
+    *,
+    probability_engine_result: Any,
+    run_outcome_status: str | None,
+    resolved_result_category: str | None,
+    disclosure_decision: dict[str, Any],
+    evidence_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    product_probability_method = _probability_truth_product_method(
+        resolved_result_category=resolved_result_category,
+        probability_engine_result=probability_engine_result,
+        evidence_bundle=evidence_bundle,
+    )
+    formal_path_visibility = {
+        "status": _text(run_outcome_status) or "",
+        "fallback_used": _bool(_as_dict(evidence_bundle).get("monthly_fallback_used"))
+        or _bool(_as_dict(evidence_bundle).get("bucket_fallback_used")),
+        "monthly_fallback_used": _bool(_as_dict(evidence_bundle).get("monthly_fallback_used")),
+        "bucket_fallback_used": _bool(_as_dict(evidence_bundle).get("bucket_fallback_used")),
+    }
+    return {
+        "run_outcome_status": _text(run_outcome_status) or "",
+        "resolved_result_category": _text(resolved_result_category),
+        "product_probability_method": product_probability_method,
+        "disclosure_decision": dict(disclosure_decision or {}),
+        "formal_path_visibility": formal_path_visibility,
+        "evidence_bundle": dict(evidence_bundle or {}),
+    }
 
 
 def _bridged_probability_surface(
@@ -529,12 +680,6 @@ def _bridged_probability_surface(
             "disclosure_decision": bridged_disclosure,
             "evidence_bundle": bridged_evidence,
         }
-    if str(run_outcome_status).strip().lower() in {
-        RunOutcomeStatus.BLOCKED.value,
-        RunOutcomeStatus.DEGRADED.value,
-        RunOutcomeStatus.UNAVAILABLE.value,
-    }:
-        return {}
     mapped_category = _mapped_probability_result_category(probability_payload.get("resolved_result_category"))
     if mapped_category is None or probability_status not in {"success", "degraded"}:
         return {}
@@ -556,6 +701,8 @@ def _bridged_probability_surface(
         bridged_disclosure["precision_cap"] = disclosure_payload.get("disclosure_level")
     if disclosure_payload.get("confidence_level") is not None:
         bridged_disclosure["confidence_level"] = disclosure_payload.get("confidence_level")
+    if mapped_category == "degraded_formal_result":
+        bridged_disclosure["confidence_level"] = "low"
 
     bridged_evidence["run_outcome_status"] = top_level_status
     bridged_evidence["resolved_result_category"] = mapped_category
@@ -1416,8 +1563,20 @@ def _gate1_simulation_mode_degradation_reasons(
     *,
     calibration_result: Any,
     execution_policy: ExecutionPolicy,
+    probability_engine_result: Any = None,
 ) -> list[str]:
     if execution_policy not in _FORMAL_EXECUTION_POLICIES:
+        return []
+    probability_payload = _as_dict(probability_engine_result)
+    probability_output = _as_dict(probability_payload.get("output"))
+    probability_primary = _as_dict(probability_output.get("primary_result"))
+    selected_mode = (
+        _text(probability_primary.get("recipe_name"))
+        or _text(probability_output.get("simulation_mode_used"))
+        or _text(probability_payload.get("simulation_mode"))
+        or ""
+    ).lower()
+    if selected_mode and selected_mode != "static_gaussian":
         return []
     calibration_data = _as_dict(calibration_result)
     distribution_state = _as_dict(calibration_data.get("distribution_model_state"))
@@ -1584,6 +1743,7 @@ def _build_card_input(
     audit_record: OrchestratorAuditRecord | None,
     run_outcome_status: str | None,
     resolved_result_category: str | None,
+    probability_truth_view: dict[str, Any] | None = None,
     disclosure_decision: dict[str, Any],
     evidence_bundle: dict[str, Any],
     input_provenance: Any,
@@ -1609,6 +1769,7 @@ def _build_card_input(
         audit_record=audit_record,
         run_outcome_status=run_outcome_status,
         resolved_result_category=resolved_result_category,
+        probability_truth_view=dict(probability_truth_view or {}),
         disclosure_decision=disclosure_decision,
         evidence_bundle=evidence_bundle,
         input_provenance=input_provenance,
@@ -1880,6 +2041,7 @@ def _gate1_evidence_bundle(
     degraded_notes: list[str],
     snapshot_bundle: Any,
     runtime_result: Any,
+    probability_engine_result: Any = None,
 ) -> EvidenceBundle:
     goal_input = _as_dict(goal_solver_input)
     snapshot_data = _as_dict(snapshot_bundle)
@@ -1945,7 +2107,14 @@ def _gate1_evidence_bundle(
         )
     calibration_payload = _as_dict(calibration_result)
     distribution_state = _as_dict(calibration_payload.get("distribution_model_state"))
+    probability_payload = _as_dict(probability_engine_result)
+    probability_output = _as_dict(probability_payload.get("output"))
+    probability_primary = _as_dict(probability_output.get("primary_result"))
     simulation_mode = (
+        _text(probability_primary.get("recipe_name"))
+        or _text(probability_output.get("simulation_mode_used"))
+        or _text(probability_payload.get("simulation_mode"))
+        or
         _text(distribution_state.get("selected_mode"))
         or _text(distribution_state.get("simulation_mode"))
         or _text(_as_dict(goal_solver_output).get("simulation_mode_used"))
@@ -2590,6 +2759,37 @@ def _extract_execution_plan_product_proxy_context(
         or {}
     )
     return proxy_result or None
+
+
+def _extract_probability_engine_factor_mapping_context(
+    envelope: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    market_raw = _as_dict(envelope.get("market_raw"))
+    probability_engine = _as_dict(market_raw.get("probability_engine"))
+    factor_mapping_payload = _as_dict(
+        probability_engine.get("factor_mapping")
+        or market_raw.get("factor_mapping_result")
+        or market_raw.get("probability_engine_factor_mapping")
+        or {}
+    )
+    products: dict[str, dict[str, Any]] = {}
+    raw_products = factor_mapping_payload.get("products")
+    if isinstance(raw_products, dict):
+        for product_id, raw_product in raw_products.items():
+            product_payload = _as_dict(raw_product)
+            if product_payload:
+                products[str(product_id)] = product_payload
+    elif isinstance(raw_products, list):
+        for raw_product in raw_products:
+            product_payload = _as_dict(raw_product)
+            product_id = _first_text(product_payload.get("product_id"))
+            if product_id:
+                products[product_id] = product_payload
+    for product_id, raw_product in _as_dict(factor_mapping_payload.get("products_by_id")).items():
+        product_payload = _as_dict(raw_product)
+        if product_payload:
+            products[str(product_id)] = product_payload
+    return products
 
 
 def _extract_market_historical_dataset(envelope: dict[str, Any], snapshot_bundle: Any | None) -> dict[str, Any] | None:
@@ -3238,6 +3438,7 @@ def run_orchestrator(
     gate1_simulation_mode_degradation_reasons = _gate1_simulation_mode_degradation_reasons(
         calibration_result=calibration_result,
         execution_policy=execution_policy,
+        probability_engine_result=probability_engine_result,
     )
     gate1_degraded_notes = _unique_items(degraded_notes + gate1_formal_evidence_degradation_reasons)
     gate1_degraded_notes = _unique_items(gate1_degraded_notes + gate1_simulation_mode_degradation_reasons)
@@ -3309,6 +3510,7 @@ def run_orchestrator(
         degraded_notes=gate1_degraded_notes,
         snapshot_bundle=snapshot_bundle,
         runtime_result=runtime_result,
+        probability_engine_result=probability_engine_result,
     )
     baseline_evidence_bundle = raw_inputs.get("evidence_invariance_baseline") or raw_inputs.get("baseline_evidence_bundle")
     evidence_invariance_report = (
@@ -3353,6 +3555,13 @@ def run_orchestrator(
         if "evidence_bundle" in bridged_probability_surface
         else gate1_evidence_bundle.to_dict()
     )
+    canonical_probability_truth_view = _probability_truth_view(
+        probability_engine_result=probability_engine_result,
+        run_outcome_status=canonical_run_outcome_status,
+        resolved_result_category=canonical_resolved_result_category,
+        disclosure_decision=canonical_disclosure_decision,
+        evidence_bundle=canonical_evidence_bundle,
+    )
     card_build_input = _build_card_input(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,
@@ -3369,6 +3578,7 @@ def run_orchestrator(
         audit_record=None,
         run_outcome_status=canonical_run_outcome_status,
         resolved_result_category=canonical_resolved_result_category,
+        probability_truth_view=canonical_probability_truth_view,
         disclosure_decision=canonical_disclosure_decision,
         evidence_bundle=canonical_evidence_bundle,
         input_provenance=gate1_input_provenance,
@@ -3450,6 +3660,7 @@ def run_orchestrator(
         status=status,
         run_outcome_status=canonical_run_outcome_status,
         resolved_result_category=canonical_resolved_result_category,
+        probability_truth_view=canonical_probability_truth_view,
         disclosure_decision=canonical_disclosure_decision,
         evidence_bundle=canonical_evidence_bundle,
         evidence_invariance_report=evidence_invariance_report,

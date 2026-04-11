@@ -27,7 +27,7 @@ def _observed_snapshot_source(tmp_path: Path):
         goal_horizon_months=36,
         risk_preference="中等",
         max_drawdown_tolerance=0.20,
-        current_holdings="cash",
+        current_holdings="现金 12000 黄金 6000",
         restrictions=[],
     )
     return _observed_external_snapshot_source(
@@ -78,6 +78,35 @@ def test_bridge_handles_status_query(tmp_path, monkeypatch):
     assert result['result']['user_state']['profile']['account_profile_id'] == 'status_user'
 
 
+def test_bridge_onboarding_accepts_provider_config_env(tmp_path, monkeypatch):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    fixture_path = REPO_ROOT / "tests" / "fixtures" / "provider_snapshot_local.json"
+    monkeypatch.delenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", raising=False)
+    monkeypatch.setenv(
+        "OPENCLAW_BRIDGE_EXTERNAL_DATA_CONFIG",
+        json.dumps(
+            {
+                "adapter": "local_json",
+                "snapshot_path": str(fixture_path),
+                "provider_name": "fixture_local_json",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    result = handle_task(
+        "please onboard user bridge_provider_user with current assets 18000, monthly 2500, goal 120000 in 36 months, risk moderate",
+        db_path=str(db),
+    )
+
+    assert result["intent"]["name"] == "onboarding"
+    assert result["result"]["status"] in {"completed", "degraded"}
+    assert result["result"]["refresh_summary"]["provider_name"] == "fixture_local_json"
+    assert result["result"]["external_snapshot_config"] is not None
+
+
 def test_bridge_preserves_formal_path_visibility(tmp_path, monkeypatch):
     from integration.openclaw.bridge import handle_task
 
@@ -98,7 +127,7 @@ def test_bridge_preserves_formal_path_visibility(tmp_path, monkeypatch):
     }
 
 
-def test_bridge_does_not_treat_static_gaussian_as_formal_truth(tmp_path, monkeypatch):
+def test_bridge_surfaces_completed_strict_formal_result_from_observed_snapshot(tmp_path, monkeypatch):
     from integration.openclaw.bridge import handle_task
 
     db = tmp_path / "frontdesk.sqlite"
@@ -108,11 +137,13 @@ def test_bridge_does_not_treat_static_gaussian_as_formal_truth(tmp_path, monkeyp
         db_path=str(db),
     )
 
-    assert result["result"]["run_outcome_status"] == "degraded"
-    assert result["result"]["resolved_result_category"] == "degraded_formal_result"
-    assert result["result"]["disclosure_decision"]["disclosure_level"] == "range_only"
-    assert result["result"]["disclosure_decision"]["confidence_level"] == "low"
-    assert "static_gaussian" in " ".join(result["result"]["evidence_bundle"]["degradation_reasons"])
+    assert result["result"]["run_outcome_status"] == "completed"
+    assert result["result"]["resolved_result_category"] == "formal_independent_result"
+    assert result["result"]["probability_truth_view"]["run_outcome_status"] == "completed"
+    assert result["result"]["probability_truth_view"]["resolved_result_category"] == "formal_independent_result"
+    assert result["result"]["probability_truth_view"]["product_probability_method"] == "product_independent_path"
+    assert result["result"]["probability_truth_view"]["formal_path_visibility"]["fallback_used"] is False
+    assert result["result"]["probability_engine_result"]["resolved_result_category"] == "formal_strict_result"
 
 
 def test_bridge_preserves_probability_explanation_payload(tmp_path, monkeypatch):
@@ -142,6 +173,92 @@ def test_bridge_preserves_probability_explanation_payload(tmp_path, monkeypatch)
     assert result["result"]["bucket_fallback_used"] is False
     probability_payload = result["result"]["probability_disclosure_payload"]
     assert probability_payload["gap_total"] is not None
+
+
+def test_bridge_surfaces_bounded_disagreement_for_helper_formal_snapshot(tmp_path, monkeypatch):
+    from integration.openclaw.bridge import handle_task
+    from shared.onboarding import UserOnboardingProfile
+    from tests.support.formal_snapshot_helpers import write_formal_snapshot_source
+
+    db = tmp_path / "frontdesk.sqlite"
+    profile = UserOnboardingProfile(
+        account_profile_id="bridge_helper_bounded_user",
+        display_name="Andy",
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
+        restrictions=[],
+    )
+    snapshot_source = write_formal_snapshot_source(tmp_path, profile)
+    monkeypatch.setenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", str(snapshot_source))
+
+    result = handle_task(
+        "please onboard user bridge_helper_bounded_user with current assets 18000, monthly 2500, goal 120000 in 36 months, risk moderate",
+        db_path=str(db),
+    )
+
+    probability_result = result["result"]["probability_engine_result"]
+    probability_output = probability_result["output"]
+    disagreement = probability_output["model_disagreement"]
+    disclosure_payload = result["result"]["probability_disclosure_payload"]
+
+    assert result["result"]["status"] in {"completed", "degraded"}
+    assert result["result"]["resolved_result_category"] in {
+        "formal_independent_result",
+        "formal_estimated_result",
+        "degraded_formal_result",
+    }
+    assert probability_result["run_outcome_status"] in {"success", "degraded"}
+    assert probability_result["resolved_result_category"] == "formal_strict_result"
+    assert probability_output["challenger_results"], "expected live challenger_results to be populated"
+    assert probability_output["stress_results"], "expected live stress_results to be populated"
+    assert disagreement["gap_total"] < 0.05
+    assert disclosure_payload["gap_total"] < 0.05
+    assert disclosure_payload["confidence_level"] in {"medium", "high"}
+
+
+def test_bridge_surfaces_live_probability_disclosure_gap_fields(tmp_path, monkeypatch):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    monkeypatch.setenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", str(_observed_snapshot_source(tmp_path)))
+    result = handle_task(
+        "please onboard user bridge_gap_user with current assets 18000, monthly 2500, goal 120000 in 36 months, risk moderate",
+        db_path=str(db),
+    )
+
+    probability_result = result["result"]["probability_engine_result"]
+    probability_output = probability_result["output"]
+    disclosure_payload = result["result"]["probability_disclosure_payload"]
+
+    assert probability_output["challenger_results"], "expected live challenger_results to be populated"
+    assert probability_output["stress_results"], "expected live stress_results to be populated"
+    assert probability_output["model_disagreement"]["gap_total"] is not None
+    assert probability_output["model_disagreement"]["gap_total"] == disclosure_payload["gap_total"]
+    assert disclosure_payload["challenger_gap"] is not None
+    assert disclosure_payload["stress_gap"] is not None
+    assert disclosure_payload["gap_total"] is not None
+
+
+def test_bridge_surfaces_runtime_telemetry_for_live_probability_paths(tmp_path, monkeypatch):
+    from integration.openclaw.bridge import handle_task
+
+    db = tmp_path / "frontdesk.sqlite"
+    monkeypatch.setenv("OPENCLAW_BRIDGE_EXTERNAL_SNAPSHOT_SOURCE", str(_observed_snapshot_source(tmp_path)))
+    result = handle_task(
+        "please onboard user bridge_runtime_gate_user with current assets 18000, monthly 2500, goal 120000 in 36 months, risk moderate",
+        db_path=str(db),
+    )
+
+    runtime_telemetry = result["result"]["runtime_telemetry"]
+    assert runtime_telemetry["path_horizon_days"] > 20
+    assert runtime_telemetry["path_count_primary"] > 0
+    assert runtime_telemetry["path_count_challenger"] > 0
+    assert runtime_telemetry["path_count_stress"] > 0
 
 
 def test_bridge_reuses_baseline_evidence_for_repeated_onboarding(tmp_path, monkeypatch):

@@ -82,6 +82,17 @@
         }
       ],
       "observed_series_ref": "fixture://v14/cn_equity_balanced_fund"
+      ,
+      "observed_daily_returns": [
+        0.01,
+        -0.004,
+        0.015,
+        0.006,
+        0.008,
+        -0.002,
+        0.012,
+        0.005
+      ]
     },
     {
       "product_id": "cn_bond_short_history",
@@ -134,6 +145,17 @@
         }
       ],
       "observed_series_ref": "fixture://v14/cn_bond_short_history"
+      ,
+      "observed_daily_returns": [
+        0.003,
+        0.001,
+        -0.002,
+        0.004,
+        0.002,
+        0.0,
+        0.003,
+        0.001
+      ]
     },
     {
       "product_id": "cn_equity_empty_holdings",
@@ -187,8 +209,33 @@
         }
       ],
       "observed_series_ref": "fixture://v14/cn_equity_empty_holdings"
+      ,
+      "observed_daily_returns": [
+        0.008,
+        -0.003,
+        0.01,
+        0.004,
+        0.006,
+        -0.005,
+        0.007,
+        0.003
+      ]
     }
   ],
+  "observed_regime_labels": [
+    "risk_off",
+    "risk_off",
+    "normal",
+    "normal",
+    "risk_off",
+    "risk_off",
+    "normal",
+    "normal"
+  ],
+  "observed_current_regime": "risk_off",
+  "challenger_block_size": 2,
+  "challenger_path_count": 32,
+  "stress_path_count": 16,
   "factor_dynamics": {
     "factor_names": [
       "CN_EQ_BROAD",
