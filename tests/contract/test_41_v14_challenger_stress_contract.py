@@ -13,6 +13,7 @@ import probability_engine.engine as probability_engine_engine
 from probability_engine.challengers import (
     STRESS_RECIPE_V14,
     ChallengerBootstrapDiagnostics,
+    _simulate_portfolio_path,
     build_stress_recipe_result,
     build_stress_recipe_result_from_runtime_input,
     run_challenger_bootstrap,
@@ -22,7 +23,7 @@ from probability_engine.disclosure_bridge import DisclosureEvidenceSpec, assembl
 from probability_engine.engine import _observed_weight_adjusted_coverage, run_probability_engine
 from probability_engine.jumps import JumpStateSpec
 from probability_engine.path_generator import DailyEngineRuntimeInput, ProductMarginalSpec, simulate_primary_paths
-from probability_engine.portfolio_policy import ContributionInstruction, CurrentPosition, RebalancingPolicySpec
+from probability_engine.portfolio_policy import ContributionInstruction, CurrentPosition, RebalancingPolicySpec, WithdrawalInstruction
 from probability_engine.recipes import PRIMARY_RECIPE_V14
 from probability_engine.regime import RegimeStateSpec
 from probability_engine.volatility import FactorDynamicsSpec
@@ -103,6 +104,116 @@ def _make_success_event_spec() -> SuccessEventSpec:
         fee_basis="net",
         success_logic="joint_target_and_drawdown",
     )
+
+
+@pytest.mark.contract
+def test_challenger_time_weighted_return_includes_rebalance_transaction_costs() -> None:
+    initial_positions = [
+        CurrentPosition(
+            product_id="product_a",
+            units=100.0,
+            market_value=100.0,
+            weight=0.5,
+            cost_basis=100.0,
+            tradable=True,
+        ),
+        CurrentPosition(
+            product_id="product_b",
+            units=0.0,
+            market_value=0.0,
+            weight=0.5,
+            cost_basis=0.0,
+            tradable=True,
+        ),
+    ]
+
+    terminal_value, cagr, max_drawdown, success = _simulate_portfolio_path(
+        [{"product_a": 0.0, "product_b": 0.0}],
+        initial_state=challengers_module.initialize_portfolio_state(initial_positions),
+        success_event_spec=SuccessEventSpec(
+            horizon_days=1,
+            horizon_months=1,
+            target_type="goal_amount",
+            target_value=0.0,
+            drawdown_constraint=None,
+            benchmark_ref=None,
+            contribution_policy="fixed",
+            withdrawal_policy="none",
+            rebalancing_policy_ref="threshold",
+            return_basis="nominal",
+            fee_basis="net",
+            success_logic="joint_target_and_drawdown",
+        ),
+        rebalancing_policy=RebalancingPolicySpec(
+            policy_type="threshold",
+            calendar_frequency=None,
+            threshold_band=0.0,
+            execution_timing="end_of_day_after_return",
+            transaction_cost_bps=100.0,
+            min_trade_amount=None,
+        ),
+        step_dates=["2026-04-10"],
+    )
+
+    assert terminal_value == pytest.approx(99.5)
+    assert cagr < 0.0
+    assert max_drawdown > 0.0
+    assert success is True
+
+
+@pytest.mark.contract
+def test_challenger_time_weighted_return_excludes_unexecuted_withdrawal_amount() -> None:
+    initial_positions = [
+        CurrentPosition(
+            product_id="product_a",
+            units=100.0,
+            market_value=100.0,
+            weight=1.0,
+            cost_basis=100.0,
+            tradable=True,
+        )
+    ]
+
+    terminal_value, cagr, max_drawdown, success = _simulate_portfolio_path(
+        [{"product_a": 0.0}],
+        initial_state=challengers_module.initialize_portfolio_state(initial_positions),
+        success_event_spec=SuccessEventSpec(
+            horizon_days=1,
+            horizon_months=1,
+            target_type="goal_amount",
+            target_value=0.0,
+            drawdown_constraint=None,
+            benchmark_ref=None,
+            contribution_policy="fixed",
+            withdrawal_policy="scheduled",
+            rebalancing_policy_ref="none",
+            return_basis="nominal",
+            fee_basis="net",
+            success_logic="joint_target_and_drawdown",
+        ),
+        rebalancing_policy=RebalancingPolicySpec(
+            policy_type="none",
+            calendar_frequency=None,
+            threshold_band=None,
+            execution_timing="end_of_day_after_return",
+            transaction_cost_bps=0.0,
+            min_trade_amount=None,
+        ),
+        withdrawal_schedule=[
+            WithdrawalInstruction(
+                date="2026-04-10",
+                amount=150.0,
+                execution_rule="cash_first",
+                target_products=None,
+            )
+        ],
+        step_dates=["2026-04-10"],
+    )
+
+    assert terminal_value == pytest.approx(0.0)
+    assert cagr == pytest.approx(0.0, abs=1e-12)
+    assert max_drawdown == pytest.approx(1.0)
+    assert success is True
 
 
 def _make_primary_result() -> RecipeSimulationResult:

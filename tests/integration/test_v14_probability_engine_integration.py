@@ -23,7 +23,10 @@ from probability_engine.portfolio_policy import (
     apply_daily_cashflows_and_rebalance,
 )
 from probability_engine.recipes import PRIMARY_RECIPE_V14
-from orchestrator.engine import _build_probability_engine_run_input
+from orchestrator.engine import (
+    _build_probability_engine_run_input,
+    _rescale_factor_runtime_state_from_selected_products,
+)
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "v14" / "formal_daily_engine_input.json"
@@ -185,6 +188,64 @@ def test_probability_engine_builder_residualizes_product_long_run_variance() -> 
     assert product["garch_params"]["long_run_variance"] < raw_variance
     assert product["garch_params"]["long_run_variance"] <= raw_variance * 0.05
     assert product["garch_params"]["omega"] < raw_variance * 0.03
+
+
+def test_selected_product_rescaling_preserves_positive_drift_baseline_for_negative_observed_history() -> None:
+    _, scaled_factor_dynamics, scaled_regime_state, _ = _rescale_factor_runtime_state_from_selected_products(
+        factor_dynamics={
+            "factor_names": ["CN_EQ_BROAD"],
+            "expected_return_by_factor": {"CN_EQ_BROAD": 0.10},
+            "garch_params_by_factor": {
+                "CN_EQ_BROAD": {
+                    "omega": 1e-6,
+                    "alpha": 0.07,
+                    "beta": 0.90,
+                    "nu": 7.0,
+                    "long_run_variance": 1e-4,
+                }
+            },
+            "long_run_covariance": {
+                "CN_EQ_BROAD": {"CN_EQ_BROAD": 1e-4},
+            },
+        },
+        regime_state={
+            "regime_names": ["normal", "risk_off", "stress"],
+            "current_regime": "risk_off",
+            "transition_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            "regime_mean_adjustments": {
+                "normal": {"mean_shift": 0.0},
+                "risk_off": {"mean_shift": -0.0005},
+                "stress": {"mean_shift": -0.0012},
+            },
+        },
+        jump_state={
+            "systemic_jump_probability_1d": 0.0005,
+            "systemic_jump_dispersion": 0.01,
+            "systemic_jump_impact_by_factor": {"CN_EQ_BROAD": -0.01},
+            "idio_jump_profile_by_product": {},
+        },
+        products=[
+            {
+                "product_id": "negative_product",
+                "observed_return_series": [-0.01] * 40,
+                "factor_betas": {"CN_EQ_BROAD": 1.0},
+                "garch_params": {
+                    "omega": 1e-6,
+                    "alpha": 0.07,
+                    "beta": 0.90,
+                    "nu": 7.0,
+                    "long_run_variance": 1e-4,
+                },
+            }
+        ],
+        target_weights={"negative_product": 1.0},
+        factor_names=["CN_EQ_BROAD"],
+    )
+
+    assert 0.0 < scaled_factor_dynamics["expected_return_by_factor"]["CN_EQ_BROAD"] < 0.10
+    assert scaled_regime_state["regime_mean_adjustments"]["risk_off"]["mean_shift"] < 0.0
+    assert abs(scaled_regime_state["regime_mean_adjustments"]["risk_off"]["mean_shift"]) < 0.0005
+    assert scaled_regime_state["regime_mean_adjustments"]["stress"]["mean_shift"] < scaled_regime_state["regime_mean_adjustments"]["risk_off"]["mean_shift"]
 
 
 def test_primary_recipe_populates_live_challenger_and_stress_gap_signals() -> None:

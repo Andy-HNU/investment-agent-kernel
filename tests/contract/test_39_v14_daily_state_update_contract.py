@@ -21,6 +21,7 @@ from probability_engine.jumps import (
 from probability_engine.recipes import SimulationRecipe
 from probability_engine.regime import load_regime_state_snapshot, sample_next_regime
 from probability_engine.volatility import FactorDynamicsSpec, update_garch_state
+from probability_engine.portfolio_policy import CurrentPosition, RebalancingPolicySpec, WithdrawalInstruction
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "v14"
@@ -62,6 +63,327 @@ def test_dcc_update_returns_next_correlation_only_for_next_step() -> None:
     assert next_state.q_matrix[1][1] == pytest.approx(expected_q_next[1][1])
     assert provider.current_correlation(next_state)[0][1] != pytest.approx(before_update[0][1])
     assert provider.current_correlation(state)[0][1] == pytest.approx(before_update[0][1])
+
+
+@pytest.mark.contract
+def test_primary_time_weighted_return_includes_rebalance_transaction_costs() -> None:
+    runtime_input = DailyEngineRuntimeInput.from_any(
+        {
+        "as_of": "2026-04-09",
+        "path_horizon_days": 1,
+        "trading_calendar": ["2026-04-10"],
+        "products": [
+                {
+                "product_id": "product_a",
+                "asset_bucket": "equity_cn",
+                "factor_betas": {"CN_EQ_BROAD": 0.0},
+                "innovation_family": "student_t",
+                "tail_df": 7.0,
+                "volatility_process": "product_garch_11",
+                "garch_params": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "nu": 7.0, "long_run_variance": 0.0},
+                "idiosyncratic_jump_profile": {"probability_1d": 0.0, "loss_mean": -0.01, "loss_std": 0.0},
+                "carry_profile": {"carry_drag": 0.0},
+                "valuation_profile": {"valuation_drag": 0.0},
+                "mapping_confidence": "high",
+                "factor_mapping_source": "observed",
+                "factor_mapping_evidence": [],
+                "observed_series_ref": "observed://product_a",
+                "observed_daily_returns": [0.0] * 40,
+                "observed_return_series": [0.0] * 40,
+                "observed_dates": [f"2026-03-{day:02d}" for day in range(1, 29)] + [f"2026-04-{day:02d}" for day in range(1, 13)],
+            },
+            {
+                "product_id": "product_b",
+                "asset_bucket": "bond_cn",
+                "factor_betas": {"CN_EQ_BROAD": 0.0},
+                "innovation_family": "student_t",
+                "tail_df": 7.0,
+                "volatility_process": "product_garch_11",
+                "garch_params": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "nu": 7.0, "long_run_variance": 0.0},
+                "idiosyncratic_jump_profile": {"probability_1d": 0.0, "loss_mean": -0.01, "loss_std": 0.0},
+                "carry_profile": {"carry_drag": 0.0},
+                "valuation_profile": {"valuation_drag": 0.0},
+                "mapping_confidence": "high",
+                "factor_mapping_source": "observed",
+                "factor_mapping_evidence": [],
+                "observed_series_ref": "observed://product_b",
+                "observed_daily_returns": [0.0] * 40,
+                "observed_return_series": [0.0] * 40,
+                "observed_dates": [f"2026-03-{day:02d}" for day in range(1, 29)] + [f"2026-04-{day:02d}" for day in range(1, 13)],
+                },
+            ],
+        "factor_dynamics": FactorDynamicsSpec(
+            factor_names=["CN_EQ_BROAD"],
+            factor_series_ref="observed://factor/cn_eq_broad",
+            innovation_family="student_t",
+            tail_df=7.0,
+            garch_params_by_factor={
+                "CN_EQ_BROAD": {
+                    "omega": 0.0,
+                    "alpha": 0.0,
+                    "beta": 0.0,
+                    "nu": 7.0,
+                    "long_run_variance": 0.0,
+                }
+            },
+            dcc_params={"alpha": 0.0, "beta": 0.0},
+            long_run_covariance={"CN_EQ_BROAD": {"CN_EQ_BROAD": 0.0}},
+            covariance_shrinkage=0.0,
+            calibration_window_days=252,
+            expected_return_by_factor={"CN_EQ_BROAD": 0.0},
+            expected_return_basis="market_anchor",
+        ),
+        "regime_state": {
+                "regime_names": ["normal", "risk_off", "stress"],
+                "current_regime": "normal",
+                "transition_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            "regime_mean_adjustments": {
+                "normal": {"mean_shift": 0.0},
+                "risk_off": {"mean_shift": 0.0},
+                "stress": {"mean_shift": 0.0},
+            },
+            "regime_vol_adjustments": {
+                "normal": {"volatility_multiplier": 1.0},
+                "risk_off": {"volatility_multiplier": 1.0},
+                "stress": {"volatility_multiplier": 1.0},
+            },
+            "regime_jump_adjustments": {
+                "normal": {"systemic_jump_probability_multiplier": 1.0, "idio_jump_probability_multiplier": 1.0, "systemic_jump_dispersion_multiplier": 1.0},
+                "risk_off": {"systemic_jump_probability_multiplier": 1.0, "idio_jump_probability_multiplier": 1.0, "systemic_jump_dispersion_multiplier": 1.0},
+                    "stress": {"systemic_jump_probability_multiplier": 1.0, "idio_jump_probability_multiplier": 1.0, "systemic_jump_dispersion_multiplier": 1.0},
+                },
+            },
+        "jump_state": {
+                "systemic_jump_probability_1d": 0.0,
+                "systemic_jump_dispersion": 1e-9,
+                "systemic_jump_impact_by_factor": {"CN_EQ_BROAD": 0.0},
+                "idio_jump_profile_by_product": {},
+            },
+        "current_positions": [
+                CurrentPosition(
+                    product_id="product_a",
+                    units=100.0,
+                market_value=100.0,
+                weight=0.5,
+                cost_basis=100.0,
+                tradable=True,
+            ),
+            CurrentPosition(
+                product_id="product_b",
+                units=0.0,
+                market_value=0.0,
+                weight=0.5,
+                cost_basis=0.0,
+                    tradable=True,
+                ),
+            ],
+        "contribution_schedule": [],
+        "withdrawal_schedule": [],
+        "rebalancing_policy": RebalancingPolicySpec(
+            policy_type="threshold",
+            calendar_frequency=None,
+            threshold_band=0.0,
+            execution_timing="end_of_day_after_return",
+            transaction_cost_bps=100.0,
+            min_trade_amount=None,
+        ),
+        "success_event_spec": {
+            "horizon_days": 1,
+            "horizon_months": 1,
+            "target_type": "goal_amount",
+            "target_value": 0.0,
+            "drawdown_constraint": None,
+            "benchmark_ref": None,
+            "contribution_policy": "fixed",
+            "withdrawal_policy": "none",
+            "rebalancing_policy_ref": "threshold",
+            "return_basis": "nominal",
+            "fee_basis": "net",
+            "success_logic": "joint_target_and_drawdown",
+        },
+        "recipes": [
+            SimulationRecipe(
+                recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+                role="primary",
+                innovation_layer="student_t",
+                volatility_layer="factor_and_product_garch",
+                dependency_layer="factor_level_dcc",
+                jump_layer="systemic_plus_idio",
+                regime_layer="markov_regime",
+                estimation_basis="daily_product_formal",
+                dependency_scope="factor",
+                path_count=1,
+            )
+        ],
+        "evidence_bundle_ref": "observed://primary_transaction_cost",
+        "random_seed": 7,
+        "challenger_regime_labels": ["normal"] * 40,
+    })
+
+    recipe = SimulationRecipe(
+        recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+        role="primary",
+        innovation_layer="student_t",
+        volatility_layer="factor_and_product_garch",
+        dependency_layer="factor_level_dcc",
+        jump_layer="systemic_plus_idio",
+        regime_layer="markov_regime",
+        estimation_basis="daily_product_formal",
+        dependency_scope="factor",
+        path_count=1,
+    )
+
+    result = simulate_primary_paths(runtime_input, recipe)
+
+    assert result.path_stats.terminal_value_mean == pytest.approx(99.5, abs=1e-3)
+    assert result.path_stats.cagr_p50 < 0.0
+
+
+@pytest.mark.contract
+def test_primary_time_weighted_return_excludes_unexecuted_withdrawal_amount() -> None:
+    runtime_input = DailyEngineRuntimeInput.from_any(
+        {
+            "as_of": "2026-04-09",
+            "path_horizon_days": 1,
+            "trading_calendar": ["2026-04-10"],
+            "products": [
+                {
+                    "product_id": "product_a",
+                    "asset_bucket": "equity_cn",
+                    "factor_betas": {"CN_EQ_BROAD": 0.0},
+                    "innovation_family": "student_t",
+                    "tail_df": 7.0,
+                    "volatility_process": "product_garch_11",
+                    "garch_params": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "nu": 7.0, "long_run_variance": 0.0},
+                    "idiosyncratic_jump_profile": {"probability_1d": 0.0, "loss_mean": -0.01, "loss_std": 0.0},
+                    "carry_profile": {"carry_drag": 0.0},
+                    "valuation_profile": {"valuation_drag": 0.0},
+                    "mapping_confidence": "high",
+                    "factor_mapping_source": "observed",
+                    "factor_mapping_evidence": [],
+                    "observed_series_ref": "observed://product_a",
+                    "observed_daily_returns": [0.0] * 40,
+                    "observed_return_series": [0.0] * 40,
+                    "observed_dates": [f"2026-03-{day:02d}" for day in range(1, 29)] + [f"2026-04-{day:02d}" for day in range(1, 13)],
+                }
+            ],
+            "factor_dynamics": FactorDynamicsSpec(
+                factor_names=["CN_EQ_BROAD"],
+                factor_series_ref="observed://factor/cn_eq_broad",
+                innovation_family="student_t",
+                tail_df=7.0,
+                garch_params_by_factor={"CN_EQ_BROAD": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "nu": 7.0, "long_run_variance": 0.0}},
+                dcc_params={"alpha": 0.0, "beta": 0.0},
+                long_run_covariance={"CN_EQ_BROAD": {"CN_EQ_BROAD": 0.0}},
+                covariance_shrinkage=0.0,
+                calibration_window_days=252,
+                expected_return_by_factor={"CN_EQ_BROAD": 0.0},
+                expected_return_basis="market_anchor",
+            ),
+            "regime_state": {
+                "regime_names": ["normal", "risk_off", "stress"],
+                "current_regime": "normal",
+                "transition_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                "regime_mean_adjustments": {
+                    "normal": {"mean_shift": 0.0},
+                    "risk_off": {"mean_shift": 0.0},
+                    "stress": {"mean_shift": 0.0},
+                },
+                "regime_vol_adjustments": {
+                    "normal": {"volatility_multiplier": 1.0},
+                    "risk_off": {"volatility_multiplier": 1.0},
+                    "stress": {"volatility_multiplier": 1.0},
+                },
+                "regime_jump_adjustments": {
+                    "normal": {"systemic_jump_probability_multiplier": 1.0, "idio_jump_probability_multiplier": 1.0, "systemic_jump_dispersion_multiplier": 1.0},
+                    "risk_off": {"systemic_jump_probability_multiplier": 1.0, "idio_jump_probability_multiplier": 1.0, "systemic_jump_dispersion_multiplier": 1.0},
+                    "stress": {"systemic_jump_probability_multiplier": 1.0, "idio_jump_probability_multiplier": 1.0, "systemic_jump_dispersion_multiplier": 1.0},
+                },
+            },
+            "jump_state": {
+                "systemic_jump_probability_1d": 0.0,
+                "systemic_jump_dispersion": 1e-9,
+                "systemic_jump_impact_by_factor": {"CN_EQ_BROAD": 0.0},
+                "idio_jump_profile_by_product": {},
+            },
+            "current_positions": [
+                CurrentPosition(
+                    product_id="product_a",
+                    units=100.0,
+                    market_value=100.0,
+                    weight=1.0,
+                    cost_basis=100.0,
+                    tradable=True,
+                ),
+            ],
+            "contribution_schedule": [],
+            "withdrawal_schedule": [
+                WithdrawalInstruction(
+                    date="2026-04-10",
+                    amount=150.0,
+                    execution_rule="cash_first",
+                    target_products=None,
+                )
+            ],
+            "rebalancing_policy": RebalancingPolicySpec(
+                policy_type="none",
+                calendar_frequency=None,
+                threshold_band=None,
+                execution_timing="end_of_day_after_return",
+                transaction_cost_bps=0.0,
+                min_trade_amount=None,
+            ),
+            "success_event_spec": {
+                "horizon_days": 1,
+                "horizon_months": 1,
+                "target_type": "goal_amount",
+                "target_value": 0.0,
+                "drawdown_constraint": None,
+                "benchmark_ref": None,
+                "contribution_policy": "fixed",
+                "withdrawal_policy": "scheduled",
+                "rebalancing_policy_ref": "none",
+                "return_basis": "nominal",
+                "fee_basis": "net",
+                "success_logic": "joint_target_and_drawdown",
+            },
+            "recipes": [
+                SimulationRecipe(
+                    recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+                    role="primary",
+                    innovation_layer="student_t",
+                    volatility_layer="factor_and_product_garch",
+                    dependency_layer="factor_level_dcc",
+                    jump_layer="systemic_plus_idio",
+                    regime_layer="markov_regime",
+                    estimation_basis="daily_product_formal",
+                    dependency_scope="factor",
+                    path_count=1,
+                )
+            ],
+            "evidence_bundle_ref": "observed://primary_withdrawal",
+            "random_seed": 7,
+            "challenger_regime_labels": ["normal"] * 40,
+        }
+    )
+
+    recipe = SimulationRecipe(
+        recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+        role="primary",
+        innovation_layer="student_t",
+        volatility_layer="factor_and_product_garch",
+        dependency_layer="factor_level_dcc",
+        jump_layer="systemic_plus_idio",
+        regime_layer="markov_regime",
+        estimation_basis="daily_product_formal",
+        dependency_scope="factor",
+        path_count=1,
+    )
+
+    result = simulate_primary_paths(runtime_input, recipe)
+
+    assert result.path_stats.terminal_value_mean == pytest.approx(0.0)
+    assert result.path_stats.cagr_p50 == pytest.approx(0.0, abs=1e-4)
 
 
 @pytest.mark.contract

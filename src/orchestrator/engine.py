@@ -298,20 +298,21 @@ def _residualized_product_variance(
 def _rescale_factor_runtime_state_from_selected_products(
     *,
     factor_dynamics: dict[str, Any],
+    regime_state: dict[str, Any],
     jump_state: dict[str, Any],
     products: list[dict[str, Any]],
     target_weights: dict[str, float],
     factor_names: list[str],
-) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any]]:
     if not products or not factor_names:
-        return products, factor_dynamics, jump_state
+        return products, factor_dynamics, regime_state, jump_state
 
     ordered_products = [product for product in products if list(product.get("observed_return_series") or [])]
     if not ordered_products:
-        return products, factor_dynamics, jump_state
+        return products, factor_dynamics, regime_state, jump_state
     series_lengths = {len(list(product.get("observed_return_series") or [])) for product in ordered_products}
     if len(series_lengths) != 1:
-        return products, factor_dynamics, jump_state
+        return products, factor_dynamics, regime_state, jump_state
 
     weights = np.asarray(
         [float(target_weights.get(str(product.get("product_id") or ""), 0.0)) for product in ordered_products],
@@ -361,7 +362,7 @@ def _rescale_factor_runtime_state_from_selected_products(
 
     mean_scale = 1.0
     if abs(factor_mean_daily) > 1e-9:
-        mean_scale = float(max(min(observed_mean / factor_mean_daily, 1.75), 0.60))
+        mean_scale = float(max(min(observed_mean / factor_mean_daily, 1.75), 0.10))
     vol_scale = 1.0
     if factor_portfolio_variance > 1e-10:
         vol_scale = float(max(min(observed_variance / factor_portfolio_variance, 1.50), 0.02))
@@ -381,6 +382,16 @@ def _rescale_factor_runtime_state_from_selected_products(
             scaled_garch_params_by_factor[factor_name] = garch_params
     scaled_factor_dynamics["expected_return_by_factor"] = scaled_expected_return_map
     scaled_factor_dynamics["garch_params_by_factor"] = scaled_garch_params_by_factor
+    scaled_regime_state = deepcopy(regime_state)
+    scaled_regime_adjustments = _as_dict(scaled_regime_state.get("regime_mean_adjustments"))
+    if scaled_regime_adjustments:
+        for regime_name, payload in list(scaled_regime_adjustments.items()):
+            existing_shift = float(_as_dict(payload).get("mean_shift", 0.0))
+            scaled_regime_adjustments[str(regime_name)] = {
+                **_as_dict(payload),
+                "mean_shift": float(max(min(existing_shift * mean_scale, 0.0020), -0.0020)),
+            }
+        scaled_regime_state["regime_mean_adjustments"] = scaled_regime_adjustments
 
     scaled_covariance = _as_dict(scaled_factor_dynamics.get("long_run_covariance"))
     for factor_name, row in list(scaled_covariance.items()):
@@ -419,7 +430,7 @@ def _rescale_factor_runtime_state_from_selected_products(
             garch_params["omega"] = residual_variance * 0.03
             scaled_product["garch_params"] = garch_params
         scaled_products.append(scaled_product)
-    return scaled_products, scaled_factor_dynamics, scaled_jump_state
+    return scaled_products, scaled_factor_dynamics, scaled_regime_state, scaled_jump_state
 
 
 def _negative_loss_profile(series: list[Any]) -> tuple[float, float]:
@@ -682,8 +693,9 @@ def _build_probability_engine_run_input(
     if not products or not current_positions:
         return None, {}
 
-    products, factor_dynamics, jump_state = _rescale_factor_runtime_state_from_selected_products(
+    products, factor_dynamics, regime_state, jump_state = _rescale_factor_runtime_state_from_selected_products(
         factor_dynamics=_as_dict(factor_dynamics),
+        regime_state=_as_dict(regime_state),
         jump_state=_as_dict(jump_state),
         products=products,
         target_weights=target_weights,

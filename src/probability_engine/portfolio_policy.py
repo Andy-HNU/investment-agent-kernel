@@ -179,12 +179,14 @@ class PortfolioState:
             product_values=updated,
             cash=self.cash + residual_cash,
             target_weights=dict(self.target_weights),
-            last_contribution=float(instruction.amount),
+            last_contribution=self.last_contribution + float(instruction.amount),
+            last_withdrawal=self.last_withdrawal,
         )
 
     def apply_withdrawal(self, instruction: WithdrawalInstruction | None) -> "PortfolioState":
         if instruction is None or instruction.amount <= 0.0:
             return self
+        starting_net_value = self.net_value
         remaining = float(instruction.amount)
         cash = self.cash
         updated = dict(self.product_values)
@@ -205,11 +207,14 @@ class PortfolioState:
         if remaining > 0.0:
             updated = {product_id: 0.0 for product_id in updated}
             cash = 0.0
+        ending_net_value = float(sum(updated.values()) + cash)
+        actual_withdrawal = max(0.0, starting_net_value - ending_net_value)
         return PortfolioState(
             product_values=updated,
             cash=cash,
             target_weights=dict(self.target_weights),
-            last_withdrawal=float(instruction.amount),
+            last_contribution=self.last_contribution,
+            last_withdrawal=self.last_withdrawal + actual_withdrawal,
         )
 
     def rebalance(
@@ -257,6 +262,8 @@ class PortfolioState:
             product_values=updated,
             cash=0.0,
             target_weights=dict(self.target_weights),
+            last_contribution=self.last_contribution,
+            last_withdrawal=self.last_withdrawal,
             last_turnover=turnover,
             last_transaction_cost=transaction_cost,
         )

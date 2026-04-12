@@ -853,13 +853,15 @@ def _apply_withdrawals_vectorized(
     withdrawals: list[WithdrawalInstruction],
     *,
     product_index_by_id: dict[str, int],
-) -> tuple[np.ndarray, float]:
+) -> tuple[np.ndarray, float, float]:
     updated = np.array(product_values, copy=True)
     updated_cash = float(cash)
+    actual_withdrawn = 0.0
     for withdrawal in withdrawals:
         amount = float(withdrawal.amount)
         if amount <= 0.0:
             continue
+        starting_total = float(np.sum(updated) + updated_cash)
         remaining = amount
         if withdrawal.execution_rule in {"cash_first", "custom", "pro_rata_sell"} and updated_cash > 0.0:
             cash_used = min(updated_cash, remaining)
@@ -880,7 +882,9 @@ def _apply_withdrawals_vectorized(
         if remaining > 0.0:
             updated = np.zeros_like(updated)
             updated_cash = 0.0
-    return updated, updated_cash
+        ending_total = float(np.sum(updated) + updated_cash)
+        actual_withdrawn += max(0.0, starting_total - ending_total)
+    return updated, updated_cash, actual_withdrawn
 
 
 def _rebalance_vectorized(
@@ -1016,13 +1020,15 @@ def _apply_withdrawals_vectorized_batch(
     withdrawals: list[WithdrawalInstruction],
     *,
     product_index_by_id: dict[str, int],
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     updated_values = np.array(product_values, copy=True)
     updated_cash = np.array(cash, copy=True)
+    actual_withdrawn = np.zeros(updated_cash.shape[0], dtype=float)
     for withdrawal in withdrawals:
         amount = float(withdrawal.amount)
         if amount <= 0.0:
             continue
+        starting_totals = np.sum(updated_values, axis=1) + updated_cash
         remaining = np.full(updated_cash.shape[0], amount, dtype=float)
         if withdrawal.execution_rule in {"cash_first", "custom", "pro_rata_sell"}:
             cash_used = np.minimum(updated_cash, remaining)
@@ -1053,7 +1059,9 @@ def _apply_withdrawals_vectorized_batch(
         if np.any(unresolved):
             updated_values[unresolved, :] = 0.0
             updated_cash[unresolved] = 0.0
-    return updated_values, updated_cash
+        ending_totals = np.sum(updated_values, axis=1) + updated_cash
+        actual_withdrawn += np.maximum(0.0, starting_totals - ending_totals)
+    return updated_values, updated_cash, actual_withdrawn
 
 
 def _rebalance_vectorized_batch(
@@ -1255,16 +1263,10 @@ def _simulate_paths_batch(
             product_returns_array,
             value_cap=value_cap,
         )
-        pre_flow_net_values = np.sum(path_product_values, axis=1) + cash
-        daily_growth = np.divide(
-            pre_flow_net_values,
-            opening_net_values,
-            out=np.ones_like(pre_flow_net_values),
-            where=opening_net_values > 0.0,
-        )
-        cumulative_growth = cumulative_growth * np.maximum(daily_growth, 0.0)
         contributions = compiled.contribution_schedule_by_date.get(step_date, [])
         withdrawals = compiled.withdrawal_schedule_by_date.get(step_date, [])
+        actual_contribution = float(sum(float(item.amount) for item in contributions))
+        actual_withdrawn = np.zeros(path_count, dtype=float)
         if contributions:
             path_product_values, cash = _apply_contributions_vectorized_batch(
                 path_product_values,
@@ -1274,7 +1276,7 @@ def _simulate_paths_batch(
                 target_weights=compiled.target_weights,
             )
         if withdrawals:
-            path_product_values, cash = _apply_withdrawals_vectorized_batch(
+            path_product_values, cash, actual_withdrawn = _apply_withdrawals_vectorized_batch(
                 path_product_values,
                 cash,
                 withdrawals,
@@ -1295,6 +1297,13 @@ def _simulate_paths_batch(
             daily_calendar_rebalance=compiled.daily_calendar_rebalance,
         )
         current_net_values = np.sum(path_product_values, axis=1) + cash
+        daily_growth = np.divide(
+            current_net_values - (actual_contribution - actual_withdrawn),
+            opening_net_values,
+            out=np.ones_like(current_net_values),
+            where=opening_net_values > 0.0,
+        )
+        cumulative_growth = cumulative_growth * np.maximum(daily_growth, 0.0)
         peak_values = np.maximum(peak_values, current_net_values)
         max_drawdowns = np.maximum(
             max_drawdowns,
@@ -1469,11 +1478,10 @@ def _simulate_single_path(
             product_returns_array,
             value_cap=value_cap,
         )
-        pre_flow_net_value = float(np.sum(product_values) + cash)
-        if opening_net_value > 0.0:
-            cumulative_growth *= max(pre_flow_net_value / opening_net_value, 0.0)
         contributions = compiled.contribution_schedule_by_date.get(step_date, [])
         withdrawals = compiled.withdrawal_schedule_by_date.get(step_date, [])
+        actual_contribution = float(sum(float(item.amount) for item in contributions))
+        actual_withdrawn = 0.0
         if contributions:
             product_values, cash = _apply_contributions_vectorized(
                 product_values,
@@ -1483,7 +1491,7 @@ def _simulate_single_path(
                 target_weights=compiled.target_weights,
             )
         if withdrawals:
-            product_values, cash = _apply_withdrawals_vectorized(
+            product_values, cash, actual_withdrawn = _apply_withdrawals_vectorized(
                 product_values,
                 cash,
                 withdrawals,
@@ -1504,6 +1512,8 @@ def _simulate_single_path(
             daily_calendar_rebalance=compiled.daily_calendar_rebalance,
         )
         current_net_value = float(np.sum(product_values) + cash)
+        if opening_net_value > 0.0:
+            cumulative_growth *= max((current_net_value - (actual_contribution - actual_withdrawn)) / opening_net_value, 0.0)
         peak_value = max(peak_value, current_net_value)
         if peak_value > 0.0:
             max_drawdown = max(max_drawdown, 1.0 - (current_net_value / peak_value))

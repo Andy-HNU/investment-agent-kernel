@@ -257,21 +257,22 @@ def _simulate_portfolio_path(
 
     for day_index, product_returns in enumerate(sampled_product_returns):
         opening_value = float(portfolio_state.net_value)
-        post_return_state = portfolio_state.after_returns(product_returns)
-        if opening_value > 0.0:
-            cumulative_growth *= max(float(post_return_state.net_value / opening_value), 0.0)
-
         current_date = step_dates[day_index] if step_dates is not None and day_index < len(step_dates) else None
+        day_contributions = instructions_for_date(contribution_schedule, current_date) if current_date else []
+        day_withdrawals = instructions_for_date(withdrawal_schedule, current_date) if current_date else []
         portfolio_state = apply_daily_cashflows_and_rebalance(
             portfolio_state,
             product_returns,
-            instructions_for_date(contribution_schedule, current_date) if current_date else [],
-            instructions_for_date(withdrawal_schedule, current_date) if current_date else [],
+            day_contributions,
+            day_withdrawals,
             policy,
             current_date=current_date,
             previous_date=previous_date,
         )
         current_value = float(portfolio_state.net_value)
+        net_external_flow = float(portfolio_state.last_contribution - portfolio_state.last_withdrawal)
+        if opening_value > 0.0:
+            cumulative_growth *= max((current_value - net_external_flow) / opening_value, 0.0)
         peak_value = max(peak_value, current_value)
         if peak_value > 0.0:
             max_drawdown = max(max_drawdown, 1.0 - (current_value / peak_value))
