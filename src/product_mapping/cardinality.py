@@ -156,12 +156,12 @@ def _auto_resolve_count(
             return 4
         return 2
     if bucket == "equity_cn":
+        if risk_preference == "aggressive" and effective_required_return_gap > 0.02:
+            return 1
         if effective_horizon_months < 18:
             return 1
         if effective_horizon_months < 24:
             return 2
-        if risk_preference == "aggressive" and effective_required_return_gap > 0.02:
-            return 1
         if pressure_score >= 25.0 or max_drawdown_tolerance <= 0.20 or risk_preference in {"moderate", "aggressive", "中等", "进取"}:
             return 2
         return 2

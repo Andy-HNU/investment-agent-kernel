@@ -96,6 +96,7 @@ def _diagnostic_codes(
             codes.append("estimated_only_member_required")
     if is_explicit_request and desired_count > 1 and float(bucket_weight) / max(desired_count, 1) < float(_MIN_MEMBER_WEIGHT_BY_BUCKET.get(bucket, 0.05) or 0.05):
         codes.append("minimum_weight_breach")
+        codes.append("count_preference_not_fully_satisfied")
     if _has_duplicate_exposure_too_high(selected_members):
         codes.append("duplicate_exposure_too_high")
     if actual_count > 1 and score_candidate_subset(bucket, selected_members) <= score_candidate_subset(bucket, selected_members[:1]) + 0.05:

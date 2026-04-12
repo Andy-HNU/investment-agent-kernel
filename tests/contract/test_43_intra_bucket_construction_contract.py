@@ -163,6 +163,22 @@ def test_resolve_bucket_count_matches_spec_auto_policy_rules(
     assert resolution.resolved_count == expected
 
 
+def test_equity_auto_policy_aggressive_high_gap_off_rule_wins_over_light_band() -> None:
+    resolution = resolve_bucket_count(
+        bucket="equity_cn",
+        bucket_weight=0.40,
+        goal_horizon_months=18,
+        horizon_months=18,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.18,
+        current_market_pressure_score=10.0,
+        required_return_gap=0.03,
+    )
+
+    assert resolution.source == "auto_policy"
+    assert resolution.resolved_count == 1
+
+
 def test_equity_bucket_can_return_two_products_when_requested() -> None:
     plan = build_execution_plan(
         source_run_id="test",
@@ -318,6 +334,7 @@ def test_explicit_satellite_request_is_not_collapsed_by_minimum_position_rules()
     assert explanation.count_satisfied is False
     assert explanation.unmet_reason is not None
     assert "minimum_weight_breach" in explanation.diagnostic_codes
+    assert "count_preference_not_fully_satisfied" in explanation.diagnostic_codes
     assert any("minimum_weight_breach" in reason for reason in explanation.why_split)
     assert plan.bucket_construction_suggestions["satellite"]["member_product_ids"]
 
@@ -347,4 +364,5 @@ def test_explicit_bond_request_is_not_collapsed_by_minimum_position_rules() -> N
     assert explanation.count_satisfied is False
     assert explanation.unmet_reason is not None
     assert "minimum_weight_breach" in explanation.diagnostic_codes
+    assert "count_preference_not_fully_satisfied" in explanation.diagnostic_codes
     assert plan.bucket_construction_suggestions["bond_cn"]["member_product_ids"]
