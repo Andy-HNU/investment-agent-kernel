@@ -98,6 +98,15 @@
     - 代码抽象设计、性能复杂度与测试回归方案
   - 当前作为 `v1.4` 的主规格文档
 
+- `handoff/CODEX_v1.4_market_pressure_and_model_convergence_patch_2026-04-12.md`
+  - `v1.4` 概率展示与三模型收敛补丁规格
+  - 覆盖：
+    - `历史回测 / 当前市场延续 / 市场劣化阶梯`
+    - `market_pressure_score`
+    - `stress` 三级情景
+    - challenger / primary / stress 的间距门、展示合同与回归门
+  - 当前作为 `v1.4` 展示层与收敛层的 active patch 规格
+
 - `handoff/CODEX_v1.2_three_layer_acceptance_summary_2026-04-06.md`
   - `v1.2` 三层总验收汇总
   - 汇总：
