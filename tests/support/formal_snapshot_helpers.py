@@ -271,12 +271,9 @@ def _build_probability_factor_mapping_payload(*, series_mode: str = "helper_patt
         if normalized_mode == "factor_history":
             helper_pattern = helper_series_templates.get(str(spec["product_id"]), factor_history_series[:8])
             helper_mean = _series_mean(helper_pattern)
-            helper_std = _series_std(helper_pattern, mean=helper_mean)
             raw_mean = _series_mean(factor_history_series)
-            raw_std = _series_std(factor_history_series, mean=raw_mean)
-            volatility_scale = helper_std / raw_std if raw_std > 0.0 else 1.0
             series = [
-                helper_mean + ((float(value) - raw_mean) * volatility_scale)
+                helper_mean + (float(value) - raw_mean)
                 for value in factor_history_series
             ]
         else:

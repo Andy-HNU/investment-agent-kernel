@@ -777,7 +777,7 @@ def _build_probability_engine_run_input(
         "observed_current_regime": observed_current_regime,
         "challenger_block_size": 2,
         "challenger_path_count": 32,
-        "stress_path_count": 16,
+        "stress_path_count": 64,
         "evidence_bundle_ref": (
             f"evidence://probability_engine/{run_id}/{selected_name}"
             if selected_name

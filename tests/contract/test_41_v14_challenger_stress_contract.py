@@ -6,12 +6,15 @@ from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import probability_engine.challengers as challengers_module
 from probability_engine.challengers import (
     STRESS_RECIPE_V14,
     ChallengerBootstrapDiagnostics,
+    _apply_observed_roughness_guard,
+    _max_drawdown_from_returns,
     _simulate_portfolio_path,
     build_stress_recipe_result,
     build_stress_recipe_result_from_runtime_input,
@@ -771,6 +774,37 @@ def test_probability_engine_stress_recipe_stays_finite_and_downside_bounded_on_l
     assert mild.success_probability >= moderate.success_probability >= severe.success_probability
     assert severe.path_stats.terminal_value_p95 <= primary.path_stats.terminal_value_p95 * 1.05
     assert severe.path_stats.cagr_p95 <= primary.path_stats.cagr_p95 + 0.10
+
+
+def test_observed_roughness_guard_increases_drawdown_for_overly_smooth_sample() -> None:
+    sampled_product_returns = [{"product_a": 0.0012, "product_b": 0.0010} for _ in range(20)]
+    observed_matrix = np.asarray(
+        [
+            [0.0030, -0.0090, 0.0040, -0.0100, 0.0035, -0.0085, 0.0025, -0.0075],
+            [0.0020, -0.0060, 0.0030, -0.0070, 0.0025, -0.0055, 0.0015, -0.0045],
+        ],
+        dtype=float,
+    )
+    guarded_returns = _apply_observed_roughness_guard(
+        sampled_product_returns,
+        observed_matrix=observed_matrix,
+        product_ids=["product_a", "product_b"],
+        portfolio_weights=[0.5, 0.5],
+        block_size=4,
+    )
+
+    original_portfolio_returns = np.asarray(
+        [0.5 * day["product_a"] + 0.5 * day["product_b"] for day in sampled_product_returns],
+        dtype=float,
+    )
+    guarded_portfolio_returns = np.asarray(
+        [0.5 * day["product_a"] + 0.5 * day["product_b"] for day in guarded_returns],
+        dtype=float,
+    )
+
+    assert len(guarded_returns) == len(sampled_product_returns)
+    assert np.std(guarded_portfolio_returns) >= np.std(original_portfolio_returns)
+    assert _max_drawdown_from_returns(guarded_portfolio_returns) > _max_drawdown_from_returns(original_portfolio_returns)
 
 
 def test_challenger_bootstrap_records_each_path_block_trace() -> None:

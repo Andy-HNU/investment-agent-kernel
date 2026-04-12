@@ -62,6 +62,122 @@ def _normalized_rows(history_matrix: list[list[float]]) -> np.ndarray:
     return matrix
 
 
+def _max_drawdown_from_returns(returns: np.ndarray) -> float:
+    net_value = 1.0
+    peak_value = 1.0
+    max_drawdown = 0.0
+    for daily_return in np.asarray(returns, dtype=float).tolist():
+        net_value *= max(0.0, 1.0 + float(daily_return))
+        peak_value = max(peak_value, net_value)
+        if peak_value > 0.0:
+            max_drawdown = max(max_drawdown, 1.0 - (net_value / peak_value))
+    return float(max_drawdown)
+
+
+def _product_return_matrix_from_path(
+    sampled_product_returns: list[dict[str, float]],
+    *,
+    product_ids: list[str],
+) -> np.ndarray:
+    return np.asarray(
+        [
+            [float(day.get(product_id, 0.0)) for day in sampled_product_returns]
+            for product_id in product_ids
+        ],
+        dtype=float,
+    )
+
+
+def _path_from_product_return_matrix(
+    product_return_matrix: np.ndarray,
+    *,
+    product_ids: list[str],
+) -> list[dict[str, float]]:
+    horizon_days = int(product_return_matrix.shape[1])
+    return [
+        {
+            product_id: float(product_return_matrix[row_index, day_index])
+            for row_index, product_id in enumerate(product_ids)
+        }
+        for day_index in range(horizon_days)
+    ]
+
+
+def _roughest_historical_window(
+    observed_matrix: np.ndarray,
+    *,
+    portfolio_weights: np.ndarray,
+    window_size: int,
+) -> np.ndarray:
+    window = max(1, int(window_size))
+    if observed_matrix.shape[1] <= window:
+        return np.asarray(observed_matrix[:, :window], dtype=float)
+    portfolio_returns = np.asarray(portfolio_weights @ observed_matrix, dtype=float)
+    best_start = 0
+    best_drawdown = -1.0
+    for start in range(0, observed_matrix.shape[1] - window + 1):
+        drawdown = _max_drawdown_from_returns(portfolio_returns[start : start + window])
+        if drawdown > best_drawdown:
+            best_drawdown = drawdown
+            best_start = start
+    return np.asarray(observed_matrix[:, best_start : best_start + window], dtype=float)
+
+
+def _apply_observed_roughness_guard(
+    sampled_product_returns: list[dict[str, float]],
+    *,
+    observed_matrix: np.ndarray,
+    product_ids: list[str],
+    portfolio_weights: list[float],
+    block_size: int,
+) -> list[dict[str, float]]:
+    sampled_matrix = _product_return_matrix_from_path(sampled_product_returns, product_ids=product_ids)
+    if sampled_matrix.size == 0:
+        return sampled_product_returns
+
+    weights = np.asarray(portfolio_weights, dtype=float)
+    if weights.size != sampled_matrix.shape[0]:
+        raise ValueError("portfolio_weights must align with product_ids")
+    weight_total = float(np.sum(np.maximum(weights, 0.0)))
+    if weight_total <= 0.0:
+        weights = np.full(sampled_matrix.shape[0], 1.0 / float(sampled_matrix.shape[0]), dtype=float)
+    else:
+        weights = np.maximum(weights, 0.0) / weight_total
+
+    observed_portfolio_returns = np.asarray(weights @ observed_matrix, dtype=float)
+    sampled_portfolio_returns = np.asarray(weights @ sampled_matrix, dtype=float)
+    target_portfolio_vol = max(float(np.std(observed_portfolio_returns)) * 0.90, 0.0025)
+    current_portfolio_vol = float(np.std(sampled_portfolio_returns))
+    if current_portfolio_vol < target_portfolio_vol:
+        scale = min(1.75, target_portfolio_vol / max(current_portfolio_vol, 1e-9))
+        row_means = np.mean(sampled_matrix, axis=1, keepdims=True)
+        sampled_matrix = row_means + (sampled_matrix - row_means) * scale
+        sampled_portfolio_returns = np.asarray(weights @ sampled_matrix, dtype=float)
+
+    target_portfolio_drawdown = max(_max_drawdown_from_returns(observed_portfolio_returns) * 0.90, 0.01)
+    current_portfolio_drawdown = _max_drawdown_from_returns(sampled_portfolio_returns)
+    if current_portfolio_drawdown < target_portfolio_drawdown:
+        window_size = min(max(2, int(block_size)), observed_matrix.shape[1], sampled_matrix.shape[1])
+        rough_window = _roughest_historical_window(
+            observed_matrix,
+            portfolio_weights=weights,
+            window_size=window_size,
+        )
+        insert_start = max(0, (sampled_matrix.shape[1] - window_size) // 2)
+        blended_matrix = np.array(sampled_matrix, copy=True)
+        blended_matrix[:, insert_start : insert_start + window_size] = (
+            0.5 * blended_matrix[:, insert_start : insert_start + window_size]
+            + 0.5 * rough_window
+        )
+        blended_portfolio_returns = np.asarray(weights @ blended_matrix, dtype=float)
+        if _max_drawdown_from_returns(blended_portfolio_returns) < target_portfolio_drawdown:
+            sampled_matrix[:, insert_start : insert_start + window_size] = rough_window
+        else:
+            sampled_matrix = blended_matrix
+
+    return _path_from_product_return_matrix(sampled_matrix, product_ids=product_ids)
+
+
 def _eligible_block_starts(regime_labels: list[str], current_regime: str, block_size: int) -> list[int]:
     labels = [str(label).strip() for label in list(regime_labels)]
     if block_size <= 0:
@@ -571,6 +687,13 @@ def run_challenger_bootstrap(
             horizon_days=int(horizon_days),
             rng=rng,
             product_ids=product_ids,
+        )
+        path_product_returns = _apply_observed_roughness_guard(
+            path_product_returns,
+            observed_matrix=matrix,
+            product_ids=product_ids,
+            portfolio_weights=normalized_weights,
+            block_size=int(block_size),
         )
         selected_block_starts_by_path.append(selected_block_starts)
         selected_block_regimes_by_path.append(selected_block_regimes)

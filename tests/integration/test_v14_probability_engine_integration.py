@@ -346,6 +346,104 @@ def test_observed_delivery_path_primary_success_stays_above_sixty_percent(tmp_pa
     assert primary.get("success_probability", 0.0) >= 0.60
 
 
+def test_observed_delivery_gap_between_historical_and_current_is_bounded(tmp_path: Path) -> None:
+    profile = UserOnboardingProfile(
+        account_profile_id="observed_gap_bounded_regression",
+        display_name="Andy",
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
+        restrictions=[],
+    )
+    original_recipe = PRIMARY_RECIPE_V14
+    override = replace(PRIMARY_RECIPE_V14, path_count=128)
+    import probability_engine.recipes as recipe_module
+
+    recipe_module.PRIMARY_RECIPE_V14 = override
+    recipe_module.RECIPE_REGISTRY[override.recipe_name] = override
+    try:
+        result = run_frontdesk_onboarding(
+            profile,
+            db_path=tmp_path / "observed_gap_bounded.sqlite",
+            external_snapshot_source=_observed_external_snapshot_source(tmp_path, profile),
+        )
+    finally:
+        recipe_module.PRIMARY_RECIPE_V14 = original_recipe
+        recipe_module.RECIPE_REGISTRY[original_recipe.recipe_name] = original_recipe
+
+    scenario_comparison = list(result["probability_engine_result"]["output"]["scenario_comparison"])
+    by_kind = {item["scenario_kind"]: float(item["recipe_result"]["success_probability"]) for item in scenario_comparison}
+
+    assert by_kind["historical_replay"] - by_kind["current_market"] <= 0.15
+
+
+def test_observed_delivery_path_scenario_ladder_meets_convergence_thresholds(tmp_path: Path) -> None:
+    profile = UserOnboardingProfile(
+        account_profile_id="observed_pressure_convergence_regression",
+        display_name="Andy",
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
+        restrictions=[],
+    )
+    original_recipe = PRIMARY_RECIPE_V14
+    override = replace(PRIMARY_RECIPE_V14, path_count=128)
+    import probability_engine.recipes as recipe_module
+
+    recipe_module.PRIMARY_RECIPE_V14 = override
+    recipe_module.RECIPE_REGISTRY[override.recipe_name] = override
+    try:
+        result = run_frontdesk_onboarding(
+            profile,
+            db_path=tmp_path / "observed_pressure_convergence.sqlite",
+            external_snapshot_source=_observed_external_snapshot_source(tmp_path, profile),
+        )
+    finally:
+        recipe_module.PRIMARY_RECIPE_V14 = original_recipe
+        recipe_module.RECIPE_REGISTRY[original_recipe.recipe_name] = original_recipe
+
+    probability_result = dict(result.get("probability_engine_result") or {})
+    output = dict(probability_result.get("output") or {})
+    scenario_comparison = list(output.get("scenario_comparison") or [])
+
+    assert [item.get("scenario_kind") for item in scenario_comparison] == [
+        "historical_replay",
+        "current_market",
+        "deteriorated_mild",
+        "deteriorated_moderate",
+        "deteriorated_severe",
+    ]
+
+    success_by_kind = {
+        str(item["scenario_kind"]): float(dict(item.get("recipe_result") or {}).get("success_probability", 0.0))
+        for item in scenario_comparison
+    }
+    pressure_by_kind = {
+        str(item["scenario_kind"]): float(dict(item.get("pressure") or {}).get("market_pressure_score", 0.0))
+        for item in scenario_comparison
+        if item.get("pressure") is not None
+    }
+
+    assert success_by_kind["historical_replay"] - success_by_kind["current_market"] <= 0.15
+    assert success_by_kind["current_market"] - success_by_kind["deteriorated_mild"] <= 0.20
+    assert success_by_kind["deteriorated_mild"] - success_by_kind["deteriorated_moderate"] <= 0.20
+    assert success_by_kind["deteriorated_moderate"] - success_by_kind["deteriorated_severe"] <= 0.25
+    assert (
+        pressure_by_kind["current_market"]
+        < pressure_by_kind["deteriorated_mild"]
+        < pressure_by_kind["deteriorated_moderate"]
+        < pressure_by_kind["deteriorated_severe"]
+    )
+
+
 def test_same_month_twenty_trading_day_path_accepts_horizon_months_one() -> None:
     sim_input = deepcopy(_load_v14_formal_daily_input())
     sim_input["as_of"] = "2026-04-01"
