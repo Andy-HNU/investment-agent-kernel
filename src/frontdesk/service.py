@@ -1701,6 +1701,11 @@ def _frontdesk_summary(
     scenario_comparison = list(probability_output.get("scenario_comparison") or [])
     scenario_ladder = _probability_engine_scenario_ladder(probability_output)
     goal_solver_output = _as_dict(result_payload.get("goal_solver_output"))
+    resolved_result_category = (
+        probability_truth_view.get("resolved_result_category")
+        or result_payload.get("resolved_result_category")
+        or probability_engine_result_payload.get("resolved_result_category")
+    )
     if probability_engine_result_payload:
         product_probability_method = (
             probability_truth_view.get("product_probability_method")
@@ -1731,11 +1736,6 @@ def _frontdesk_summary(
         probability_truth_view.get("run_outcome_status")
         or result_payload.get("run_outcome_status")
         or probability_engine_result_payload.get("run_outcome_status")
-    )
-    resolved_result_category = (
-        probability_truth_view.get("resolved_result_category")
-        or result_payload.get("resolved_result_category")
-        or probability_engine_result_payload.get("resolved_result_category")
     )
     disclosure_decision = dict(
         probability_truth_view.get("disclosure_decision")

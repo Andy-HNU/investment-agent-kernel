@@ -455,6 +455,7 @@ def _run_counterfactual_probability_result(
     *,
     probability_engine_input: Any | None,
     removed_product_ids: set[str],
+    probability_engine_runner: Any | None = None,
 ) -> dict[str, Any] | None:
     counterfactual_input = _counterfactual_probability_input(
         probability_engine_input=probability_engine_input,
@@ -462,8 +463,9 @@ def _run_counterfactual_probability_result(
     )
     if counterfactual_input is None:
         return None
+    runner = probability_engine_runner or run_probability_engine
     try:
-        return _obj(run_probability_engine(counterfactual_input))
+        return _obj(runner(counterfactual_input))
     except Exception:
         return None
 
@@ -541,7 +543,9 @@ def build_portfolio_explanation_surfaces(
     execution_plan: Any,
     probability_engine_result: Any | None = None,
     probability_engine_input: Any | None = None,
+    probability_engine_runner: Any | None = None,
 ) -> dict[str, Any]:
+    runner = probability_engine_runner or run_probability_engine
     items = [_obj(item) for item in _execution_plan_items(execution_plan)]
     probability_payload = _obj(probability_engine_result) or {}
     probability_output = _obj(probability_payload.get("output")) or {}
@@ -559,6 +563,7 @@ def build_portfolio_explanation_surfaces(
         counterfactual_result = _run_counterfactual_probability_result(
             probability_engine_input=probability_engine_input,
             removed_product_ids={product_id},
+            probability_engine_runner=runner,
         )
         counterfactual_summaries = _scenario_summaries_from_probability_output(
             _obj(counterfactual_result.get("output")) if counterfactual_result else None
@@ -650,6 +655,7 @@ def build_portfolio_explanation_surfaces(
         counterfactual_result = _run_counterfactual_probability_result(
             probability_engine_input=probability_engine_input,
             removed_product_ids=group_ids,
+            probability_engine_runner=runner,
         )
         counterfactual_summaries = _scenario_summaries_from_probability_output(
             _obj(counterfactual_result.get("output")) if counterfactual_result else None
@@ -678,6 +684,7 @@ def build_portfolio_explanation_surfaces(
         counterfactual_result = _run_counterfactual_probability_result(
             probability_engine_input=probability_engine_input,
             removed_product_ids=group_ids,
+            probability_engine_runner=runner,
         )
         counterfactual_summaries = _scenario_summaries_from_probability_output(
             _obj(counterfactual_result.get("output")) if counterfactual_result else None

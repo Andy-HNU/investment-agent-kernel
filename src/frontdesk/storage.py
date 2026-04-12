@@ -489,6 +489,7 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
                 "current_weight": item.get("current_weight"),
                 "current_amount": item.get("current_amount"),
                 "primary_product_id": item.get("primary_product_id"),
+                "primary_product": primary_product,
                 "primary_product_name": primary_product.get("name"),
                 "alternate_product_ids": list(item.get("alternate_product_ids") or []),
                 "trade_direction": item.get("trade_direction"),

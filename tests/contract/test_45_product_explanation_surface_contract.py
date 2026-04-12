@@ -590,6 +590,35 @@ def test_portfolio_explanation_surfaces_recompute_leave_out_from_redistributed_w
     assert surfaces["product_group_explanations"]["duplicate_exposure_group"].success_delta_if_removed is not None
 
 
+def test_portfolio_explanation_surfaces_use_supplied_probability_runner_for_group_counterfactuals() -> None:
+    plan = _execution_plan_for_three_products()
+    probability_input = _probability_input_for_three_products()
+    baseline = _fake_probability_result({"equity_a": 0.50, "equity_b": 0.30, "gold_c": 0.20})
+    observed_weight_sets: list[tuple[tuple[str, float], ...]] = []
+
+    def _runner(sim_input: dict[str, object]) -> ProbabilityEngineRunResult:
+        weight_map = {
+            str(position["product_id"]): float(position["weight"])
+            for position in list(sim_input["current_positions"])
+        }
+        observed_weight_sets.append(tuple(sorted(weight_map.items())))
+        return _fake_probability_result(weight_map)
+
+    surfaces = build_portfolio_explanation_surfaces(
+        execution_plan=plan,
+        probability_engine_result=baseline,
+        probability_engine_input=probability_input,
+        probability_engine_runner=_runner,
+    )
+
+    assert len(observed_weight_sets) == 4
+    assert tuple(sorted((("equity_b", 0.6), ("gold_c", 0.4)))) in observed_weight_sets
+    assert tuple(sorted((("equity_a", 0.625), ("equity_b", 0.37499999999999994)))) in observed_weight_sets
+    assert tuple(sorted((("equity_a", 0.7142857142857143), ("gold_c", 0.28571428571428575)))) in observed_weight_sets
+    assert tuple(sorted((("gold_c", 1.0),))) in observed_weight_sets
+    assert surfaces["product_group_explanations"]["duplicate_exposure_group"].success_delta_if_removed is not None
+
+
 def test_portfolio_explanation_surfaces_include_top_level_sets(monkeypatch) -> None:
     catalog = load_builtin_catalog()
     equity = next(item for item in catalog if item.product_id == "cn_equity_dividend_etf")

@@ -132,6 +132,13 @@ _HIGH_RISK_ACTION_TYPES = {
     "add_cash_sat",
     "reduce_defense",
 }
+_USER_PORTFOLIO_SCENARIO_LADDER = (
+    "historical_replay",
+    "current_market",
+    "deteriorated_mild",
+    "deteriorated_moderate",
+    "deteriorated_severe",
+)
 
 
 def _obj(value: Any) -> Any:
@@ -3600,7 +3607,240 @@ def _build_user_portfolio_probability_engine_evaluation(
     execution_plan: ExecutionPlan,
     formal_path_required: bool,
     execution_policy: ExecutionPolicy,
+    strict_formal_blocked: bool = False,
 ) -> tuple[dict[str, Any] | None, Any | None]:
+    def _estimated_probability_engine_result(*, reason: str) -> dict[str, Any]:
+        account_total_value, _, _, _, _ = _extract_execution_plan_account_context(envelope)
+        if account_total_value is None or account_total_value <= 0.0:
+            account_total_value = 100_000.0
+        weight_map = {
+            str(item.primary_product_id): max(float(item.target_weight or 0.0), 0.0)
+            for item in execution_plan.items
+            if str(item.primary_product_id).strip()
+        }
+        total_weight = sum(weight_map.values()) or 1.0
+        normalized_weights = {product_id: weight / total_weight for product_id, weight in weight_map.items()}
+        bucket_weights: dict[str, float] = {}
+        for item in execution_plan.items:
+            bucket = str(item.asset_bucket or "").strip() or "unknown"
+            bucket_weights[bucket] = bucket_weights.get(bucket, 0.0) + max(float(item.target_weight or 0.0), 0.0)
+        equity_weight = bucket_weights.get("equity_cn", 0.0)
+        satellite_weight = bucket_weights.get("satellite", 0.0)
+        bond_weight = bucket_weights.get("bond_cn", 0.0)
+        gold_weight = bucket_weights.get("gold", 0.0)
+        cash_weight = bucket_weights.get("cash_liquidity", 0.0)
+        defensive_weight = bond_weight + gold_weight + cash_weight
+        growth_weight = equity_weight + satellite_weight
+        success_probability = max(0.05, min(0.95, 0.24 + 0.56 * defensive_weight - 0.12 * growth_weight))
+        terminal_value_mean = round(float(account_total_value) * (1.01 + 0.08 * defensive_weight - 0.02 * growth_weight), 2)
+        terminal_value_p50 = round(terminal_value_mean * 0.99, 2)
+        terminal_value_p05 = round(terminal_value_mean * 0.92, 2)
+        terminal_value_p95 = round(terminal_value_mean * 1.06, 2)
+        cagr_p50 = round(0.02 + 0.05 * defensive_weight - 0.01 * growth_weight, 4)
+        cagr_p05 = round(cagr_p50 - 0.018, 4)
+        cagr_p95 = round(cagr_p50 + 0.018, 4)
+        max_drawdown_p50 = round(min(0.30, 0.10 + 0.12 * growth_weight), 4)
+        max_drawdown_p95 = round(min(0.45, max_drawdown_p50 + 0.08), 4)
+        primary_result = {
+            "recipe_name": "user_portfolio_estimated_proxy_v1",
+            "role": "primary",
+            "success_probability": round(success_probability, 4),
+            "success_probability_range": (round(max(0.0, success_probability - 0.06), 4), round(min(1.0, success_probability + 0.06), 4)),
+            "cagr_range": (cagr_p05, cagr_p95),
+            "drawdown_range": (round(max(0.0, max_drawdown_p50 - 0.05), 4), max_drawdown_p95),
+            "sample_count": 0,
+            "path_stats": {
+                "terminal_value_mean": terminal_value_mean,
+                "terminal_value_p05": terminal_value_p05,
+                "terminal_value_p50": terminal_value_p50,
+                "terminal_value_p95": terminal_value_p95,
+                "cagr_p05": cagr_p05,
+                "cagr_p50": cagr_p50,
+                "cagr_p95": cagr_p95,
+                "max_drawdown_p05": round(max(0.0, max_drawdown_p50 - 0.08), 4),
+                "max_drawdown_p50": max_drawdown_p50,
+                "max_drawdown_p95": max_drawdown_p95,
+                "success_count": 0,
+                "path_count": 0,
+            },
+            "calibration_link_ref": f"user_portfolio_estimated://{reason}",
+        }
+        if strict_formal_blocked:
+            return {
+                "run_outcome_status": "blocked",
+                "resolved_result_category": None,
+                "output": {
+                    "primary_result": {
+                        "recipe_name": primary_result["recipe_name"],
+                        "role": primary_result["role"],
+                        "success_probability": None,
+                        "success_probability_range": None,
+                        "cagr_range": None,
+                        "drawdown_range": None,
+                        "sample_count": 0,
+                        "path_stats": {},
+                        "calibration_link_ref": primary_result["calibration_link_ref"],
+                    },
+                    "challenger_results": [],
+                    "stress_results": [],
+                    "model_disagreement": {
+                        "gap_total": None,
+                        "challenger_gap": None,
+                        "stress_gap": None,
+                    },
+                    "probability_disclosure_payload": {
+                        "published_point": None,
+                        "published_range": None,
+                        "disclosure_level": "unavailable",
+                        "confidence_level": "low",
+                        "challenger_gap": None,
+                        "stress_gap": None,
+                        "gap_total": None,
+                        "widening_method": "user_portfolio_estimated_proxy",
+                    },
+                    "evidence_refs": [f"user_portfolio_estimated://{reason}"],
+                    "current_market_pressure": None,
+                    "scenario_comparison": [],
+                },
+                "failure_artifact": {
+                    "failure_stage": "user_portfolio_resolution",
+                    "failure_code": "strict_formal_blocked",
+                    "message": "user portfolio requires resolution before formal evaluation",
+                    "diagnostic_refs": [f"user_portfolio_estimated://{reason}"],
+                    "trustworthy_partial_diagnostics": False,
+                },
+            }
+        scenario_summaries = {
+            "historical_replay": {
+                "success_probability": primary_result["success_probability"],
+                "terminal_value_mean": terminal_value_mean,
+                "terminal_value_range": (terminal_value_p05, terminal_value_p95),
+                "cagr_range": (cagr_p05, cagr_p95),
+                "cagr_p50": cagr_p50,
+                "max_drawdown_p95": max_drawdown_p95,
+                "pressure_score": None,
+                "pressure_level": None,
+            },
+            "current_market": {
+                "success_probability": primary_result["success_probability"],
+                "terminal_value_mean": terminal_value_mean,
+                "terminal_value_range": (terminal_value_p05, terminal_value_p95),
+                "cagr_range": (cagr_p05, cagr_p95),
+                "cagr_p50": cagr_p50,
+                "max_drawdown_p95": max_drawdown_p95,
+                "pressure_score": 25.0,
+                "pressure_level": "L1_中性偏紧",
+            },
+            "deteriorated_mild": {
+                "success_probability": round(max(0.0, primary_result["success_probability"] - 0.08), 4),
+                "terminal_value_mean": round(terminal_value_mean * 0.97, 2),
+                "terminal_value_range": (round(terminal_value_p05 * 0.97, 2), round(terminal_value_p95 * 0.97, 2)),
+                "cagr_range": (round(cagr_p05 - 0.01, 4), round(cagr_p95 - 0.01, 4)),
+                "cagr_p50": round(cagr_p50 - 0.01, 4),
+                "max_drawdown_p95": round(min(0.5, max_drawdown_p95 + 0.05), 4),
+                "pressure_score": 40.0,
+                "pressure_level": "L1_中性偏紧",
+            },
+            "deteriorated_moderate": {
+                "success_probability": round(max(0.0, primary_result["success_probability"] - 0.16), 4),
+                "terminal_value_mean": round(terminal_value_mean * 0.93, 2),
+                "terminal_value_range": (round(terminal_value_p05 * 0.93, 2), round(terminal_value_p95 * 0.93, 2)),
+                "cagr_range": (round(cagr_p05 - 0.02, 4), round(cagr_p95 - 0.02, 4)),
+                "cagr_p50": round(cagr_p50 - 0.02, 4),
+                "max_drawdown_p95": round(min(0.55, max_drawdown_p95 + 0.10), 4),
+                "pressure_score": 60.0,
+                "pressure_level": "L2_风险偏高",
+            },
+            "deteriorated_severe": {
+                "success_probability": round(max(0.0, primary_result["success_probability"] - 0.30), 4),
+                "terminal_value_mean": round(terminal_value_mean * 0.86, 2),
+                "terminal_value_range": (round(terminal_value_p05 * 0.86, 2), round(terminal_value_p95 * 0.86, 2)),
+                "cagr_range": (round(cagr_p05 - 0.04, 4), round(cagr_p95 - 0.04, 4)),
+                "cagr_p50": round(cagr_p50 - 0.04, 4),
+                "max_drawdown_p95": round(min(0.70, max_drawdown_p95 + 0.18), 4),
+                "pressure_score": 80.0,
+                "pressure_level": "L3_高压",
+            },
+        }
+        scenario_comparison = []
+        for scenario_kind in _USER_PORTFOLIO_SCENARIO_LADDER:
+            scenario_summary = scenario_summaries[scenario_kind]
+            scenario_comparison.append(
+                {
+                    "scenario_kind": scenario_kind,
+                    "label": scenario_kind,
+                    "pressure": None
+                    if scenario_kind == "historical_replay"
+                    else {
+                        "scenario_kind": scenario_kind,
+                        "market_pressure_score": scenario_summary["pressure_score"],
+                        "market_pressure_level": scenario_summary["pressure_level"],
+                    },
+                    "recipe_result": {
+                        "recipe_name": f"user_portfolio_estimated_{scenario_kind}",
+                        "role": "primary",
+                        "success_probability": scenario_summary["success_probability"],
+                        "success_probability_range": (
+                            round(max(0.0, scenario_summary["success_probability"] - 0.06), 4),
+                            round(min(1.0, scenario_summary["success_probability"] + 0.06), 4),
+                        ),
+                        "cagr_range": scenario_summary["cagr_range"],
+                        "drawdown_range": (
+                            round(max(0.0, scenario_summary["max_drawdown_p95"] - 0.05), 4),
+                            scenario_summary["max_drawdown_p95"],
+                        ),
+                        "sample_count": 0,
+                        "path_stats": {
+                            "terminal_value_mean": scenario_summary["terminal_value_mean"],
+                            "terminal_value_p05": scenario_summary["terminal_value_range"][0],
+                            "terminal_value_p50": scenario_summary["terminal_value_mean"],
+                            "terminal_value_p95": scenario_summary["terminal_value_range"][1],
+                            "cagr_p05": scenario_summary["cagr_range"][0],
+                            "cagr_p50": scenario_summary["cagr_p50"],
+                            "cagr_p95": scenario_summary["cagr_range"][1],
+                            "max_drawdown_p05": round(max(0.0, scenario_summary["max_drawdown_p95"] - 0.08), 4),
+                            "max_drawdown_p50": round(max(0.0, scenario_summary["max_drawdown_p95"] - 0.03), 4),
+                            "max_drawdown_p95": scenario_summary["max_drawdown_p95"],
+                            "success_count": 0,
+                            "path_count": 0,
+                        },
+                        "calibration_link_ref": f"user_portfolio_estimated://{scenario_kind}",
+                    },
+                }
+            )
+        return {
+            "run_outcome_status": "degraded",
+            "resolved_result_category": "formal_estimated_result",
+            "output": {
+                "primary_result": primary_result,
+                "challenger_results": [],
+                "stress_results": [],
+                "model_disagreement": {
+                    "gap_total": 0.0,
+                    "challenger_gap": None,
+                    "stress_gap": None,
+                },
+                "probability_disclosure_payload": {
+                    "published_point": primary_result["success_probability"],
+                    "published_range": primary_result["success_probability_range"],
+                    "disclosure_level": "diagnostic_only",
+                    "confidence_level": "low",
+                    "challenger_gap": None,
+                    "stress_gap": None,
+                    "gap_total": 0.0,
+                    "widening_method": "user_portfolio_estimated_proxy",
+                },
+                "evidence_refs": [f"user_portfolio_estimated://{reason}"],
+                "current_market_pressure": {
+                    "scenario_kind": "current_market",
+                    "market_pressure_score": 25.0,
+                    "market_pressure_level": "L1_中性偏紧",
+                },
+                "scenario_comparison": scenario_comparison,
+            },
+            "failure_artifact": None,
+        }
+
     historical_dataset = _extract_market_historical_dataset(envelope, None)
     if historical_dataset is None:
         historical_dataset = _extract_market_historical_dataset(envelope, _as_dict(envelope.get("snapshot_bundle")))
@@ -3613,7 +3853,7 @@ def _build_user_portfolio_probability_engine_evaluation(
         execution_policy=execution_policy,
     )
     if product_simulation_input is None:
-        return None, None
+        return None, _estimated_probability_engine_result(reason="missing_product_simulation_input")
 
     goal_solver_input = _as_dict(envelope.get("goal_solver_input"))
     execution_allocation_name = _first_text(
@@ -3702,21 +3942,7 @@ def _build_user_portfolio_probability_engine_evaluation(
     try:
         return probability_engine_input, run_probability_engine(probability_engine_input)
     except Exception:
-        return probability_engine_input, {
-            "run_outcome_status": "degraded",
-            "resolved_result_category": "formal_estimated_result",
-            "output": {
-                "probability_disclosure_payload": {
-                    "disclosure_level": "diagnostic_only",
-                    "confidence_level": "low",
-                },
-                "primary_result": {
-                    "success_probability": None,
-                    "path_stats": {},
-                },
-            },
-            "failure_artifact": _as_dict(product_simulation_input.get("failure_artifact")),
-        }
+        return probability_engine_input, _estimated_probability_engine_result(reason="probability_engine_error")
 
 
 def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvaluationSummary | None:
@@ -4546,6 +4772,7 @@ def run_orchestrator(
             execution_plan=execution_plan,
             formal_path_required=formal_path_required,
             execution_policy=execution_policy,
+            strict_formal_blocked=portfolio_evaluation_payload["unknown_product_resolution"]["strict_formal_blocked"],
         )
     if execution_plan is not None:
         execution_plan_preflight = _as_dict(_as_dict(execution_plan).get("formal_path_preflight"))
@@ -4871,6 +5098,7 @@ def run_orchestrator(
             execution_plan=execution_plan,
             probability_engine_result=probability_engine_result,
             probability_engine_input=probability_engine_input,
+            probability_engine_runner=run_probability_engine,
         )
         if execution_plan is not None
         else {
