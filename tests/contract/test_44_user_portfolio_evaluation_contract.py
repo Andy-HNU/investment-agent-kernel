@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 
 from frontdesk.service import run_frontdesk_onboarding
+import orchestrator.engine as orchestrator_engine
 from orchestrator.engine import run_orchestrator
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 
@@ -252,3 +253,35 @@ def test_user_excluded_product_continues_without_strict_block(monkeypatch, tmp_p
     assert [item["target_weight"] for item in result["pending_execution_plan"]["items"]] == [
         0.80,
     ]
+
+
+@pytest.mark.contract
+def test_strict_unrecognized_user_portfolio_does_not_call_probability_engine_even_if_inputs_are_buildable(monkeypatch):
+    user_portfolio = [
+        {"product_id": "mystery_fund_x", "target_weight": 1.0},
+    ]
+    profile = _profile(account_profile_id="user_portfolio_strict_blocked_builder")
+    bundle = _profile_bundle_with_user_portfolio(profile, user_portfolio=user_portfolio)
+
+    monkeypatch.setattr(orchestrator_engine, "_build_product_simulation_input", lambda *args, **kwargs: {"synthetic": True})
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "_build_probability_engine_run_input",
+        lambda **kwargs: ({"products": [{"product_id": "mystery_fund_x"}], "recipes": []}, None),
+    )
+
+    def _unexpected_run_probability_engine(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("strict_formal_blocked user portfolio must not invoke run_probability_engine")
+
+    monkeypatch.setattr(orchestrator_engine, "run_probability_engine", _unexpected_run_probability_engine)
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "user_portfolio_strict_blocked_builder"},
+        raw_inputs=bundle.raw_inputs,
+    ).to_dict()
+
+    assert result["evaluation_mode"] == "user_specified_portfolio"
+    assert result["unknown_product_resolution"]["state"] == "unrecognized_requires_user_action"
+    assert result["unknown_product_resolution"]["strict_formal_blocked"] is True
+    assert result["probability_engine_result"] is not None
+    assert result["probability_engine_result"]["run_outcome_status"] == "blocked"

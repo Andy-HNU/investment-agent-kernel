@@ -3841,6 +3841,9 @@ def _build_user_portfolio_probability_engine_evaluation(
             "failure_artifact": None,
         }
 
+    if strict_formal_blocked:
+        return None, _estimated_probability_engine_result(reason="strict_formal_blocked")
+
     historical_dataset = _extract_market_historical_dataset(envelope, None)
     if historical_dataset is None:
         historical_dataset = _extract_market_historical_dataset(envelope, _as_dict(envelope.get("snapshot_bundle")))
