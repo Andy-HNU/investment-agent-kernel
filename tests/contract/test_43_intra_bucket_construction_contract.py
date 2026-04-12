@@ -196,6 +196,27 @@ def test_equity_auto_policy_ignores_implied_return_when_gap_is_unknown() -> None
     assert resolution.resolved_count == 2
 
 
+def test_build_execution_plan_ignores_implied_return_gap_when_gap_is_unknown() -> None:
+    plan = build_execution_plan(
+        source_run_id="test",
+        source_allocation_id="alloc",
+        bucket_targets={
+            "equity_cn": 0.40,
+            "cash_liquidity": 0.60,
+        },
+        goal_horizon_months=18,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.18,
+        current_market_pressure_score=10.0,
+        implied_required_annual_return=0.12,
+    )
+
+    equity_items = [item for item in plan.items if item.asset_bucket == "equity_cn"]
+
+    assert len(equity_items) == 2
+    assert plan.bucket_construction_explanations["equity_cn"].actual_count == 2
+
+
 def test_equity_bucket_can_return_two_products_when_requested() -> None:
     plan = build_execution_plan(
         source_run_id="test",
@@ -350,6 +371,7 @@ def test_explicit_satellite_request_is_not_collapsed_by_minimum_position_rules()
 
     assert len(satellite_items) == 2
     assert explanation.actual_count == 2
+    assert all(item.target_amount is not None for item in satellite_items)
     assert explanation.count_satisfied is False
     assert explanation.unmet_reason is not None
     assert "minimum_weight_breach" in explanation.diagnostic_codes
@@ -363,6 +385,9 @@ def test_explicit_satellite_request_is_not_collapsed_by_minimum_position_rules()
         assert item.trade_amount is None
         assert item.estimated_fee is None
         assert item.estimated_slippage is None
+    assert plan.execution_realism_summary is not None
+    assert plan.execution_realism_summary.amount_closure_delta == 0.0
+    assert "account_amount_not_closed" not in plan.execution_realism_summary.reasons
 
 
 def test_explicit_bond_request_is_not_collapsed_by_minimum_position_rules() -> None:

@@ -659,33 +659,34 @@ def _build_item(
     estimated_fee = None
     estimated_slippage = None
     violates_minimum_trade = False
-    if account_total_value is not None and current_weight is not None:
+    if account_total_value is not None:
         total_value = float(account_total_value)
         target_amount = round(total_value * float(target_weight), 2)
-        current_amount = round(total_value * float(current_weight), 2)
-        delta = round(target_amount - current_amount, 2)
-        if abs(delta) <= 1e-6:
-            trade_direction = "hold"
-            trade_amount = 0.0
-            initial_trade_amount = 0.0
-            deferred_trade_amount = 0.0
-        else:
-            trade_direction = "buy" if delta > 0 else "sell"
-            trade_amount = round(abs(delta), 2)
-            initial_trade_amount = round(trade_amount * float(initial_deploy_fraction), 2)
-            deferred_trade_amount = round(trade_amount - initial_trade_amount, 2)
-            fee_rate = float((transaction_fee_rate or {}).get(bucket, 0.0) or 0.0)
-            slip_rate = float(
-                (wrapper_slippage_rate or {}).get(
-                    primary_product.wrapper_type,
-                    _WRAPPER_SLIPPAGE_RATE.get(primary_product.wrapper_type, 0.0),
+        if current_weight is not None:
+            current_amount = round(total_value * float(current_weight), 2)
+            delta = round(target_amount - current_amount, 2)
+            if abs(delta) <= 1e-6:
+                trade_direction = "hold"
+                trade_amount = 0.0
+                initial_trade_amount = 0.0
+                deferred_trade_amount = 0.0
+            else:
+                trade_direction = "buy" if delta > 0 else "sell"
+                trade_amount = round(abs(delta), 2)
+                initial_trade_amount = round(trade_amount * float(initial_deploy_fraction), 2)
+                deferred_trade_amount = round(trade_amount - initial_trade_amount, 2)
+                fee_rate = float((transaction_fee_rate or {}).get(bucket, 0.0) or 0.0)
+                slip_rate = float(
+                    (wrapper_slippage_rate or {}).get(
+                        primary_product.wrapper_type,
+                        _WRAPPER_SLIPPAGE_RATE.get(primary_product.wrapper_type, 0.0),
+                    )
+                    or 0.0
                 )
-                or 0.0
-            )
-            estimated_fee = round(trade_amount * fee_rate, 2)
-            estimated_slippage = round(trade_amount * slip_rate, 2)
-            if minimum_trade_amount is not None and 0.0 < trade_amount < float(minimum_trade_amount):
-                violates_minimum_trade = True
+                estimated_fee = round(trade_amount * fee_rate, 2)
+                estimated_slippage = round(trade_amount * slip_rate, 2)
+                if minimum_trade_amount is not None and 0.0 < trade_amount < float(minimum_trade_amount):
+                    violates_minimum_trade = True
     trigger_conditions: list[str] = []
     if trade_direction == "buy" and initial_trade_amount is not None:
         trigger_conditions.append(
@@ -1904,11 +1905,6 @@ def build_execution_plan(
     }
     effective_risk_preference = str(risk_preference or "moderate")
     effective_max_drawdown_tolerance = 0.20 if max_drawdown_tolerance is None else float(max_drawdown_tolerance)
-    effective_required_return_gap = (
-        float(required_return_gap)
-        if required_return_gap is not None
-        else (float(implied_required_annual_return) if implied_required_annual_return is not None else None)
-    )
     for bucket, target_weight in adjusted_targets.items():
         if target_weight <= 0:
             continue
@@ -1933,7 +1929,7 @@ def build_execution_plan(
             risk_preference=effective_risk_preference,
             max_drawdown_tolerance=effective_max_drawdown_tolerance,
             current_market_pressure_score=current_market_pressure_score,
-            required_return_gap=effective_required_return_gap,
+            required_return_gap=required_return_gap,
             implied_required_annual_return=implied_required_annual_return,
             explicit_request=bucket_count_preference_lookup.get(bucket),
         )
@@ -1965,7 +1961,7 @@ def build_execution_plan(
                 risk_preference=effective_risk_preference,
                 max_drawdown_tolerance=effective_max_drawdown_tolerance,
                 current_market_pressure_score=current_market_pressure_score,
-                required_return_gap=effective_required_return_gap,
+                required_return_gap=required_return_gap,
                 implied_required_annual_return=implied_required_annual_return,
                 explicit_request=None,
                 persisted_preference=None,
