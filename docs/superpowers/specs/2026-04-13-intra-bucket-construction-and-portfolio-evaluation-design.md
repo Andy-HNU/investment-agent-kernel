@@ -151,7 +151,7 @@ Recommended default auto counts:
 `satellite`
 - `off` -> `1`
 - `light` -> `2`
-- `standard` -> `2~4` depending on bucket weight
+- `standard` -> `2~4` depending on bucket weight in automatic recommendation mode
 
 `bond_cn`
 - `off` -> `1`
@@ -165,7 +165,64 @@ For `satellite` in `standard` mode:
 - `0.18 <= weight < 0.28` -> target `3`
 - `weight >= 0.28` -> target `4`
 
-### 5.3 Minimum position sizes
+This table only applies to automatic recommendation mode.
+
+### 5.3 User-requested count override
+
+User-requested counts are not capped by the automatic recommendation table.
+
+If the user explicitly requests:
+
+- `主力 N 个`
+- `卫星 M 个`
+- `债券拆 K 个`
+
+the system must treat those values as strong preferences even when they exceed automatic recommendation counts.
+
+Examples:
+
+- `主力 2 个，卫星 5 个`
+- `卫星 6 个`
+- `债券拆 2 个`
+
+The system must then:
+
+1. attempt to construct the requested count first
+2. evaluate the requested structure as requested
+3. emit feasibility diagnostics
+4. produce one or more more-feasible alternatives only after the requested structure has been evaluated
+
+Automatic recommendation caps therefore govern:
+
+- system-generated initial portfolios
+
+but do not govern:
+
+- user-requested portfolio count preferences
+
+### 5.4 Count-resolution precedence
+
+Bucket count resolution must follow this precedence:
+
+1. explicit user request
+2. persisted user preference from prior confirmed session
+3. system automatic count policy
+
+Recommended representation:
+
+```python
+@dataclass(frozen=True)
+class BucketCountResolution:
+    bucket: str
+    requested_count: int | None
+    resolved_count: int
+    source: str                  # explicit_user / persisted_user / auto_policy
+    fully_satisfied: bool
+    unmet_reasons: list[str]
+    alternative_counts_considered: list[int]
+```
+
+### 5.5 Minimum position sizes
 
 To avoid meaningless micro-positions:
 
@@ -178,6 +235,21 @@ If requested count implies weights below those thresholds:
 1. still evaluate the user-requested structure if it is explicitly user-specified
 2. attach a `count_preference_not_fully_satisfied` diagnostic
 3. produce a more feasible alternative structure in parallel
+
+### 5.6 Count-feasibility diagnostics
+
+When the resolved or requested count cannot be cleanly supported, the system must expose explicit reasons rather than silently reducing the count.
+
+Allowed reasons include:
+
+- `insufficient_eligible_candidates`
+- `minimum_weight_breach`
+- `duplicate_exposure_too_high`
+- `insufficient_diversification_gain`
+- `formal_path_coverage_insufficient`
+- `estimated_only_member_required`
+
+These reasons must be available both in the execution layer and in the user-visible explanation surface.
 
 ## 6. Candidate Relationship Model
 
@@ -281,7 +353,8 @@ Allowed structure:
 
 - 1 product when off
 - 2 products when light
-- 2 to 4 products when standard
+- 2 to 4 products when standard in automatic recommendation mode
+- user-requested count may exceed 4 when the user explicitly asks for it
 
 Construction logic:
 
@@ -294,9 +367,29 @@ Construction logic:
    - diversification gain
    - count-feasibility
    - minimum position feasibility
-5. choose the best-scoring subset
+5. if multiple subsets are close, prefer the subset that:
+   - avoids duplicate exposure
+   - preserves clearer role separation
+   - has higher formal-path coverage quality
+6. choose the best-scoring subset
 
 This must support cases where the user wants multiple policy-sensitive or event-driven satellite themes at once.
+
+### 7.4 Requested-vs-suggested structure handling
+
+For `equity_cn`, `satellite`, and `bond_cn`, the system must distinguish between:
+
+- `requested_structure`
+- `suggested_structure`
+
+If the user explicitly requests a higher count than the automatic policy would choose:
+
+1. the requested structure must be built and evaluated first
+2. the requested structure may still be flagged as low-quality or partially infeasible
+3. the system must then generate a suggested structure that improves feasibility or diversification
+4. both structures must remain visible
+
+The suggested structure must never overwrite the requested structure in storage or in the primary evaluation payload.
 
 ### 7.3 `bond_cn`
 
@@ -341,15 +434,66 @@ If unresolved unknown products remain:
 - do not emit a strict formal result
 - emit diagnostic-only or degraded guidance depending on recognized coverage
 
+### 8.4 Unknown-product resolution workflow
+
+Unknown-product handling must behave as an explicit resolution state machine.
+
+Recommended states:
+
+- `recognized`
+- `unrecognized_requires_user_action`
+- `user_selected_proxy`
+- `user_excluded_product`
+- `estimated_non_formal_allowed`
+- `resolved_formal_ready`
+
+Recommended transitions:
+
+1. product ingest
+   - if recognized -> `recognized`
+   - else -> `unrecognized_requires_user_action`
+2. user action
+   - if user provides better identifier and recognition succeeds -> `resolved_formal_ready`
+   - if user selects a proxy -> `user_selected_proxy`
+   - if user excludes the product -> `user_excluded_product`
+   - if user permits non-formal estimate -> `estimated_non_formal_allowed`
+3. run gating
+   - `recognized` and `resolved_formal_ready` may continue through formal flow
+   - `user_selected_proxy` may continue only under the selected proxy policy
+   - `user_excluded_product` continues with the remaining portfolio
+   - `estimated_non_formal_allowed` may not emit strict formal output
+   - `unrecognized_requires_user_action` blocks strict formal output
+
+### 8.5 Persistence requirements for unknown products
+
+The system must persist unresolved-product context so the user can return without losing the pending decision.
+
+Persisted fields must include:
+
+- raw entered identifier
+- tentative product name if provided
+- current resolution state
+- allowed next actions
+- chosen proxy if one exists
+- whether a formal run is currently blocked
+
+The evaluation flow must resume from the persisted unresolved state rather than silently dropping the product.
+
 ## 9. Per-Product Explanation Surface
 
 Each product must expose:
 
 1. `product_result_summary`
    - current-market annualized range
-   - historical-replay range
-   - deteriorated-market range
-   - terminal value range
+   - historical-replay annualized range
+   - mild-deterioration annualized range
+   - moderate-deterioration annualized range
+   - severe-deterioration annualized range
+   - current-market terminal value range
+   - historical-replay terminal value range
+   - mild-deterioration terminal value range
+   - moderate-deterioration terminal value range
+   - severe-deterioration terminal value range
 
 2. `role_in_portfolio`
    - `main_growth`
@@ -384,6 +528,50 @@ Each product must expose:
    - `only_for_aggressive_goal`
 
 The system must use factual output language, not persuasive marketing language.
+
+### 9.1 Scenario ladder alignment
+
+Per-product explanation must align exactly with the `v1.4` scenario ladder. It may not collapse the deterioration ladder into one generic stress bucket.
+
+Required scenario keys:
+
+- `historical_replay`
+- `current_market`
+- `deteriorated_mild`
+- `deteriorated_moderate`
+- `deteriorated_severe`
+
+If any product-level explanation is missing one of those scenarios, the explanation surface is incomplete.
+
+### 9.2 Product-level output contract
+
+Recommended extension:
+
+```python
+@dataclass(frozen=True)
+class ProductScenarioMetrics:
+    scenario_kind: str
+    annualized_range: tuple[float, float] | None
+    terminal_value_range: tuple[float, float] | None
+    pressure_score: float | None
+    pressure_level: str | None
+```
+
+```python
+@dataclass(frozen=True)
+class ProductExplanation:
+    product_id: str
+    role_in_portfolio: str
+    scenario_metrics: list[ProductScenarioMetrics]
+    success_delta_if_removed: float | None
+    terminal_mean_delta_if_removed: float | None
+    drawdown_delta_if_removed: float | None
+    median_return_delta_if_removed: float | None
+    highest_overlap_product_ids: list[str]
+    highest_diversification_product_ids: list[str]
+    quality_labels: list[str]
+    suggested_action: str | None
+```
 
 ## 10. Per-Group Explanation Surface
 
@@ -478,12 +666,23 @@ When the user specifies bucket counts that are not cleanly feasible:
 
 The system must not overwrite the user-requested structure and present the alternative as if it were the original request.
 
+### 12.1 Requested-structure primary status
+
+When the user explicitly requests counts such as `主力 2 个，卫星 5 个`, the requested structure must be treated as the primary result of the evaluation mode, even if it is not the system-preferred suggestion.
+
+The suggested structure must be labeled as:
+
+- `system_suggested_alternative`
+
+and must never be labeled as the user's original portfolio.
+
 ## 13. What This Design Does Not Yet Include
 
 - default overseas-aware construction
-- user-approved proxy remapping workflow for unknown products
 - UI wording polish
 - final production thresholds for all bucket count bands
+
+The unknown-product resolution state machine is included in this design. The later follow-up work is only the detailed proxy-selection UX.
 
 Those belong to follow-up implementation and tuning passes.
 
@@ -501,6 +700,9 @@ This design is considered implemented when:
 8. The system can show both:
    - requested structure result
    - system-suggested alternative result
+9. Explicit user requests such as `主力 2 个，卫星 5 个` can exceed automatic recommendation count bands without being silently clipped.
+10. Unknown products enter a persisted explicit resolution state instead of being silently mapped or dropped.
+11. Product-level explanation uses the full five-scenario ladder instead of a single generic stress field.
 
 ## 15. Recommended Implementation Order
 
