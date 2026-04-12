@@ -710,15 +710,23 @@ def _reconciliation_state_record_summary(
     )
 
 
+def _execution_plan_item_key(item: dict[str, Any]) -> str:
+    bucket = str(item.get("asset_bucket") or "").strip()
+    product_id = _primary_product_id(item)
+    if bucket and product_id:
+        return f"{bucket}::{product_id}"
+    return bucket or (product_id or "")
+
+
 def _execution_plan_item_index(record: FrontdeskExecutionPlanRecord | None) -> dict[str, dict[str, Any]]:
     if record is None:
         return {}
     index: dict[str, dict[str, Any]] = {}
     for item in list((record.payload or {}).get("items") or []):
         payload = dict(item or {})
-        bucket = str(payload.get("asset_bucket") or "").strip()
-        if bucket:
-            index[bucket] = payload
+        key = _execution_plan_item_key(payload)
+        if key:
+            index[key] = payload
     return index
 
 
@@ -759,9 +767,9 @@ def _compare_execution_plans(
     product_switches: list[dict[str, Any]] = []
     max_weight_delta = 0.0
 
-    for bucket in sorted(set(active_items) | set(pending_items)):
-        active_item = active_items.get(bucket, {})
-        pending_item = pending_items.get(bucket, {})
+    for item_key in sorted(set(active_items) | set(pending_items)):
+        active_item = active_items.get(item_key, {})
+        pending_item = pending_items.get(item_key, {})
         active_weight = round(float(active_item.get("target_weight", 0.0) or 0.0), 4)
         pending_weight = round(float(pending_item.get("target_weight", 0.0) or 0.0), 4)
         weight_delta = round(pending_weight - active_weight, 4)
@@ -772,7 +780,8 @@ def _compare_execution_plans(
             continue
         max_weight_delta = max(max_weight_delta, abs(weight_delta))
         change_payload = {
-            "asset_bucket": bucket,
+            "item_key": item_key,
+            "asset_bucket": str(active_item.get("asset_bucket") or pending_item.get("asset_bucket") or "").strip(),
             "active_target_weight": active_weight,
             "pending_target_weight": pending_weight,
             "weight_delta": weight_delta,
@@ -784,7 +793,8 @@ def _compare_execution_plans(
         if product_changed:
             product_switches.append(
                 {
-                    "asset_bucket": bucket,
+                    "item_key": item_key,
+                    "asset_bucket": str(active_item.get("asset_bucket") or pending_item.get("asset_bucket") or "").strip(),
                     "active_primary_product_id": active_product_id,
                     "pending_primary_product_id": pending_product_id,
                 }

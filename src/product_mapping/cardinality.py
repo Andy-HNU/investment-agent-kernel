@@ -130,11 +130,7 @@ def _auto_resolve_count(
     effective_horizon_months = int(goal_horizon_months if goal_horizon_months is not None else horizon_months or 0)
     risk_preference = str(risk_preference).strip().lower()
     pressure_score = float(current_market_pressure_score or 0.0)
-    effective_required_return_gap = (
-        float(required_return_gap)
-        if required_return_gap is not None
-        else float(implied_required_annual_return or 0.0)
-    )
+    effective_required_return_gap = float(required_return_gap) if required_return_gap is not None else 0.0
     if bucket in {"gold", "cash_liquidity"}:
         return 1
     if effective_horizon_months < 12:

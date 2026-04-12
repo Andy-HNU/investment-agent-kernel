@@ -659,10 +659,10 @@ def _build_item(
     estimated_fee = None
     estimated_slippage = None
     violates_minimum_trade = False
-    if account_total_value is not None:
+    if account_total_value is not None and current_weight is not None:
         total_value = float(account_total_value)
         target_amount = round(total_value * float(target_weight), 2)
-        current_amount = round(total_value * float(current_weight or 0.0), 2)
+        current_amount = round(total_value * float(current_weight), 2)
         delta = round(target_amount - current_amount, 2)
         if abs(delta) <= 1e-6:
             trade_direction = "hold"
@@ -1989,8 +1989,12 @@ def build_execution_plan(
                 "diagnostic_codes": list(suggested_explanation.diagnostic_codes),
             }
         split_target_weights = split_bucket_weight(bucket_weight, len(selected_members))
-        current_bucket_weight = normalized_current_weights.get(bucket, 0.0)
-        split_current_weights = split_bucket_weight(current_bucket_weight, len(selected_members))
+        current_bucket_weight = normalized_current_weights.get(bucket)
+        split_current_weights = (
+            split_bucket_weight(float(current_bucket_weight), len(selected_members))
+            if len(selected_members) == 1 and current_bucket_weight is not None
+            else [None] * len(selected_members)
+        )
         bucket_explanations[bucket] = bucket_construction_explanation
         for selected_member, member_target_weight, member_current_weight in zip(
             selected_members,

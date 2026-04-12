@@ -301,6 +301,47 @@ def test_run_orchestrator_onboarding_persistence_plan_includes_execution_plan_ar
 
 
 @pytest.mark.contract
+def test_execution_plan_payload_comparison_distinguishes_split_bucket_members() -> None:
+    active_payload = {
+        "items": [
+            {
+                "asset_bucket": "equity_cn",
+                "primary_product_id": "cn_equity_csi300_etf",
+                "target_weight": 0.20,
+            },
+            {
+                "asset_bucket": "equity_cn",
+                "primary_product_id": "cn_equity_dividend_etf",
+                "target_weight": 0.20,
+            },
+        ]
+    }
+    pending_payload = {
+        "items": [
+            {
+                "asset_bucket": "equity_cn",
+                "primary_product_id": "cn_equity_dividend_etf",
+                "target_weight": 0.20,
+            },
+            {
+                "asset_bucket": "equity_cn",
+                "primary_product_id": "cn_equity_low_vol_fund",
+                "target_weight": 0.20,
+            },
+        ]
+    }
+
+    comparison = orchestrator_engine._compare_execution_plan_payloads(active_payload, pending_payload)
+
+    assert comparison is not None
+    assert comparison["changed_bucket_count"] == 2
+    assert {item["item_key"] for item in comparison["bucket_changes"]} == {
+        "equity_cn::cn_equity_csi300_etf",
+        "equity_cn::cn_equity_low_vol_fund",
+    }
+
+
+@pytest.mark.contract
 def test_run_orchestrator_attaches_candidate_product_contexts_before_solver(
     goal_solver_input_base,
     calibration_result_base,

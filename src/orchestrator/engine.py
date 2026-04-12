@@ -3019,15 +3019,24 @@ def _build_execution_plan_summary(execution_plan: Any) -> dict[str, Any]:
     }
 
 
+def _execution_plan_item_key_from_payload(item: dict[str, Any]) -> str:
+    entry = _as_dict(item)
+    bucket = _first_text(entry.get("asset_bucket")) or ""
+    product_id = _primary_product_id_from_payload(entry) or ""
+    if bucket and product_id:
+        return f"{bucket}::{product_id}"
+    return bucket or product_id
+
+
 def _execution_plan_item_index_from_payload(payload: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
     data = _as_dict(payload)
     items = list(data.get("items") or [])
     index: dict[str, dict[str, Any]] = {}
     for item in items:
         entry = _as_dict(item)
-        bucket = _first_text(entry.get("asset_bucket")) or ""
-        if bucket:
-            index[bucket] = entry
+        key = _execution_plan_item_key_from_payload(entry)
+        if key:
+            index[key] = entry
     return index
 
 
@@ -3051,9 +3060,9 @@ def _compare_execution_plan_payloads(
     bucket_changes: list[dict[str, Any]] = []
     product_switches: list[dict[str, Any]] = []
     max_weight_delta = 0.0
-    for bucket in sorted(set(active_items) | set(pending_items)):
-        a = active_items.get(bucket, {})
-        p = pending_items.get(bucket, {})
+    for item_key in sorted(set(active_items) | set(pending_items)):
+        a = active_items.get(item_key, {})
+        p = pending_items.get(item_key, {})
         aw = round(float(_as_dict(a).get("target_weight", 0.0) or 0.0), 4)
         pw = round(float(_as_dict(p).get("target_weight", 0.0) or 0.0), 4)
         delta = round(pw - aw, 4)
@@ -3064,7 +3073,8 @@ def _compare_execution_plan_payloads(
             continue
         max_weight_delta = max(max_weight_delta, abs(delta))
         change = {
-            "asset_bucket": bucket,
+            "item_key": item_key,
+            "asset_bucket": _first_text(_as_dict(a).get("asset_bucket")) or _first_text(_as_dict(p).get("asset_bucket")) or "",
             "active_target_weight": aw,
             "pending_target_weight": pw,
             "weight_delta": delta,
@@ -3076,7 +3086,8 @@ def _compare_execution_plan_payloads(
         if product_changed:
             product_switches.append(
                 {
-                    "asset_bucket": bucket,
+                    "item_key": item_key,
+                    "asset_bucket": _first_text(_as_dict(a).get("asset_bucket")) or _first_text(_as_dict(p).get("asset_bucket")) or "",
                     "active_primary_product_id": a_pid,
                     "pending_primary_product_id": p_pid,
                 }

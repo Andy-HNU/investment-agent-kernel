@@ -14,7 +14,7 @@ from frontdesk.service import (
     run_frontdesk_followup,
     run_frontdesk_onboarding,
 )
-from frontdesk.storage import FrontdeskStore
+from frontdesk.storage import FrontdeskExecutionPlanRecord, FrontdeskStore, _compare_execution_plans
 from orchestrator.engine import run_orchestrator
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 from tests.support.formal_snapshot_helpers import (
@@ -518,6 +518,73 @@ def test_frontdesk_approve_execution_plan_promotes_pending_and_supersedes_previo
     assert snapshot is not None
     assert snapshot["pending_execution_plan"] is None
     assert snapshot["active_execution_plan"] is None
+
+
+@pytest.mark.contract
+def test_frontdesk_execution_plan_comparison_distinguishes_split_bucket_members() -> None:
+    active = FrontdeskExecutionPlanRecord(
+        account_profile_id="comparison_user",
+        plan_id="active_plan",
+        plan_version=1,
+        source_run_id="run_active",
+        source_allocation_id="alloc_active",
+        status="approved",
+        confirmation_required=True,
+        payload={
+            "items": [
+                {
+                    "asset_bucket": "equity_cn",
+                    "primary_product_id": "cn_equity_csi300_etf",
+                    "target_weight": 0.20,
+                },
+                {
+                    "asset_bucket": "equity_cn",
+                    "primary_product_id": "cn_equity_dividend_etf",
+                    "target_weight": 0.20,
+                },
+            ]
+        },
+        approved_at=None,
+        superseded_by_plan_id=None,
+        created_at="2026-04-13T00:00:00Z",
+        updated_at="2026-04-13T00:00:00Z",
+    )
+    pending = FrontdeskExecutionPlanRecord(
+        account_profile_id="comparison_user",
+        plan_id="pending_plan",
+        plan_version=1,
+        source_run_id="run_pending",
+        source_allocation_id="alloc_pending",
+        status="draft",
+        confirmation_required=True,
+        payload={
+            "items": [
+                {
+                    "asset_bucket": "equity_cn",
+                    "primary_product_id": "cn_equity_dividend_etf",
+                    "target_weight": 0.20,
+                },
+                {
+                    "asset_bucket": "equity_cn",
+                    "primary_product_id": "cn_equity_low_vol_fund",
+                    "target_weight": 0.20,
+                },
+            ]
+        },
+        approved_at=None,
+        superseded_by_plan_id=None,
+        created_at="2026-04-13T00:00:00Z",
+        updated_at="2026-04-13T00:00:00Z",
+    )
+
+    comparison = _compare_execution_plans(active, pending)
+
+    assert comparison is not None
+    assert comparison["changed_bucket_count"] == 2
+    assert {item["item_key"] for item in comparison["bucket_changes"]} == {
+        "equity_cn::cn_equity_csi300_etf",
+        "equity_cn::cn_equity_low_vol_fund",
+    }
 
 
 @pytest.mark.contract

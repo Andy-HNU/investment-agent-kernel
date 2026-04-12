@@ -179,6 +179,23 @@ def test_equity_auto_policy_aggressive_high_gap_off_rule_wins_over_light_band() 
     assert resolution.resolved_count == 1
 
 
+def test_equity_auto_policy_ignores_implied_return_when_gap_is_unknown() -> None:
+    resolution = resolve_bucket_count(
+        bucket="equity_cn",
+        bucket_weight=0.40,
+        goal_horizon_months=18,
+        horizon_months=18,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.18,
+        current_market_pressure_score=10.0,
+        required_return_gap=None,
+        implied_required_annual_return=0.12,
+    )
+
+    assert resolution.source == "auto_policy"
+    assert resolution.resolved_count == 2
+
+
 def test_equity_bucket_can_return_two_products_when_requested() -> None:
     plan = build_execution_plan(
         source_run_id="test",
@@ -314,6 +331,8 @@ def test_explicit_satellite_request_is_not_collapsed_by_minimum_position_rules()
         source_run_id="test",
         source_allocation_id="alloc",
         bucket_targets={"satellite": 0.03, "cash_liquidity": 0.97},
+        account_total_value=1000.0,
+        current_weights={"satellite": 0.03, "cash_liquidity": 0.97},
         bucket_count_preferences=[
             BucketCardinalityPreference(
                 bucket="satellite",
@@ -337,6 +356,13 @@ def test_explicit_satellite_request_is_not_collapsed_by_minimum_position_rules()
     assert "count_preference_not_fully_satisfied" in explanation.diagnostic_codes
     assert any("minimum_weight_breach" in reason for reason in explanation.why_split)
     assert plan.bucket_construction_suggestions["satellite"]["member_product_ids"]
+    for item in satellite_items:
+        assert item.current_weight is None
+        assert item.current_amount is None
+        assert item.trade_direction is None
+        assert item.trade_amount is None
+        assert item.estimated_fee is None
+        assert item.estimated_slippage is None
 
 
 def test_explicit_bond_request_is_not_collapsed_by_minimum_position_rules() -> None:
@@ -366,3 +392,20 @@ def test_explicit_bond_request_is_not_collapsed_by_minimum_position_rules() -> N
     assert "minimum_weight_breach" in explanation.diagnostic_codes
     assert "count_preference_not_fully_satisfied" in explanation.diagnostic_codes
     assert plan.bucket_construction_suggestions["bond_cn"]["member_product_ids"]
+
+
+def test_auto_policy_split_keeps_count_satisfied_despite_advisory_diagnostics() -> None:
+    plan = build_execution_plan(
+        source_run_id="test",
+        source_allocation_id="alloc",
+        bucket_targets={
+            "satellite": 0.20,
+            "cash_liquidity": 0.80,
+        },
+    )
+
+    explanation = plan.bucket_construction_explanations["satellite"]
+
+    assert explanation.actual_count >= 1
+    assert explanation.count_satisfied is True
+    assert explanation.unmet_reason is None

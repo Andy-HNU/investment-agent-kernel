@@ -164,7 +164,9 @@ def build_bucket_construction_explanation(
         candidates=candidates,
         is_explicit_request=is_explicit_request,
     )
-    count_satisfied = actual_count >= desired_count and not diagnostic_codes
+    count_satisfied = actual_count >= desired_count and (
+        requested_resolution.source == "auto_policy" or not diagnostic_codes
+    )
     minimum_weight = float(_MIN_MEMBER_WEIGHT_BY_BUCKET.get(bucket, 0.05) or 0.05)
     reasons: list[str] = []
     if bucket in _SINGLE_PRODUCT_BUCKETS:
@@ -187,6 +189,7 @@ def build_bucket_construction_explanation(
             )
     elif is_explicit_request and desired_count > 1 and float(bucket_weight) / max(desired_count, 1) < minimum_weight:
         reasons.append(f"minimum_weight_breach={minimum_weight:.0%}")
+        reasons.append("count_preference_not_fully_satisfied")
     if actual_count > 1 and not reasons:
         reasons.append(f"bucket {bucket} is split across {actual_count} domestic members for construction-time diversification")
     if actual_count <= 1 and bucket not in _SINGLE_PRODUCT_BUCKETS and not reasons:
