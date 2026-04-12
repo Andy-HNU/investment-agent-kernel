@@ -35,15 +35,17 @@ def _pair(value: Any) -> tuple[float, float]:
 @dataclass(frozen=True)
 class ProductScenarioMetrics:
     scenario_kind: str
-    annualized_range: tuple[float, float]
-    terminal_value_range: tuple[float, float]
+    annualized_range: tuple[float, float] | None
+    terminal_value_range: tuple[float, float] | None
     pressure_score: float | None
     pressure_level: str | None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scenario_kind", str(self.scenario_kind).strip())
-        object.__setattr__(self, "annualized_range", _pair(self.annualized_range))
-        object.__setattr__(self, "terminal_value_range", _pair(self.terminal_value_range))
+        if self.annualized_range is not None:
+            object.__setattr__(self, "annualized_range", _pair(self.annualized_range))
+        if self.terminal_value_range is not None:
+            object.__setattr__(self, "terminal_value_range", _pair(self.terminal_value_range))
         if self.pressure_score is not None:
             object.__setattr__(self, "pressure_score", float(self.pressure_score))
         if self.pressure_level is not None:
@@ -71,14 +73,14 @@ class ProductExplanation:
     product_id: str
     role_in_portfolio: str
     scenario_metrics: list[ProductScenarioMetrics]
-    success_delta_if_removed: float
-    terminal_mean_delta_if_removed: float
-    drawdown_delta_if_removed: float
-    median_return_delta_if_removed: float
+    success_delta_if_removed: float | None
+    terminal_mean_delta_if_removed: float | None
+    drawdown_delta_if_removed: float | None
+    median_return_delta_if_removed: float | None
     highest_overlap_product_ids: list[str] = field(default_factory=list)
     highest_diversification_product_ids: list[str] = field(default_factory=list)
     quality_labels: list[str] = field(default_factory=list)
-    suggested_action: str = "keep"
+    suggested_action: str | None = "keep"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "product_id", str(self.product_id).strip())
@@ -91,11 +93,16 @@ class ProductExplanation:
             [str(item).strip() for item in self.highest_diversification_product_ids],
         )
         object.__setattr__(self, "quality_labels", [str(item).strip() for item in self.quality_labels])
-        object.__setattr__(self, "suggested_action", str(self.suggested_action).strip())
-        object.__setattr__(self, "success_delta_if_removed", float(self.success_delta_if_removed))
-        object.__setattr__(self, "terminal_mean_delta_if_removed", float(self.terminal_mean_delta_if_removed))
-        object.__setattr__(self, "drawdown_delta_if_removed", float(self.drawdown_delta_if_removed))
-        object.__setattr__(self, "median_return_delta_if_removed", float(self.median_return_delta_if_removed))
+        if self.suggested_action is not None:
+            object.__setattr__(self, "suggested_action", str(self.suggested_action).strip())
+        if self.success_delta_if_removed is not None:
+            object.__setattr__(self, "success_delta_if_removed", float(self.success_delta_if_removed))
+        if self.terminal_mean_delta_if_removed is not None:
+            object.__setattr__(self, "terminal_mean_delta_if_removed", float(self.terminal_mean_delta_if_removed))
+        if self.drawdown_delta_if_removed is not None:
+            object.__setattr__(self, "drawdown_delta_if_removed", float(self.drawdown_delta_if_removed))
+        if self.median_return_delta_if_removed is not None:
+            object.__setattr__(self, "median_return_delta_if_removed", float(self.median_return_delta_if_removed))
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -103,22 +110,26 @@ class ProductExplanation:
 
 @dataclass(frozen=True)
 class ProductGroupExplanation:
-    group_id: str
-    group_name: str
-    member_product_ids: list[str]
-    scenario_metrics: list[ProductScenarioMetrics]
-    quality_labels: list[str] = field(default_factory=list)
-    suggested_action: str = "keep"
-    notes: list[str] = field(default_factory=list)
+    group_type: str
+    product_ids: list[str]
+    rationale: str
+    success_delta_if_removed: float | None
+    terminal_mean_delta_if_removed: float | None
+    drawdown_delta_if_removed: float | None
+    median_return_delta_if_removed: float | None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "group_id", str(self.group_id).strip())
-        object.__setattr__(self, "group_name", str(self.group_name).strip())
-        object.__setattr__(self, "member_product_ids", [str(item).strip() for item in self.member_product_ids])
-        object.__setattr__(self, "scenario_metrics", validate_product_scenario_metrics(self.scenario_metrics))
-        object.__setattr__(self, "quality_labels", [str(item).strip() for item in self.quality_labels])
-        object.__setattr__(self, "suggested_action", str(self.suggested_action).strip())
-        object.__setattr__(self, "notes", [str(item).strip() for item in self.notes])
+        object.__setattr__(self, "group_type", str(self.group_type).strip())
+        object.__setattr__(self, "product_ids", [str(item).strip() for item in self.product_ids])
+        object.__setattr__(self, "rationale", str(self.rationale).strip())
+        if self.success_delta_if_removed is not None:
+            object.__setattr__(self, "success_delta_if_removed", float(self.success_delta_if_removed))
+        if self.terminal_mean_delta_if_removed is not None:
+            object.__setattr__(self, "terminal_mean_delta_if_removed", float(self.terminal_mean_delta_if_removed))
+        if self.drawdown_delta_if_removed is not None:
+            object.__setattr__(self, "drawdown_delta_if_removed", float(self.drawdown_delta_if_removed))
+        if self.median_return_delta_if_removed is not None:
+            object.__setattr__(self, "median_return_delta_if_removed", float(self.median_return_delta_if_removed))
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -128,30 +139,34 @@ class ProductGroupExplanation:
 class BucketConstructionExplanation:
     bucket: str
     requested_count: int | None
-    resolved_count: int
-    source: Literal["explicit_user", "persisted_user", "auto_policy"]
-    fully_satisfied: bool
-    unmet_reasons: list[str] = field(default_factory=list)
-    alternative_counts_considered: list[int] = field(default_factory=list)
-    selected_product_ids: list[str] = field(default_factory=list)
-    notes: list[str] = field(default_factory=list)
+    actual_count: int
+    count_source: Literal["explicit_user", "persisted_user", "auto_policy"]
+    count_satisfied: bool
+    unmet_reason: str | None
+    why_split: list[str] = field(default_factory=list)
+    no_split_counterfactual: list[str] = field(default_factory=list)
+    member_roles: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "bucket", str(self.bucket).strip())
         if self.requested_count is not None:
             object.__setattr__(self, "requested_count", int(self.requested_count))
-        object.__setattr__(self, "resolved_count", int(self.resolved_count))
-        object.__setattr__(self, "source", str(self.source).strip().lower())
-        object.__setattr__(self, "fully_satisfied", bool(self.fully_satisfied))
-        object.__setattr__(self, "unmet_reasons", [str(item).strip() for item in self.unmet_reasons if str(item).strip()])
+        object.__setattr__(self, "actual_count", int(self.actual_count))
+        object.__setattr__(self, "count_source", str(self.count_source).strip().lower())
+        object.__setattr__(self, "count_satisfied", bool(self.count_satisfied))
+        if self.unmet_reason is not None:
+            object.__setattr__(self, "unmet_reason", str(self.unmet_reason).strip())
+        object.__setattr__(self, "why_split", [str(item).strip() for item in self.why_split if str(item).strip()])
         object.__setattr__(
             self,
-            "alternative_counts_considered",
-            [int(item) for item in list(self.alternative_counts_considered or [])],
+            "no_split_counterfactual",
+            [str(item).strip() for item in self.no_split_counterfactual if str(item).strip()],
         )
-        object.__setattr__(self, "selected_product_ids", [str(item).strip() for item in self.selected_product_ids])
-        object.__setattr__(self, "notes", [str(item).strip() for item in self.notes])
+        object.__setattr__(
+            self,
+            "member_roles",
+            {str(key).strip(): str(value).strip() for key, value in dict(self.member_roles or {}).items()},
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
-
