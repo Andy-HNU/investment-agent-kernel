@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from typing import Any
 
 from probability_engine.contracts import MarketPressureSnapshot
-from probability_engine.jumps import JumpStateSpec
 from probability_engine.path_generator import DailyEngineRuntimeInput
 from probability_engine.regime import RegimeStateSpec
-from probability_engine.volatility import FactorDynamicsSpec
 
 
 _SCENARIO_LEVEL_THRESHOLDS = (
@@ -18,61 +17,28 @@ _SCENARIO_LEVEL_THRESHOLDS = (
 
 _DETERIORATION_OVERLAYS: dict[str, dict[str, float]] = {
     "mild": {
-        "expected_return_multiplier": 0.90,
-        "variance_multiplier": 1.12,
-        "tail_df_multiplier": 0.92,
-        "systemic_jump_probability_multiplier": 1.12,
-        "systemic_jump_dispersion_multiplier": 1.06,
-        "idio_jump_probability_multiplier": 1.08,
-        "idio_loss_multiplier": 1.03,
-        "idio_loss_std_multiplier": 1.06,
-        "regime_stay_multiplier": 0.96,
-        "regime_off_diagonal_multiplier": 1.04,
-        "regime_risk_off_multiplier": 1.03,
-        "regime_stress_multiplier": 1.05,
-        "regime_mean_shift_delta": -0.00025,
-        "regime_volatility_multiplier": 1.06,
-        "regime_systemic_jump_probability_multiplier": 1.08,
-        "regime_systemic_jump_dispersion_multiplier": 1.04,
-        "regime_idio_jump_probability_multiplier": 1.05,
+        "drift_multiplier": -0.08,
+        "volatility_uplift": 0.08,
+        "systemic_jump_probability_multiplier": 1.20,
+        "idio_jump_probability_multiplier": 1.10,
+        "systemic_jump_dispersion_multiplier": 1.05,
+        "persistence_uplift": 0.04,
     },
     "moderate": {
-        "expected_return_multiplier": 0.75,
-        "variance_multiplier": 1.28,
-        "tail_df_multiplier": 0.84,
-        "systemic_jump_probability_multiplier": 1.28,
-        "systemic_jump_dispersion_multiplier": 1.12,
-        "idio_jump_probability_multiplier": 1.16,
-        "idio_loss_multiplier": 1.06,
-        "idio_loss_std_multiplier": 1.12,
-        "regime_stay_multiplier": 0.91,
-        "regime_off_diagonal_multiplier": 1.09,
-        "regime_risk_off_multiplier": 1.06,
-        "regime_stress_multiplier": 1.10,
-        "regime_mean_shift_delta": -0.00050,
-        "regime_volatility_multiplier": 1.12,
-        "regime_systemic_jump_probability_multiplier": 1.15,
-        "regime_systemic_jump_dispersion_multiplier": 1.08,
-        "regime_idio_jump_probability_multiplier": 1.10,
+        "drift_multiplier": -0.16,
+        "volatility_uplift": 0.18,
+        "systemic_jump_probability_multiplier": 1.45,
+        "idio_jump_probability_multiplier": 1.20,
+        "systemic_jump_dispersion_multiplier": 1.10,
+        "persistence_uplift": 0.08,
     },
     "severe": {
-        "expected_return_multiplier": 0.60,
-        "variance_multiplier": 1.48,
-        "tail_df_multiplier": 0.74,
-        "systemic_jump_probability_multiplier": 1.48,
-        "systemic_jump_dispersion_multiplier": 1.22,
-        "idio_jump_probability_multiplier": 1.30,
-        "idio_loss_multiplier": 1.10,
-        "idio_loss_std_multiplier": 1.20,
-        "regime_stay_multiplier": 0.84,
-        "regime_off_diagonal_multiplier": 1.16,
-        "regime_risk_off_multiplier": 1.10,
-        "regime_stress_multiplier": 1.18,
-        "regime_mean_shift_delta": -0.00080,
-        "regime_volatility_multiplier": 1.20,
-        "regime_systemic_jump_probability_multiplier": 1.22,
-        "regime_systemic_jump_dispersion_multiplier": 1.12,
-        "regime_idio_jump_probability_multiplier": 1.16,
+        "drift_multiplier": -0.28,
+        "volatility_uplift": 0.32,
+        "systemic_jump_probability_multiplier": 1.90,
+        "idio_jump_probability_multiplier": 1.35,
+        "systemic_jump_dispersion_multiplier": 1.18,
+        "persistence_uplift": 0.14,
     },
 }
 
@@ -81,43 +47,8 @@ def _clamp(value: float, *, lower: float = 0.0, upper: float = 100.0) -> float:
     return max(lower, min(upper, float(value)))
 
 
-def _normalize_mapping(value: Any) -> dict[str, Any]:
-    return dict(value or {})
-
-
-def _select_weight_map(
-    runtime_input: DailyEngineRuntimeInput,
-    *,
-    key_getter,
-) -> dict[str, float]:
-    weights: dict[str, float] = {}
-    for position in runtime_input.current_positions:
-        weight = max(0.0, float(getattr(position, "weight", 0.0) or 0.0))
-        key = str(key_getter(position)).strip()
-        if key and weight > 0.0:
-            weights[key] = weights.get(key, 0.0) + weight
-    total = sum(weights.values())
-    if total <= 0.0:
-        return {}
-    return {key: value / total for key, value in weights.items()}
-
-
-def _weighted_average(mapping: dict[str, float], weights: dict[str, float]) -> float:
-    if not mapping:
-        return 0.0
-    if not weights:
-        return float(sum(float(value) for value in mapping.values()) / float(len(mapping)))
-    total = 0.0
-    total_weight = 0.0
-    for key, value in mapping.items():
-        weight = float(weights.get(str(key), 0.0))
-        if weight <= 0.0:
-            continue
-        total += weight * float(value)
-        total_weight += weight
-    if total_weight <= 0.0:
-        return float(sum(float(value) for value in mapping.values()) / float(len(mapping)))
-    return total / total_weight
+def _clamp01(value: float) -> float:
+    return _clamp(value, lower=0.0, upper=1.0)
 
 
 def _mean(values: list[float]) -> float:
@@ -126,83 +57,98 @@ def _mean(values: list[float]) -> float:
     return float(sum(float(value) for value in values) / float(len(values)))
 
 
-def _get_regime_row(regime_state: RegimeStateSpec, regime_name: str) -> list[float]:
-    index = regime_state.regime_names.index(regime_name)
-    return [float(value) for value in regime_state.transition_matrix[index]]
+def _current_regime(runtime_input: DailyEngineRuntimeInput) -> str:
+    return str(runtime_input.regime_state.current_regime).strip()
 
 
-def _regime_pressure_component(regime_state: RegimeStateSpec, regime_name: str) -> float:
-    row = _get_regime_row(regime_state, regime_name)
-    regime_weights = {name: float(probability) for name, probability in zip(regime_state.regime_names, row, strict=True)}
-    stay_probability = float(regime_weights.get(regime_name, 0.0))
-    component = 100.0 * (1.0 - stay_probability)
-    for stressed_regime, multiplier in (("risk_off", 0.5), ("stress", 0.75)):
-        if stressed_regime in regime_weights:
-            component += 100.0 * float(regime_weights[stressed_regime]) * multiplier
-    return _clamp(component)
+def _current_regime_row(runtime_input: DailyEngineRuntimeInput) -> tuple[int, list[float]]:
+    regime_name = _current_regime(runtime_input)
+    index = runtime_input.regime_state.regime_names.index(regime_name)
+    return index, [float(value) for value in runtime_input.regime_state.transition_matrix[index]]
 
 
-def _effective_daily_drift(runtime_input: DailyEngineRuntimeInput) -> float:
-    factor_weights = _select_weight_map(runtime_input, key_getter=lambda position: getattr(position, "product_id", ""))
-    factor_returns: list[float] = []
-    if runtime_input.factor_dynamics.expected_return_by_factor:
-        factor_returns.append(
-            _weighted_average(
-                {str(key): float(value) for key, value in runtime_input.factor_dynamics.expected_return_by_factor.items()},
-                factor_weights,
-            )
-        )
-    else:
-        factor_returns.append(0.0)
+def _current_regime_adjustments(runtime_input: DailyEngineRuntimeInput) -> tuple[dict[str, float], dict[str, float]]:
+    regime_name = _current_regime(runtime_input)
+    mean_adjustments = dict(runtime_input.regime_state.regime_mean_adjustments.get(regime_name, {}))
+    jump_adjustments = dict(runtime_input.regime_state.regime_jump_adjustments.get(regime_name, {}))
+    vol_adjustments = dict(runtime_input.regime_state.regime_vol_adjustments.get(regime_name, {}))
+    return (
+        {
+            "mean_shift": float(mean_adjustments.get("mean_shift", 0.0)),
+        },
+        {
+            "volatility_multiplier": float(vol_adjustments.get("volatility_multiplier", 1.0)),
+            "systemic_jump_probability_multiplier": float(jump_adjustments.get("systemic_jump_probability_multiplier", 1.0)),
+            "idio_jump_probability_multiplier": float(jump_adjustments.get("idio_jump_probability_multiplier", 1.0)),
+            "systemic_jump_dispersion_multiplier": float(jump_adjustments.get("systemic_jump_dispersion_multiplier", 1.0)),
+        },
+    )
 
-    product_drags: list[float] = []
-    for product in runtime_input.products:
-        carry_profile = _normalize_mapping(product.carry_profile)
-        valuation_profile = _normalize_mapping(product.valuation_profile)
-        product_drags.append(
-            float(carry_profile.get("carry_drag", 0.0))
-            + float(carry_profile.get("tracking_drag", 0.0))
-            + float(valuation_profile.get("valuation_drag", 0.0))
-        )
 
-    annual_return = _mean(factor_returns)
-    daily_return = annual_return / 252.0
-    drag = _mean(product_drags)
-    return float(daily_return - drag)
+def _base_daily_drift(runtime_input: DailyEngineRuntimeInput) -> float:
+    expected_returns = [float(value) for value in runtime_input.factor_dynamics.expected_return_by_factor.values()]
+    if not expected_returns:
+        return 0.0
+    return float(_mean(expected_returns) / 252.0)
+
+
+def _regime_pressure_component(runtime_input: DailyEngineRuntimeInput) -> float:
+    regime_name = _current_regime(runtime_input)
+    regime_base = {"normal": 10.0, "risk_off": 45.0, "stress": 75.0}.get(regime_name, 10.0)
+    _, row = _current_regime_row(runtime_input)
+    p_self = float(row[runtime_input.regime_state.regime_names.index(regime_name)])
+    persistence_bonus = 25.0 * _clamp01((p_self - 0.60) / 0.30)
+    return _clamp(regime_base + persistence_bonus)
 
 
 def _drift_haircut_component(runtime_input: DailyEngineRuntimeInput) -> float:
-    effective_daily_drift = _effective_daily_drift(runtime_input)
-    return _clamp(50.0 - 100000.0 * effective_daily_drift)
+    base_daily_drift = _base_daily_drift(runtime_input)
+    current_mean_shift = _current_regime_mean_shift(runtime_input)
+    effective_daily_drift = max(base_daily_drift + current_mean_shift, -0.005)
+    drift_haircut_ratio = _clamp01((base_daily_drift - effective_daily_drift) / max(base_daily_drift, 1e-9))
+    return 100.0 * drift_haircut_ratio
 
 
 def _volatility_component(runtime_input: DailyEngineRuntimeInput) -> float:
-    factor_weights = _select_weight_map(runtime_input, key_getter=lambda position: getattr(position, "product_id", ""))
-    weighted_variances: list[float] = []
-    for factor_name, params in runtime_input.factor_dynamics.garch_params_by_factor.items():
-        variance = float(params.get("long_run_variance", 0.0))
-        if variance <= 0.0:
-            variance = float(params.get("omega", 0.0))
-        weighted_variances.append(variance * float(factor_weights.get(str(factor_name), 1.0)))
-    average_variance = _mean(weighted_variances)
-    average_sigma = average_variance ** 0.5 if average_variance > 0.0 else 0.0
-    return _clamp(average_sigma * 5000.0)
+    current_vol_multiplier = _current_regime_adjustments(runtime_input)[1]["volatility_multiplier"]
+    return 100.0 * _clamp01((current_vol_multiplier - 1.0) / 0.40)
 
 
 def _jump_probability_component(runtime_input: DailyEngineRuntimeInput) -> float:
-    systemic = float(runtime_input.jump_state.systemic_jump_probability_1d)
-    idio_probabilities = [
-        float(profile.get("probability_1d", 0.0))
-        for profile in runtime_input.jump_state.idio_jump_profile_by_product.values()
-    ]
-    return _clamp((systemic * 100.0) + (_mean(idio_probabilities) * 100.0))
+    adjustments = _current_regime_adjustments(runtime_input)[1]
+    sys_mult = adjustments["systemic_jump_probability_multiplier"]
+    idio_mult = adjustments["idio_jump_probability_multiplier"]
+    return 50.0 * _clamp01((sys_mult - 1.0) / 1.0) + 50.0 * _clamp01((idio_mult - 1.0) / 0.50)
 
 
 def _tail_severity_component(runtime_input: DailyEngineRuntimeInput) -> float:
-    tail_df = runtime_input.factor_dynamics.tail_df
-    tail_pressure = 0.0 if tail_df is None else 100.0 / max(float(tail_df), 2.000001)
-    dispersion_pressure = float(runtime_input.jump_state.systemic_jump_dispersion) * 100000.0
-    return _clamp(tail_pressure + dispersion_pressure)
+    disp_mult = _current_regime_adjustments(runtime_input)[1]["systemic_jump_dispersion_multiplier"]
+    return 100.0 * _clamp01((disp_mult - 1.0) / 0.20)
+
+
+def _drift_haircut_component(runtime_input: DailyEngineRuntimeInput) -> float:
+    base_daily_drift = _base_daily_drift(runtime_input)
+    current_mean_shift = _current_regime_mean_shift(runtime_input)
+    effective_daily_drift = max(base_daily_drift + current_mean_shift, -0.005)
+    drift_haircut_ratio = _clamp01((base_daily_drift - effective_daily_drift) / max(base_daily_drift, 1e-9))
+    return 100.0 * drift_haircut_ratio
+
+
+def _volatility_component(runtime_input: DailyEngineRuntimeInput) -> float:
+    current_vol_multiplier = _current_regime_volatility_multiplier(runtime_input)
+    return 100.0 * _clamp01((current_vol_multiplier - 1.0) / 0.40)
+
+
+def _jump_probability_component(runtime_input: DailyEngineRuntimeInput) -> float:
+    systemic_jump_probability_multiplier, idio_jump_probability_multiplier, _ = _current_regime_jump_multipliers(runtime_input)
+    return 50.0 * _clamp01((systemic_jump_probability_multiplier - 1.0) / 1.0) + 50.0 * _clamp01(
+        (idio_jump_probability_multiplier - 1.0) / 0.50
+    )
+
+
+def _tail_severity_component(runtime_input: DailyEngineRuntimeInput) -> float:
+    _, _, systemic_jump_dispersion_multiplier = _current_regime_jump_multipliers(runtime_input)
+    return 100.0 * _clamp01((systemic_jump_dispersion_multiplier - 1.0) / 0.20)
 
 
 def scenario_pressure_level(score: float | None) -> str | None:
@@ -240,17 +186,19 @@ def compute_market_pressure_snapshot(
             systemic_jump_dispersion_multiplier=None,
         )
 
-    current_regime = str(runtime.regime_state.current_regime).strip()
-    regime_component = _regime_pressure_component(runtime.regime_state, current_regime)
-    effective_daily_drift = _effective_daily_drift(runtime)
+    current_regime = _current_regime(runtime)
+    regime_component = _regime_pressure_component(runtime)
+    base_daily_drift = _base_daily_drift(runtime)
+    current_mean_shift, current_multipliers = _current_regime_adjustments(runtime)
+    effective_daily_drift = max(base_daily_drift + current_mean_shift["mean_shift"], -0.005)
     drift_haircut_component = _drift_haircut_component(runtime)
     volatility_component = _volatility_component(runtime)
     jump_probability_component = _jump_probability_component(runtime)
     tail_severity_component = _tail_severity_component(runtime)
 
     score = (
-        0.20 * regime_component
-        + 0.20 * drift_haircut_component
+        0.30 * regime_component
+        + 0.10 * drift_haircut_component
         + 0.25 * volatility_component
         + 0.20 * jump_probability_component
         + 0.15 * tail_severity_component
@@ -267,156 +215,57 @@ def compute_market_pressure_snapshot(
         jump_probability_component=jump_probability_component,
         tail_severity_component=tail_severity_component,
         effective_daily_drift=effective_daily_drift,
-        volatility_multiplier=float(runtime.regime_state.regime_vol_adjustments.get(current_regime, {}).get("volatility_multiplier", 1.0)),
-        systemic_jump_probability_multiplier=float(
-            runtime.regime_state.regime_jump_adjustments.get(current_regime, {}).get("systemic_jump_probability_multiplier", 1.0)
-        ),
-        idio_jump_probability_multiplier=float(
-            runtime.regime_state.regime_jump_adjustments.get(current_regime, {}).get("idio_jump_probability_multiplier", 1.0)
-        ),
-        systemic_jump_dispersion_multiplier=float(
-            runtime.regime_state.regime_jump_adjustments.get(current_regime, {}).get("systemic_jump_dispersion_multiplier", 1.0)
-        ),
+        volatility_multiplier=current_multipliers["volatility_multiplier"],
+        systemic_jump_probability_multiplier=current_multipliers["systemic_jump_probability_multiplier"],
+        idio_jump_probability_multiplier=current_multipliers["idio_jump_probability_multiplier"],
+        systemic_jump_dispersion_multiplier=current_multipliers["systemic_jump_dispersion_multiplier"],
     )
 
 
-def _scale_transition_matrix(
+def _mutate_current_regime_row(
     regime_state: RegimeStateSpec,
     *,
-    stay_multiplier: float,
-    off_diagonal_multiplier: float,
-    risk_off_multiplier: float,
-    stress_multiplier: float,
+    persistence_uplift: float,
 ) -> list[list[float]]:
-    adjusted_matrix: list[list[float]] = []
-    for row_index, row in enumerate(regime_state.transition_matrix):
-        adjusted_row: list[float] = []
-        for col_index, probability in enumerate(row):
-            multiplier = off_diagonal_multiplier
-            if row_index == col_index:
-                multiplier = stay_multiplier
-            target_regime = regime_state.regime_names[col_index]
-            if target_regime == "risk_off":
-                multiplier *= risk_off_multiplier
-            elif target_regime == "stress":
-                multiplier *= stress_multiplier
-            adjusted_row.append(max(0.0, float(probability) * float(multiplier)))
-        total = sum(adjusted_row)
-        if total <= 0.0:
-            adjusted_row = [1.0 if idx == row_index else 0.0 for idx in range(len(row))]
-            total = 1.0
-        adjusted_matrix.append([value / total for value in adjusted_row])
+    regime_name = str(regime_state.current_regime).strip()
+    current_index = regime_state.regime_names.index(regime_name)
+    current_row = [float(value) for value in regime_state.transition_matrix[current_index]]
+    current_p_self = float(current_row[current_index])
+    new_p_self = min(0.95, current_p_self + float(persistence_uplift))
+    if len(current_row) == 1:
+        return [[1.0]]
+    remaining_mass = max(0.0, 1.0 - new_p_self)
+    off_diagonal_total = max(0.0, 1.0 - current_p_self)
+    if off_diagonal_total <= 1e-12:
+        redistributed = [
+            remaining_mass / float(len(current_row) - 1) if idx != current_index else new_p_self
+            for idx in range(len(current_row))
+        ]
+    else:
+        scale = remaining_mass / off_diagonal_total
+        redistributed = [
+            new_p_self if idx == current_index else float(value) * scale
+            for idx, value in enumerate(current_row)
+        ]
+    adjusted_matrix = [list(row) for row in regime_state.transition_matrix]
+    adjusted_matrix[current_index] = redistributed
     return adjusted_matrix
 
 
-def _scale_factor_dynamics(
-    factor_dynamics: FactorDynamicsSpec,
-    *,
-    expected_return_multiplier: float,
-    variance_multiplier: float,
-    tail_df_multiplier: float,
-) -> FactorDynamicsSpec:
-    scaled_garch_params: dict[str, dict[str, float]] = {}
-    for factor_name, params in factor_dynamics.garch_params_by_factor.items():
-        scaled_params = dict(params)
-        if "omega" in scaled_params:
-            scaled_params["omega"] = max(0.0, float(scaled_params["omega"]) * float(variance_multiplier))
-        if "alpha" in scaled_params:
-            scaled_params["alpha"] = min(0.999, float(scaled_params["alpha"]) * (1.0 + (variance_multiplier - 1.0) * 0.5))
-        if "beta" in scaled_params:
-            scaled_params["beta"] = min(0.999, float(scaled_params["beta"]) * (1.0 + (variance_multiplier - 1.0) * 0.25))
-        if "long_run_variance" in scaled_params:
-            scaled_params["long_run_variance"] = max(1e-12, float(scaled_params["long_run_variance"]) * float(variance_multiplier))
-        scaled_garch_params[str(factor_name)] = scaled_params
-
-    return replace(
-        factor_dynamics,
-        tail_df=None if factor_dynamics.tail_df is None else max(2.000001, float(factor_dynamics.tail_df) * float(tail_df_multiplier)),
-        garch_params_by_factor=scaled_garch_params,
-        expected_return_by_factor={
-            str(factor_name): float(value) * float(expected_return_multiplier)
-            for factor_name, value in factor_dynamics.expected_return_by_factor.items()
-        },
-    )
+def _current_regime_mean_shift(runtime_input: DailyEngineRuntimeInput) -> float:
+    return _current_regime_adjustments(runtime_input)[0]["mean_shift"]
 
 
-def _scale_jump_state(
-    jump_state: JumpStateSpec,
-    *,
-    systemic_jump_probability_multiplier: float,
-    systemic_jump_dispersion_multiplier: float,
-    idio_jump_probability_multiplier: float,
-    idio_loss_multiplier: float,
-    idio_loss_std_multiplier: float,
-) -> JumpStateSpec:
-    scaled_profiles: dict[str, dict[str, float]] = {}
-    for product_id, profile in jump_state.idio_jump_profile_by_product.items():
-        scaled_profile = dict(profile)
-        if "probability_1d" in scaled_profile:
-            scaled_profile["probability_1d"] = min(1.0, float(scaled_profile["probability_1d"]) * float(idio_jump_probability_multiplier))
-        if "loss_mean" in scaled_profile:
-            scaled_profile["loss_mean"] = float(scaled_profile["loss_mean"]) * float(idio_loss_multiplier)
-        if "loss_std" in scaled_profile:
-            scaled_profile["loss_std"] = max(1e-12, float(scaled_profile["loss_std"]) * float(idio_loss_std_multiplier))
-        scaled_profiles[str(product_id)] = scaled_profile
-
-    return replace(
-        jump_state,
-        systemic_jump_probability_1d=min(1.0, float(jump_state.systemic_jump_probability_1d) * float(systemic_jump_probability_multiplier)),
-        systemic_jump_dispersion=max(1e-12, float(jump_state.systemic_jump_dispersion) * float(systemic_jump_dispersion_multiplier)),
-        idio_jump_profile_by_product=scaled_profiles,
-    )
+def _current_regime_volatility_multiplier(runtime_input: DailyEngineRuntimeInput) -> float:
+    return _current_regime_adjustments(runtime_input)[1]["volatility_multiplier"]
 
 
-def _scale_regime_state(
-    regime_state: RegimeStateSpec,
-    *,
-    stay_multiplier: float,
-    off_diagonal_multiplier: float,
-    risk_off_multiplier: float,
-    stress_multiplier: float,
-    mean_shift_delta: float,
-    volatility_multiplier: float,
-    systemic_jump_probability_multiplier: float,
-    systemic_jump_dispersion_multiplier: float,
-    idio_jump_probability_multiplier: float,
-) -> RegimeStateSpec:
-    adjusted_mean: dict[str, dict[str, float]] = {}
-    adjusted_vol: dict[str, dict[str, float]] = {}
-    adjusted_jump: dict[str, dict[str, float]] = {}
-    for regime_name in regime_state.regime_names:
-        mean_adjustments = dict(regime_state.regime_mean_adjustments.get(regime_name, {}))
-        mean_adjustments["mean_shift"] = float(mean_adjustments.get("mean_shift", 0.0)) + float(mean_shift_delta)
-        adjusted_mean[regime_name] = mean_adjustments
-
-        vol_adjustments = dict(regime_state.regime_vol_adjustments.get(regime_name, {}))
-        vol_adjustments["volatility_multiplier"] = float(vol_adjustments.get("volatility_multiplier", 1.0)) * float(volatility_multiplier)
-        adjusted_vol[regime_name] = vol_adjustments
-
-        jump_adjustments = dict(regime_state.regime_jump_adjustments.get(regime_name, {}))
-        jump_adjustments["systemic_jump_probability_multiplier"] = float(
-            jump_adjustments.get("systemic_jump_probability_multiplier", 1.0)
-        ) * float(systemic_jump_probability_multiplier)
-        jump_adjustments["systemic_jump_dispersion_multiplier"] = float(
-            jump_adjustments.get("systemic_jump_dispersion_multiplier", 1.0)
-        ) * float(systemic_jump_dispersion_multiplier)
-        jump_adjustments["idio_jump_probability_multiplier"] = float(
-            jump_adjustments.get("idio_jump_probability_multiplier", 1.0)
-        ) * float(idio_jump_probability_multiplier)
-        adjusted_jump[regime_name] = jump_adjustments
-
-    return replace(
-        regime_state,
-        transition_matrix=_scale_transition_matrix(
-            regime_state,
-            stay_multiplier=stay_multiplier,
-            off_diagonal_multiplier=off_diagonal_multiplier,
-            risk_off_multiplier=risk_off_multiplier,
-            stress_multiplier=stress_multiplier,
-        ),
-        regime_mean_adjustments=adjusted_mean,
-        regime_vol_adjustments=adjusted_vol,
-        regime_jump_adjustments=adjusted_jump,
+def _current_regime_jump_multipliers(runtime_input: DailyEngineRuntimeInput) -> tuple[float, float, float]:
+    adjustments = _current_regime_adjustments(runtime_input)[1]
+    return (
+        adjustments["systemic_jump_probability_multiplier"],
+        adjustments["idio_jump_probability_multiplier"],
+        adjustments["systemic_jump_dispersion_multiplier"],
     )
 
 
@@ -430,32 +279,45 @@ def build_deteriorated_runtime_input(
     if normalized_level not in _DETERIORATION_OVERLAYS:
         raise ValueError(f"unknown pressure deterioration level: {level}")
     overlay = _DETERIORATION_OVERLAYS[normalized_level]
+    base_daily_drift = _base_daily_drift(runtime)
+    regime_state = runtime.regime_state
+    current_regime = str(regime_state.current_regime).strip()
+    current_mean_adjustments = deepcopy(regime_state.regime_mean_adjustments.get(current_regime, {}))
+    current_vol_adjustments = deepcopy(regime_state.regime_vol_adjustments.get(current_regime, {}))
+    current_jump_adjustments = deepcopy(regime_state.regime_jump_adjustments.get(current_regime, {}))
+    current_mean_adjustments["mean_shift"] = float(current_mean_adjustments.get("mean_shift", 0.0)) + float(
+        overlay["drift_multiplier"] * base_daily_drift
+    )
+    current_vol_adjustments["volatility_multiplier"] = float(current_vol_adjustments.get("volatility_multiplier", 1.0)) + float(
+        overlay["volatility_uplift"]
+    )
+    current_jump_adjustments["systemic_jump_probability_multiplier"] = float(
+        current_jump_adjustments.get("systemic_jump_probability_multiplier", 1.0)
+    ) * float(overlay["systemic_jump_probability_multiplier"])
+    current_jump_adjustments["idio_jump_probability_multiplier"] = float(
+        current_jump_adjustments.get("idio_jump_probability_multiplier", 1.0)
+    ) * float(overlay["idio_jump_probability_multiplier"])
+    current_jump_adjustments["systemic_jump_dispersion_multiplier"] = float(
+        current_jump_adjustments.get("systemic_jump_dispersion_multiplier", 1.0)
+    ) * float(overlay["systemic_jump_dispersion_multiplier"])
+
+    updated_mean_adjustments = deepcopy(regime_state.regime_mean_adjustments)
+    updated_vol_adjustments = deepcopy(regime_state.regime_vol_adjustments)
+    updated_jump_adjustments = deepcopy(regime_state.regime_jump_adjustments)
+    updated_mean_adjustments[current_regime] = current_mean_adjustments
+    updated_vol_adjustments[current_regime] = current_vol_adjustments
+    updated_jump_adjustments[current_regime] = current_jump_adjustments
+
     return replace(
         runtime,
-        factor_dynamics=_scale_factor_dynamics(
-            runtime.factor_dynamics,
-            expected_return_multiplier=float(overlay["expected_return_multiplier"]),
-            variance_multiplier=float(overlay["variance_multiplier"]),
-            tail_df_multiplier=float(overlay["tail_df_multiplier"]),
-        ),
-        jump_state=_scale_jump_state(
-            runtime.jump_state,
-            systemic_jump_probability_multiplier=float(overlay["systemic_jump_probability_multiplier"]),
-            systemic_jump_dispersion_multiplier=float(overlay["systemic_jump_dispersion_multiplier"]),
-            idio_jump_probability_multiplier=float(overlay["idio_jump_probability_multiplier"]),
-            idio_loss_multiplier=float(overlay["idio_loss_multiplier"]),
-            idio_loss_std_multiplier=float(overlay["idio_loss_std_multiplier"]),
-        ),
-        regime_state=_scale_regime_state(
-            runtime.regime_state,
-            stay_multiplier=float(overlay["regime_stay_multiplier"]),
-            off_diagonal_multiplier=float(overlay["regime_off_diagonal_multiplier"]),
-            risk_off_multiplier=float(overlay["regime_risk_off_multiplier"]),
-            stress_multiplier=float(overlay["regime_stress_multiplier"]),
-            mean_shift_delta=float(overlay["regime_mean_shift_delta"]),
-            volatility_multiplier=float(overlay["regime_volatility_multiplier"]),
-            systemic_jump_probability_multiplier=float(overlay["regime_systemic_jump_probability_multiplier"]),
-            systemic_jump_dispersion_multiplier=float(overlay["regime_systemic_jump_dispersion_multiplier"]),
-            idio_jump_probability_multiplier=float(overlay["regime_idio_jump_probability_multiplier"]),
+        regime_state=replace(
+            regime_state,
+            transition_matrix=_mutate_current_regime_row(
+                regime_state,
+                persistence_uplift=float(overlay["persistence_uplift"]),
+            ),
+            regime_mean_adjustments=updated_mean_adjustments,
+            regime_vol_adjustments=updated_vol_adjustments,
+            regime_jump_adjustments=updated_jump_adjustments,
         ),
     )

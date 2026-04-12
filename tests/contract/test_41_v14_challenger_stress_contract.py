@@ -723,6 +723,13 @@ def test_scenario_pressure_level_maps_numeric_scores_to_labels() -> None:
     assert scenario_pressure_level(88.0) == "L3_高压"
 
 
+def test_historical_replay_pressure_is_null() -> None:
+    snapshot = compute_market_pressure_snapshot(_build_benign_positive_drift_runtime_input(), scenario_kind="historical_replay")
+
+    assert snapshot.market_pressure_score is None
+    assert snapshot.market_pressure_level is None
+
+
 def test_market_pressure_score_is_monotonic_across_deterioration_levels() -> None:
     runtime_input = _build_benign_positive_drift_runtime_input()
 
