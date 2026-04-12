@@ -18,6 +18,7 @@ from orchestrator.engine import run_orchestrator
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 from tests.support.formal_snapshot_helpers import (
     formal_market_raw_overrides as _support_formal_market_raw_overrides,
+    observed_market_raw_overrides as _support_observed_market_raw_overrides,
     write_formal_snapshot_source,
 )
 
@@ -59,16 +60,56 @@ def _observed_external_snapshot_source(
     as_of: str = "2026-03-30T00:00:00Z",
     market_raw_overrides: dict[str, object] | None = None,
 ) -> Path:
+    effective_market_raw_overrides = deepcopy(_support_observed_market_raw_overrides())
+    if market_raw_overrides:
+        for key, value in dict(market_raw_overrides).items():
+            effective_market_raw_overrides[key] = deepcopy(value)
     return write_formal_snapshot_source(
         tmp_path,
         profile,
         as_of=as_of,
-        market_raw_overrides=market_raw_overrides,
+        market_raw_overrides=effective_market_raw_overrides,
     )
 
 
-def _formal_market_raw_overrides() -> dict[str, object]:
-    return _support_formal_market_raw_overrides()
+@pytest.mark.contract
+def test_observed_external_snapshot_uses_non_repeating_factor_history_series(tmp_path):
+    profile = _profile(account_profile_id="observed_series_user")
+    snapshot_path = _observed_external_snapshot_source(tmp_path, profile)
+    snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    products = (
+        snapshot_payload["market_raw"]["historical_dataset"]["product_simulation_input"]["products"]
+    )
+    equity_series = next(item["return_series"] for item in products if item["product_id"] == "cn_equity_dividend_etf")
+    historical_dataset = snapshot_payload["market_raw"]["historical_dataset"]
+    factor_mapping = snapshot_payload["market_raw"]["probability_engine"]["factor_mapping"]
+
+    assert len(equity_series) >= 16
+    assert equity_series[:8] != equity_series[8:16]
+    assert historical_dataset["source_name"] == "observed_market_history"
+    assert historical_dataset["source_ref"].startswith("observed://")
+    assert factor_mapping["source_name"] == "observed_product_level_factor_mapping"
+    assert factor_mapping["source_ref"].startswith("observed://")
+
+
+@pytest.mark.contract
+def test_helper_formal_snapshot_keeps_repeated_acceptance_pattern(tmp_path):
+    profile = _profile(account_profile_id="helper_series_user")
+    snapshot_path = write_formal_snapshot_source(tmp_path, profile)
+    snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    products = (
+        snapshot_payload["market_raw"]["historical_dataset"]["product_simulation_input"]["products"]
+    )
+    equity_series = next(item["return_series"] for item in products if item["product_id"] == "cn_equity_dividend_etf")
+    historical_dataset = snapshot_payload["market_raw"]["historical_dataset"]
+    factor_mapping = snapshot_payload["market_raw"]["probability_engine"]["factor_mapping"]
+
+    assert len(equity_series) >= 16
+    assert equity_series[:8] == equity_series[8:16]
+    assert historical_dataset["source_name"] == "helper_market_history"
+    assert historical_dataset["source_ref"].startswith("helper://")
+    assert factor_mapping["source_name"] == "helper_pattern_factor_mapping"
+    assert factor_mapping["source_ref"].startswith("helper://")
 
 
 @pytest.mark.contract

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import fields as dataclass_fields
 from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 from typing import Any
@@ -12,7 +13,13 @@ from calibration.engine import run_calibration
 from decision_card.builder import build_decision_card
 from decision_card.types import DecisionCardBuildInput, DecisionCardType
 from goal_solver.engine import run_goal_solver
-from goal_solver.types import normalize_product_probability_method
+from goal_solver.types import (
+    FrontierAnalysis,
+    FrontierScenario,
+    StrategicAllocation,
+    SuccessProbabilityResult,
+    normalize_product_probability_method,
+)
 from probability_engine.engine import run_probability_engine
 from product_mapping import build_candidate_product_context, build_execution_plan
 from product_mapping.types import ProductCandidate
@@ -491,6 +498,7 @@ def _build_probability_engine_run_input(
     calibration_result: Any,
     goal_solver_input: Any,
     goal_solver_output: Any,
+    allocation_name: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     goal_input = _as_dict(goal_solver_input)
     solver_output = _as_dict(goal_solver_output)
@@ -499,8 +507,14 @@ def _build_probability_engine_run_input(
         solver_output.get("recommended_allocation_name"),
         recommended_result.get("allocation_name"),
     )
+    selected_name = _first_text(allocation_name, recommended_name)
+    all_results = [_as_dict(item) for item in list(solver_output.get("all_results") or []) if _as_dict(item)]
+    selected_result = next(
+        (item for item in all_results if _first_text(item.get("allocation_name")) == selected_name),
+        recommended_result,
+    )
     candidate_contexts = _as_dict(goal_input.get("candidate_product_contexts"))
-    recommended_context = _as_dict(candidate_contexts.get(recommended_name)) if recommended_name else {}
+    recommended_context = _as_dict(candidate_contexts.get(selected_name)) if selected_name else {}
     simulation_input = _as_dict(recommended_context.get("product_simulation_input"))
     simulation_products = [
         _as_dict(item) for item in list(simulation_input.get("products") or []) if _as_dict(item)
@@ -720,7 +734,7 @@ def _build_probability_engine_run_input(
                 }
             )
 
-    target_value = float(goal.get("goal_amount") or recommended_result.get("target_value") or total_value)
+    target_value = float(goal.get("goal_amount") or selected_result.get("target_value") or total_value)
     probability_input = {
         "as_of": as_of,
         "path_horizon_days": path_horizon_days,
@@ -764,7 +778,11 @@ def _build_probability_engine_run_input(
         "challenger_block_size": 2,
         "challenger_path_count": 32,
         "stress_path_count": 16,
-        "evidence_bundle_ref": f"evidence://probability_engine/{run_id}",
+        "evidence_bundle_ref": (
+            f"evidence://probability_engine/{run_id}/{selected_name}"
+            if selected_name
+            else f"evidence://probability_engine/{run_id}"
+        ),
         "random_seed": int(_as_dict(goal_input.get("solver_params")).get("seed") or 17),
     }
     return probability_input, {
@@ -772,6 +790,245 @@ def _build_probability_engine_run_input(
         "monthly_fallback_used": False,
         "bucket_fallback_used": False,
     }
+
+
+def _probability_primary_summary(probability_engine_result: Any) -> dict[str, Any]:
+    payload = _as_dict(probability_engine_result)
+    output = _as_dict(payload.get("output"))
+    primary = _as_dict(output.get("primary_result"))
+    path_stats = _as_dict(primary.get("path_stats"))
+    disclosure = _as_dict(output.get("probability_disclosure_payload"))
+    internal_category = _text(payload.get("resolved_result_category"))
+    mapped_method = (
+        "product_independent_path"
+        if internal_category == "formal_strict_result"
+        else "product_estimated_path"
+    )
+    return {
+        "run_outcome_status": _text(payload.get("run_outcome_status")) or "",
+        "resolved_result_category": internal_category or "",
+        "product_probability_method": mapped_method,
+        "success_probability": float(primary.get("success_probability") or 0.0),
+        "cagr_p50": float(path_stats.get("cagr_p50") or 0.0),
+        "terminal_value_mean": float(path_stats.get("terminal_value_mean") or 0.0),
+        "terminal_value_p50": float(path_stats.get("terminal_value_p50") or 0.0),
+        "max_drawdown_p95": float(path_stats.get("max_drawdown_p95") or 1.0),
+        "confidence_level": _text(disclosure.get("confidence_level")) or "",
+    }
+
+
+def _candidate_probability_ranking_key(
+    summary: dict[str, Any],
+    *,
+    required_return: float | None,
+) -> tuple[int, int, float, float, float, float]:
+    status = _text(summary.get("run_outcome_status")) or ""
+    category = _text(summary.get("resolved_result_category")) or ""
+    is_usable = status in {"success", "degraded"} and category in {
+        "formal_strict_result",
+        "formal_estimated_result",
+        "degraded_formal_result",
+    }
+    success_probability = float(summary.get("success_probability") or 0.0)
+    cagr_p50 = float(summary.get("cagr_p50") or 0.0)
+    drawdown_p95 = float(summary.get("max_drawdown_p95") or 1.0)
+    terminal_value_p50 = float(summary.get("terminal_value_p50") or 0.0)
+    return_gap = 0.0 if required_return is None else max(float(required_return) - cagr_p50, 0.0)
+    meets_target = required_return is None or cagr_p50 >= float(required_return)
+    if meets_target:
+        return (
+            1 if is_usable else 0,
+            1,
+            -return_gap,
+            -drawdown_p95,
+            terminal_value_p50,
+            success_probability,
+        )
+    return (
+        1 if is_usable else 0,
+        0,
+        success_probability,
+        -return_gap,
+        -drawdown_p95,
+        terminal_value_p50,
+    )
+
+
+def _apply_probability_summary_to_result(result: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    updated = deepcopy(result)
+    updated["v14_primary_summary"] = dict(summary)
+    updated["success_probability"] = float(summary.get("success_probability") or 0.0)
+    updated["product_independent_success_probability"] = float(summary.get("success_probability") or 0.0)
+    updated["expected_annual_return"] = float(summary.get("cagr_p50") or 0.0)
+    updated["expected_terminal_value"] = float(summary.get("terminal_value_mean") or 0.0)
+    updated["product_probability_method"] = _text(summary.get("product_probability_method")) or updated.get(
+        "product_probability_method"
+    )
+    return updated
+
+
+def _materialize_frontier_analysis(payload: dict[str, Any] | None) -> FrontierAnalysis | None:
+    data = _as_dict(payload)
+    if not data:
+        return None
+    return FrontierAnalysis(
+        implied_required_annual_return=data.get("implied_required_annual_return"),
+        success_probability_threshold=float(data.get("success_probability_threshold") or 0.0),
+        max_drawdown_tolerance=float(data.get("max_drawdown_tolerance") or 0.0),
+        recommended=FrontierScenario(**_filter_dataclass_kwargs(FrontierScenario, _as_dict(data.get("recommended")))),
+        highest_probability=FrontierScenario(
+            **_filter_dataclass_kwargs(FrontierScenario, _as_dict(data.get("highest_probability")))
+        ),
+        target_return_priority=FrontierScenario(
+            **_filter_dataclass_kwargs(FrontierScenario, _as_dict(data.get("target_return_priority")))
+        ),
+        drawdown_priority=FrontierScenario(
+            **_filter_dataclass_kwargs(FrontierScenario, _as_dict(data.get("drawdown_priority")))
+        ),
+        balanced_tradeoff=FrontierScenario(
+            **_filter_dataclass_kwargs(FrontierScenario, _as_dict(data.get("balanced_tradeoff")))
+        ),
+        scenario_status=dict(data.get("scenario_status") or {}),
+    )
+
+
+def _filter_dataclass_kwargs(dataclass_type: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = {field.name for field in dataclass_fields(dataclass_type)}
+    return {key: deepcopy(value) for key, value in dict(payload or {}).items() if key in allowed}
+
+
+def _materialize_goal_solver_output_like(template: Any, payload: dict[str, Any]) -> Any:
+    if isinstance(template, dict):
+        return payload
+    materialized = deepcopy(template)
+    if hasattr(materialized, "recommended_allocation"):
+        materialized.recommended_allocation = StrategicAllocation(
+            **_filter_dataclass_kwargs(StrategicAllocation, _as_dict(payload.get("recommended_allocation")))
+        )
+    if hasattr(materialized, "recommended_result"):
+        materialized.recommended_result = SuccessProbabilityResult(
+            **_filter_dataclass_kwargs(SuccessProbabilityResult, _as_dict(payload.get("recommended_result")))
+        )
+    if hasattr(materialized, "all_results"):
+        materialized.all_results = [
+            SuccessProbabilityResult(**_filter_dataclass_kwargs(SuccessProbabilityResult, _as_dict(item)))
+            for item in list(payload.get("all_results") or [])
+        ]
+    if hasattr(materialized, "frontier_analysis"):
+        materialized.frontier_analysis = _materialize_frontier_analysis(payload.get("frontier_analysis"))
+    if hasattr(materialized, "solver_notes"):
+        materialized.solver_notes = [str(note) for note in list(payload.get("solver_notes") or [])]
+    if hasattr(materialized, "candidate_menu"):
+        materialized.candidate_menu = list(payload.get("candidate_menu") or [])
+    if hasattr(materialized, "fallback_suggestions"):
+        materialized.fallback_suggestions = list(payload.get("fallback_suggestions") or [])
+    return materialized
+
+
+def _rerank_goal_solver_output_with_v14_primary(
+    *,
+    run_id: str,
+    envelope: dict[str, Any],
+    calibration_result: Any,
+    goal_solver_input: Any,
+    goal_solver_output: Any,
+) -> tuple[Any, dict[str, Any] | None, Any | None]:
+    goal_output = deepcopy(_as_dict(goal_solver_output))
+    all_results = [_as_dict(item) for item in list(goal_output.get("all_results") or []) if _as_dict(item)]
+    candidate_allocations = {
+        _first_text(item.get("name")) or "": _as_dict(item)
+        for item in list(_as_dict(goal_solver_input).get("candidate_allocations") or [])
+        if _first_text(_as_dict(item).get("name"))
+    }
+    if not all_results or not candidate_allocations:
+        return _materialize_goal_solver_output_like(goal_solver_output, goal_output), None, None
+
+    candidate_summaries: dict[str, dict[str, Any]] = {}
+    candidate_probability_inputs: dict[str, dict[str, Any]] = {}
+    candidate_probability_results: dict[str, Any] = {}
+    for result in all_results:
+        allocation_name = _first_text(result.get("allocation_name"))
+        if allocation_name is None or allocation_name not in candidate_allocations:
+            continue
+        probability_input, _ = _build_probability_engine_run_input(
+            run_id=run_id,
+            envelope=envelope,
+            calibration_result=calibration_result,
+            goal_solver_input=goal_solver_input,
+            goal_solver_output=goal_output,
+            allocation_name=allocation_name,
+        )
+        if probability_input is None:
+            continue
+        probability_result = run_probability_engine(probability_input)
+        summary = _probability_primary_summary(probability_result)
+        candidate_summaries[allocation_name] = summary
+        candidate_probability_inputs[allocation_name] = probability_input
+        candidate_probability_results[allocation_name] = probability_result
+
+    if not candidate_summaries:
+        return _materialize_goal_solver_output_like(goal_solver_output, goal_output), None, None
+
+    required_return = float(_as_dict(all_results[0]).get("implied_required_annual_return") or 0.0)
+    ranked_names = sorted(
+        candidate_summaries,
+        key=lambda name: _candidate_probability_ranking_key(
+            candidate_summaries[name],
+            required_return=required_return,
+        ),
+        reverse=True,
+    )
+    selected_name = ranked_names[0]
+    patched_results: list[dict[str, Any]] = []
+    selected_result_payload: dict[str, Any] | None = None
+    for result in all_results:
+        allocation_name = _first_text(result.get("allocation_name"))
+        if allocation_name is None:
+            continue
+        summary = candidate_summaries.get(allocation_name)
+        patched = _apply_probability_summary_to_result(result, summary) if summary is not None else deepcopy(result)
+        if allocation_name == selected_name:
+            selected_result_payload = deepcopy(patched)
+            patched["rationale"] = "recommended_by_v14_primary_reranking"
+        patched_results.append(patched)
+
+    if selected_result_payload is None:
+        return _materialize_goal_solver_output_like(goal_solver_output, goal_output), None, None
+
+    goal_output["all_results"] = patched_results
+    goal_output["recommended_result"] = selected_result_payload
+    goal_output["recommended_allocation"] = deepcopy(candidate_allocations[selected_name])
+    goal_output["recommended_allocation_name"] = selected_name
+    goal_output["v14_candidate_probability_ranking"] = deepcopy(candidate_summaries)
+    solver_notes = [str(note) for note in list(goal_output.get("solver_notes") or [])]
+    solver_notes.append(
+        "v14_primary_reranked "
+        f"selected={selected_name} "
+        f"required_return={required_return:.4f} "
+        f"success={float(candidate_summaries[selected_name].get('success_probability') or 0.0):.4f} "
+        f"cagr_p50={float(candidate_summaries[selected_name].get('cagr_p50') or 0.0):.4f}"
+    )
+    goal_output["solver_notes"] = solver_notes
+
+    frontier_analysis = _as_dict(goal_output.get("frontier_analysis"))
+    if frontier_analysis:
+        recommended_frontier = _as_dict(frontier_analysis.get("recommended"))
+        recommended_frontier["allocation_name"] = selected_name
+        recommended_frontier["label"] = selected_name
+        recommended_frontier["success_probability"] = float(
+            candidate_summaries[selected_name].get("success_probability") or 0.0
+        )
+        recommended_frontier["expected_annual_return"] = float(
+            candidate_summaries[selected_name].get("cagr_p50") or 0.0
+        )
+        frontier_analysis["recommended"] = recommended_frontier
+        goal_output["frontier_analysis"] = frontier_analysis
+
+    return (
+        _materialize_goal_solver_output_like(goal_solver_output, goal_output),
+        candidate_probability_inputs.get(selected_name),
+        candidate_probability_results.get(selected_name),
+    )
 
 
 def _mapped_probability_result_category(value: Any) -> str | None:
@@ -3441,15 +3698,25 @@ def run_orchestrator(
                                 goal_solver_output,
                                 solver_input,
                             )
-                            probability_engine_input, _ = _build_probability_engine_run_input(
-                                run_id=run_id,
-                                envelope=envelope,
-                                calibration_result=calibration_result,
-                                goal_solver_input=solver_input,
-                                goal_solver_output=goal_solver_output,
+                            goal_solver_output, probability_engine_input, probability_engine_result = (
+                                _rerank_goal_solver_output_with_v14_primary(
+                                    run_id=run_id,
+                                    envelope=envelope,
+                                    calibration_result=calibration_result,
+                                    goal_solver_input=solver_input,
+                                    goal_solver_output=goal_solver_output,
+                                )
                             )
-                            if probability_engine_input is not None:
-                                probability_engine_result = run_probability_engine(probability_engine_input)
+                            if probability_engine_result is None:
+                                probability_engine_input, _ = _build_probability_engine_run_input(
+                                    run_id=run_id,
+                                    envelope=envelope,
+                                    calibration_result=calibration_result,
+                                    goal_solver_input=solver_input,
+                                    goal_solver_output=goal_solver_output,
+                                )
+                                if probability_engine_input is not None:
+                                    probability_engine_result = run_probability_engine(probability_engine_input)
                             solver_snapshot_id = _obj(goal_solver_output).get("input_snapshot_id")
                             recommended_name = _first_text(
                                 _as_dict(goal_solver_output).get("recommended_allocation_name"),

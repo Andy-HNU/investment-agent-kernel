@@ -10,8 +10,15 @@ import pytest
 import orchestrator.engine as orchestrator_engine
 from allocation_engine.types import AllocationEngineResult
 from decision_card.types import DecisionCardType
-from orchestrator.engine import run_orchestrator
+from orchestrator.engine import _rerank_goal_solver_output_with_v14_primary, run_orchestrator
 from orchestrator.types import OrchestratorResult, WorkflowStatus, WorkflowType
+from probability_engine.contracts import (
+    PathStatsSummary,
+    ProbabilityDisclosurePayload,
+    ProbabilityEngineOutput,
+    ProbabilityEngineRunResult,
+    RecipeSimulationResult,
+)
 from runtime_optimizer.types import RuntimeOptimizerMode, RuntimeOptimizerResult
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 
@@ -99,6 +106,62 @@ def _market_raw(goal_solver_input_base: dict) -> dict:
         },
         "expected_returns": assumptions["expected_returns"],
     }
+
+
+def _probability_result(
+    *,
+    success_probability: float,
+    cagr_p50: float,
+    terminal_value_mean: float,
+) -> ProbabilityEngineRunResult:
+    cagr_low = cagr_p50 - 0.01
+    cagr_high = cagr_p50 + 0.01
+    terminal_value_p50 = terminal_value_mean
+    return ProbabilityEngineRunResult(
+        run_outcome_status="success",
+        resolved_result_category="formal_strict_result",
+        output=ProbabilityEngineOutput(
+            primary_result=RecipeSimulationResult(
+                recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+                role="primary",
+                success_probability=success_probability,
+                success_probability_range=(max(success_probability - 0.02, 0.0), min(success_probability + 0.02, 1.0)),
+                cagr_range=(cagr_low, cagr_high),
+                drawdown_range=(0.02, 0.08),
+                sample_count=32,
+                path_stats=PathStatsSummary(
+                    terminal_value_mean=terminal_value_mean,
+                    terminal_value_p05=terminal_value_mean * 0.92,
+                    terminal_value_p50=terminal_value_p50,
+                    terminal_value_p95=terminal_value_mean * 1.08,
+                    cagr_p05=cagr_low,
+                    cagr_p50=cagr_p50,
+                    cagr_p95=cagr_high,
+                    max_drawdown_p05=0.01,
+                    max_drawdown_p50=0.04,
+                    max_drawdown_p95=0.08,
+                    success_count=int(success_probability * 32),
+                    path_count=32,
+                ),
+                calibration_link_ref="evidence://contract/v14",
+            ),
+            challenger_results=[],
+            stress_results=[],
+            model_disagreement={},
+            probability_disclosure_payload=ProbabilityDisclosurePayload(
+                published_point=success_probability,
+                published_range=(max(success_probability - 0.02, 0.0), min(success_probability + 0.02, 1.0)),
+                disclosure_level="point_and_range",
+                confidence_level="medium",
+                challenger_gap=None,
+                stress_gap=None,
+                gap_total=0.0,
+                widening_method="contract",
+            ),
+            evidence_refs=["evidence://contract/v14"],
+        ),
+        failure_artifact=None,
+    )
 
 
 def _account_raw(goal_solver_input_base: dict, live_portfolio_base: dict) -> dict:
@@ -1385,3 +1448,131 @@ def test_run_orchestrator_onboarding_auto_enriches_runtime_product_inputs_withou
     assert captured_build_plan["kwargs"]["product_universe_inputs"]["requested"] is True
     assert captured_build_plan["kwargs"]["product_universe_result"]["source_status"] == "observed"
     assert captured_build_plan["kwargs"]["valuation_inputs"]["requested"] is True
+
+
+@pytest.mark.contract
+def test_v14_primary_reranking_prefers_target_meeting_candidate(monkeypatch):
+    goal_solver_input = {
+        "candidate_allocations": [
+            {"name": "income_buffer", "weights": {"equity_cn": 0.30, "bond_cn": 0.40, "gold": 0.20, "satellite": 0.10}},
+            {"name": "target_reach", "weights": {"equity_cn": 0.55, "bond_cn": 0.20, "gold": 0.10, "satellite": 0.15}},
+        ]
+    }
+    goal_solver_output = {
+        "recommended_allocation": {
+            "name": "income_buffer",
+            "weights": {"equity_cn": 0.30, "bond_cn": 0.40, "gold": 0.20, "satellite": 0.10},
+        },
+        "recommended_result": {
+            "allocation_name": "income_buffer",
+            "implied_required_annual_return": 0.06,
+            "success_probability": 0.74,
+            "expected_annual_return": 0.04,
+        },
+        "all_results": [
+            {
+                "allocation_name": "income_buffer",
+                "implied_required_annual_return": 0.06,
+                "success_probability": 0.74,
+                "expected_annual_return": 0.04,
+            },
+            {
+                "allocation_name": "target_reach",
+                "implied_required_annual_return": 0.06,
+                "success_probability": 0.60,
+                "expected_annual_return": 0.065,
+            },
+        ],
+        "frontier_analysis": {"recommended": {"label": "income_buffer", "allocation_name": "income_buffer"}},
+        "solver_notes": [],
+    }
+
+    def _fake_build(**kwargs):  # type: ignore[no-untyped-def]
+        allocation_name = kwargs.get("allocation_name")
+        return ({"evidence_bundle_ref": f"evidence://contract/{allocation_name}"}, {})
+
+    def _fake_probability_engine(sim_input):  # type: ignore[no-untyped-def]
+        if str(sim_input["evidence_bundle_ref"]).endswith("/income_buffer"):
+            return _probability_result(success_probability=0.22, cagr_p50=0.038, terminal_value_mean=115000.0)
+        return _probability_result(success_probability=0.68, cagr_p50=0.064, terminal_value_mean=121000.0)
+
+    monkeypatch.setattr(orchestrator_engine, "_build_probability_engine_run_input", _fake_build)
+    monkeypatch.setattr(orchestrator_engine, "run_probability_engine", _fake_probability_engine)
+
+    updated_output, probability_input, probability_result = _rerank_goal_solver_output_with_v14_primary(
+        run_id="contract_rerank_target",
+        envelope={},
+        calibration_result={},
+        goal_solver_input=goal_solver_input,
+        goal_solver_output=goal_solver_output,
+    )
+
+    assert updated_output["recommended_result"]["allocation_name"] == "target_reach"
+    assert updated_output["recommended_allocation"]["name"] == "target_reach"
+    assert updated_output["frontier_analysis"]["recommended"]["allocation_name"] == "target_reach"
+    assert probability_input["evidence_bundle_ref"].endswith("/target_reach")
+    assert probability_result.output is not None
+    assert updated_output["v14_candidate_probability_ranking"]["target_reach"]["success_probability"] == pytest.approx(0.68)
+
+
+@pytest.mark.contract
+def test_v14_primary_reranking_prefers_highest_success_when_all_candidates_miss_required_return(monkeypatch):
+    goal_solver_input = {
+        "candidate_allocations": [
+            {"name": "safer_shortfall", "weights": {"equity_cn": 0.35, "bond_cn": 0.35, "gold": 0.20, "satellite": 0.10}},
+            {"name": "closer_but_weaker", "weights": {"equity_cn": 0.45, "bond_cn": 0.25, "gold": 0.15, "satellite": 0.15}},
+        ]
+    }
+    goal_solver_output = {
+        "recommended_allocation": {
+            "name": "closer_but_weaker",
+            "weights": {"equity_cn": 0.45, "bond_cn": 0.25, "gold": 0.15, "satellite": 0.15},
+        },
+        "recommended_result": {
+            "allocation_name": "closer_but_weaker",
+            "implied_required_annual_return": 0.07,
+            "success_probability": 0.55,
+            "expected_annual_return": 0.06,
+        },
+        "all_results": [
+            {
+                "allocation_name": "safer_shortfall",
+                "implied_required_annual_return": 0.07,
+                "success_probability": 0.55,
+                "expected_annual_return": 0.05,
+            },
+            {
+                "allocation_name": "closer_but_weaker",
+                "implied_required_annual_return": 0.07,
+                "success_probability": 0.52,
+                "expected_annual_return": 0.06,
+            },
+        ],
+        "frontier_analysis": {
+            "recommended": {"label": "closer_but_weaker", "allocation_name": "closer_but_weaker"}
+        },
+        "solver_notes": [],
+    }
+
+    def _fake_build(**kwargs):  # type: ignore[no-untyped-def]
+        allocation_name = kwargs.get("allocation_name")
+        return ({"evidence_bundle_ref": f"evidence://contract/{allocation_name}"}, {})
+
+    def _fake_probability_engine(sim_input):  # type: ignore[no-untyped-def]
+        if str(sim_input["evidence_bundle_ref"]).endswith("/safer_shortfall"):
+            return _probability_result(success_probability=0.61, cagr_p50=0.051, terminal_value_mean=118000.0)
+        return _probability_result(success_probability=0.29, cagr_p50=0.059, terminal_value_mean=119000.0)
+
+    monkeypatch.setattr(orchestrator_engine, "_build_probability_engine_run_input", _fake_build)
+    monkeypatch.setattr(orchestrator_engine, "run_probability_engine", _fake_probability_engine)
+
+    updated_output, _, _ = _rerank_goal_solver_output_with_v14_primary(
+        run_id="contract_rerank_success",
+        envelope={},
+        calibration_result={},
+        goal_solver_input=goal_solver_input,
+        goal_solver_output=goal_solver_output,
+    )
+
+    assert updated_output["recommended_result"]["allocation_name"] == "safer_shortfall"
+    assert updated_output["recommended_allocation"]["name"] == "safer_shortfall"

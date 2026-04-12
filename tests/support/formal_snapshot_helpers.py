@@ -41,11 +41,28 @@ def _repeat_pattern(pattern: list[float], length: int) -> list[float]:
     return (pattern * repeats)[:length]
 
 
-def _build_probability_factor_mapping_payload() -> dict[str, Any]:
+def _series_mean(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(float(value) for value in values) / float(len(values))
+
+
+def _series_std(values: list[float], *, mean: float | None = None) -> float:
+    if not values:
+        return 0.0
+    center = float(mean) if mean is not None else _series_mean(values)
+    variance = sum((float(value) - center) ** 2 for value in values) / float(len(values))
+    return variance**0.5
+
+
+def _build_probability_factor_mapping_payload(*, series_mode: str = "helper_pattern") -> dict[str, Any]:
+    normalized_mode = str(series_mode).strip().lower()
+    if normalized_mode not in {"helper_pattern", "factor_history"}:
+        raise ValueError(f"unknown series_mode: {series_mode}")
     factor_library = load_factor_library_snapshot(FACTOR_LIBRARY_SNAPSHOT_PATH)
     factor_history = list(factor_library.factor_return_history)
     observation_dates = [row.date for row in factor_history]
-    observed_series_templates: dict[str, list[float]] = {
+    helper_series_templates: dict[str, list[float]] = {
         # Keep the helper snapshot realistic enough for acceptance runs:
         # balanced daily returns, modest drift, and visible drawdowns.
         "cn_equity_dividend_etf": [0.0035, -0.0040, 0.0022, -0.0025, 0.0014, -0.0016, 0.0028, 0.0004],
@@ -251,15 +268,28 @@ def _build_probability_factor_mapping_payload() -> dict[str, Any]:
             _weighted_return(row.factor_returns, dict(spec["factor_weights"]))
             for row in factor_history
         ]
-        series = _repeat_pattern(
-            observed_series_templates.get(str(spec["product_id"]), factor_history_series[:8]),
-            len(observation_dates),
-        )
+        if normalized_mode == "factor_history":
+            helper_pattern = helper_series_templates.get(str(spec["product_id"]), factor_history_series[:8])
+            helper_mean = _series_mean(helper_pattern)
+            helper_std = _series_std(helper_pattern, mean=helper_mean)
+            raw_mean = _series_mean(factor_history_series)
+            raw_std = _series_std(factor_history_series, mean=raw_mean)
+            volatility_scale = helper_std / raw_std if raw_std > 0.0 else 1.0
+            series = [
+                helper_mean + ((float(value) - raw_mean) * volatility_scale)
+                for value in factor_history_series
+            ]
+        else:
+            series = _repeat_pattern(
+                helper_series_templates.get(str(spec["product_id"]), factor_history_series[:8]),
+                len(observation_dates),
+            )
         series_tracks["by_product_id"][str(spec["product_id"])] = {
             "return_series": list(series),
             "observation_dates": list(observation_dates),
         }
         series_tracks["by_bucket"][str(spec["asset_bucket"])] = list(series)
+        series_tracks["series_mode"] = normalized_mode
         products.append(
             ProductMappingProduct(
                 product_id=str(spec["product_id"]),
@@ -306,8 +336,16 @@ def _build_probability_factor_mapping_payload() -> dict[str, Any]:
             "factor_mapping": {
                 "snapshot_id": factor_library.snapshot_id,
                 "as_of": factor_library.as_of,
-                "source_name": "observed_product_level_factor_mapping",
-                "source_ref": f"observed://factor_mapping/{factor_library.snapshot_id}",
+                "source_name": (
+                    "observed_product_level_factor_mapping"
+                    if normalized_mode == "factor_history"
+                    else "helper_pattern_factor_mapping"
+                ),
+                "source_ref": (
+                    f"observed://factor_mapping/{factor_library.snapshot_id}"
+                    if normalized_mode == "factor_history"
+                    else f"helper://factor_mapping/{factor_library.snapshot_id}"
+                ),
                 "products": [asdict(result) for result in mapping_results],
             }
         },
@@ -315,16 +353,21 @@ def _build_probability_factor_mapping_payload() -> dict[str, Any]:
     }
 
 
-def formal_market_raw_overrides() -> dict[str, object]:
+def _market_raw_overrides_for_series_mode(*, series_mode: str) -> dict[str, object]:
     audit_window = deepcopy(DEFAULT_AUDIT_WINDOW)
-    probability_bundle = _build_probability_factor_mapping_payload()
+    probability_bundle = _build_probability_factor_mapping_payload(series_mode=series_mode)
     series_tracks = dict(probability_bundle.get("series_tracks") or {})
     observation_dates = list(series_tracks.get("observation_dates") or [])
     bucket_series = dict(series_tracks.get("by_bucket") or {})
+    product_series = dict(series_tracks.get("by_product_id") or {})
     equity_series = list(bucket_series.get("equity_cn") or [])
     bond_series = list(bucket_series.get("bond_cn") or [])
     gold_series = list(bucket_series.get("gold") or [])
     satellite_series = list(bucket_series.get("satellite") or [])
+    product_series_ref_prefix = "observed" if series_mode == "factor_history" else "helper"
+    product_universe_source = "observed_runtime_catalog" if series_mode == "factor_history" else "helper_runtime_catalog"
+    valuation_source = "observed_runtime_valuation" if series_mode == "factor_history" else "helper_runtime_valuation"
+    history_source = "observed_market_history" if series_mode == "factor_history" else "helper_market_history"
     if observation_dates:
         audit_window["trading_days"] = len(observation_dates)
         audit_window["observed_days"] = len(observation_dates)
@@ -396,11 +439,11 @@ def formal_market_raw_overrides() -> dict[str, object]:
     return {
         "historical_dataset": {
             "dataset_id": "market_history",
-            "version_id": "observed:2024-04-05:2026-04-03",
+            "version_id": f"{product_universe_source}:2024-04-05:2026-04-03",
             "frequency": "daily",
             "as_of": "2026-04-03",
-            "source_name": "observed_market_history",
-            "source_ref": "observed://market_history?profile=formal_test",
+            "source_name": history_source,
+            "source_ref": f"{product_series_ref_prefix}://market_history?profile=formal_test",
             "lookback_months": 24,
             "return_series": {
                 "equity_cn": list(equity_series),
@@ -427,66 +470,84 @@ def formal_market_raw_overrides() -> dict[str, object]:
                         "product_id": "cn_equity_dividend_etf",
                         "asset_bucket": "equity_cn",
                         "target_weight": 0.0,
-                        "return_series": list(equity_series),
-                        "observation_dates": list(observation_dates),
-                        "source_ref": "observed://product_returns/cn_equity_dividend_etf",
+                        "return_series": list(product_series.get("cn_equity_dividend_etf", {}).get("return_series") or equity_series),
+                        "observation_dates": list(
+                            product_series.get("cn_equity_dividend_etf", {}).get("observation_dates") or observation_dates
+                        ),
+                        "source_ref": f"{product_series_ref_prefix}://product_returns/cn_equity_dividend_etf",
                         "data_status": "observed",
                         "frequency": "daily",
                         "observed_start_date": observation_dates[0] if observation_dates else "2026-03-27",
                         "observed_end_date": observation_dates[-1] if observation_dates else "2026-04-02",
-                        "observed_points": len(equity_series),
+                        "observed_points": len(
+                            product_series.get("cn_equity_dividend_etf", {}).get("return_series") or equity_series
+                        ),
                         "inferred_points": 0,
                     },
                     {
                         "product_id": "cn_bond_gov_etf",
                         "asset_bucket": "bond_cn",
                         "target_weight": 0.0,
-                        "return_series": list(bond_series),
-                        "observation_dates": list(observation_dates),
-                        "source_ref": "observed://product_returns/cn_bond_gov_etf",
+                        "return_series": list(product_series.get("cn_bond_gov_etf", {}).get("return_series") or bond_series),
+                        "observation_dates": list(
+                            product_series.get("cn_bond_gov_etf", {}).get("observation_dates") or observation_dates
+                        ),
+                        "source_ref": f"{product_series_ref_prefix}://product_returns/cn_bond_gov_etf",
                         "data_status": "observed",
                         "frequency": "daily",
                         "observed_start_date": observation_dates[0] if observation_dates else "2026-03-27",
                         "observed_end_date": observation_dates[-1] if observation_dates else "2026-04-02",
-                        "observed_points": len(bond_series),
+                        "observed_points": len(
+                            product_series.get("cn_bond_gov_etf", {}).get("return_series") or bond_series
+                        ),
                         "inferred_points": 0,
                     },
                     {
                         "product_id": "cn_gold_etf",
                         "asset_bucket": "gold",
                         "target_weight": 0.0,
-                        "return_series": list(gold_series),
-                        "observation_dates": list(observation_dates),
-                        "source_ref": "observed://product_returns/cn_gold_etf",
+                        "return_series": list(product_series.get("cn_gold_etf", {}).get("return_series") or gold_series),
+                        "observation_dates": list(
+                            product_series.get("cn_gold_etf", {}).get("observation_dates") or observation_dates
+                        ),
+                        "source_ref": f"{product_series_ref_prefix}://product_returns/cn_gold_etf",
                         "data_status": "observed",
                         "frequency": "daily",
                         "observed_start_date": observation_dates[0] if observation_dates else "2026-03-27",
                         "observed_end_date": observation_dates[-1] if observation_dates else "2026-04-02",
-                        "observed_points": len(gold_series),
+                        "observed_points": len(
+                            product_series.get("cn_gold_etf", {}).get("return_series") or gold_series
+                        ),
                         "inferred_points": 0,
                     },
                     {
                         "product_id": "cn_satellite_energy_etf",
                         "asset_bucket": "satellite",
                         "target_weight": 0.0,
-                        "return_series": list(satellite_series),
-                        "observation_dates": list(observation_dates),
-                        "source_ref": "observed://product_returns/cn_satellite_energy_etf",
+                        "return_series": list(
+                            product_series.get("cn_satellite_energy_etf", {}).get("return_series") or satellite_series
+                        ),
+                        "observation_dates": list(
+                            product_series.get("cn_satellite_energy_etf", {}).get("observation_dates") or observation_dates
+                        ),
+                        "source_ref": f"{product_series_ref_prefix}://product_returns/cn_satellite_energy_etf",
                         "data_status": "observed",
                         "frequency": "daily",
                         "observed_start_date": observation_dates[0] if observation_dates else "2026-03-27",
                         "observed_end_date": observation_dates[-1] if observation_dates else "2026-04-02",
-                        "observed_points": len(satellite_series),
+                        "observed_points": len(
+                            product_series.get("cn_satellite_energy_etf", {}).get("return_series") or satellite_series
+                        ),
                         "inferred_points": 0,
                     },
                 ],
             },
         },
         "product_universe_result": {
-            "snapshot_id": "observed_runtime_catalog_2026-04-03",
+            "snapshot_id": f"{product_universe_source}_2026-04-03",
             "source_status": "observed",
-            "source_name": "observed_runtime_catalog",
-            "source_ref": "observed://runtime_catalog?profile=formal_test",
+            "source_name": product_universe_source,
+            "source_ref": f"{product_series_ref_prefix}://runtime_catalog?profile=formal_test",
             "as_of": "2026-04-03",
             "data_status": "observed",
             "item_count": len(runtime_candidates),
@@ -505,8 +566,8 @@ def formal_market_raw_overrides() -> dict[str, object]:
         },
         "product_valuation_result": {
             "source_status": "observed",
-            "source_name": "observed_runtime_valuation",
-            "source_ref": "observed://valuation?profile=formal_test",
+            "source_name": valuation_source,
+            "source_ref": f"{product_series_ref_prefix}://valuation?profile=formal_test",
             "as_of": "2026-04-03",
             "products": {
                 "cn_equity_dividend_etf": {
@@ -534,6 +595,14 @@ def formal_market_raw_overrides() -> dict[str, object]:
         },
         "probability_engine": probability_bundle["probability_engine"],
     }
+
+
+def formal_market_raw_overrides() -> dict[str, object]:
+    return _market_raw_overrides_for_series_mode(series_mode="helper_pattern")
+
+
+def observed_market_raw_overrides() -> dict[str, object]:
+    return _market_raw_overrides_for_series_mode(series_mode="factor_history")
 
 
 def _deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
