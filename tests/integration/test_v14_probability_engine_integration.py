@@ -279,6 +279,36 @@ def test_benign_profile_regression_restores_positive_primary_and_orders_stress_b
     assert result.output.stress_results[0].success_probability <= primary.success_probability
 
 
+def test_probability_engine_output_exposes_current_market_pressure_and_scenario_ladder() -> None:
+    result = run_probability_engine(_build_benign_profile_regression_input(path_count=64))
+
+    assert result.output is not None
+    assert result.output.current_market_pressure is not None
+    assert result.output.current_market_pressure.scenario_kind == "current_market"
+    assert result.output.current_market_pressure.market_pressure_score is not None
+    assert result.output.current_market_pressure.market_pressure_level is not None
+
+    scenario_kinds = [item.scenario_kind for item in result.output.scenario_comparison]
+    assert scenario_kinds == [
+        "historical_replay",
+        "current_market",
+        "deteriorated_mild",
+        "deteriorated_moderate",
+        "deteriorated_severe",
+    ]
+    assert result.output.scenario_comparison[0].pressure is None
+    assert result.output.scenario_comparison[1].pressure is not None
+    assert len(result.output.stress_results) == 3
+
+
+def test_deteriorated_success_is_monotonic() -> None:
+    result = run_probability_engine(_build_benign_profile_regression_input(path_count=64))
+
+    assert result.output is not None
+    by_kind = {item.scenario_kind: item.recipe_result.success_probability for item in result.output.scenario_comparison}
+    assert by_kind["current_market"] >= by_kind["deteriorated_mild"] >= by_kind["deteriorated_moderate"] >= by_kind["deteriorated_severe"]
+
+
 def test_observed_delivery_path_primary_success_stays_above_sixty_percent(tmp_path: Path) -> None:
     profile = UserOnboardingProfile(
         account_profile_id="observed_primary_success_regression",

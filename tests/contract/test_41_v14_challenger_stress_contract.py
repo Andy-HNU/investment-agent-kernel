@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 import probability_engine.challengers as challengers_module
-import probability_engine.engine as probability_engine_engine
 from probability_engine.challengers import (
     STRESS_RECIPE_V14,
     ChallengerBootstrapDiagnostics,
@@ -762,13 +761,16 @@ def test_probability_engine_stress_recipe_stays_finite_and_downside_bounded_on_l
     assert result.output.stress_results, "expected live stress result"
 
     primary = result.output.primary_result
-    stress = result.output.stress_results[0]
+    mild, moderate, severe = result.output.stress_results
 
-    assert math.isfinite(float(stress.path_stats.terminal_value_mean))
-    assert math.isfinite(float(stress.path_stats.terminal_value_p95))
-    assert math.isfinite(float(stress.path_stats.cagr_p95))
-    assert stress.path_stats.terminal_value_p95 <= primary.path_stats.terminal_value_p95 * 1.05
-    assert stress.path_stats.cagr_p95 <= primary.path_stats.cagr_p95 + 0.10
+    for stress in (mild, moderate, severe):
+        assert math.isfinite(float(stress.path_stats.terminal_value_mean))
+        assert math.isfinite(float(stress.path_stats.terminal_value_p95))
+        assert math.isfinite(float(stress.path_stats.cagr_p95))
+
+    assert mild.success_probability >= moderate.success_probability >= severe.success_probability
+    assert severe.path_stats.terminal_value_p95 <= primary.path_stats.terminal_value_p95 * 1.05
+    assert severe.path_stats.cagr_p95 <= primary.path_stats.cagr_p95 + 0.10
 
 
 def test_challenger_bootstrap_records_each_path_block_trace() -> None:
@@ -870,20 +872,18 @@ def test_observed_coverage_treats_full_product_observation_as_complete_even_when
     assert observed_coverage == pytest.approx(1.0)
 
 
-def test_probability_engine_uses_recipe_level_stress_run_instead_of_overlay(monkeypatch) -> None:
-    monkeypatch.setattr(
-        probability_engine_engine,
-        "build_stress_recipe_result",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("stress overlay path must not be used")),
-    )
-
+def test_probability_engine_exposes_three_level_stress_ladder() -> None:
     result = run_probability_engine(_load_v14_formal_daily_input())
 
     assert isinstance(result, ProbabilityEngineRunResult)
     assert result.output is not None
-    assert result.output.stress_results
-    assert result.output.stress_results[0].role == "stress"
-    assert result.output.stress_results[0].recipe_name == STRESS_RECIPE_V14.recipe_name
+    assert len(result.output.stress_results) == 3
+    assert [item.role for item in result.output.stress_results] == ["stress", "stress", "stress"]
+    assert [item.recipe_name for item in result.output.stress_results] == [
+        "stress_deteriorated_mild_v1",
+        "stress_deteriorated_moderate_v1",
+        "stress_deteriorated_severe_v1",
+    ]
 
 
 def test_disclosure_bridge_uses_evidence_to_emit_exact_formal_strict_disclosure() -> None:

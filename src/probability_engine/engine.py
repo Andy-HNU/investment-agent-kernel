@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
@@ -8,10 +9,9 @@ from probability_engine.contracts import (
     ProbabilityDisclosurePayload,
     ProbabilityEngineOutput,
     ProbabilityEngineRunResult,
+    ScenarioComparisonResult,
 )
 from probability_engine.challengers import (
-    build_stress_recipe_result,
-    build_stress_recipe_result_from_runtime_input,
     run_challenger_bootstrap,
 )
 from probability_engine.disclosure_bridge import DisclosureEvidenceSpec, assemble_probability_run_result
@@ -20,7 +20,17 @@ from probability_engine.path_generator import (
     probability_engine_confidence_level,
     simulate_primary_paths,
 )
+from probability_engine.pressure import build_deteriorated_runtime_input, compute_market_pressure_snapshot
 from probability_engine.recipes import primary_recipe, resolve_recipes
+
+
+_SCENARIO_LABELS = {
+    "historical_replay": "历史回测",
+    "current_market": "当前市场延续",
+    "deteriorated_mild": "若市场轻度恶化",
+    "deteriorated_moderate": "若市场中度恶化",
+    "deteriorated_severe": "若市场重度恶化",
+}
 
 
 def _calendar_month_distance(start_date: str, end_date: str) -> int:
@@ -244,15 +254,35 @@ def _run_live_challenger(
         raise
 
 
-def _run_live_stress(
+def _stress_recipe_for_level(primary_recipe: Any, *, level: str, path_count: int):
+    return replace(
+        primary_recipe,
+        recipe_name=f"stress_deteriorated_{level}_v1",
+        role="stress",
+        path_count=path_count,
+    )
+
+
+def _run_deteriorated_stress_ladder(
     runtime_input: DailyEngineRuntimeInput,
     *,
+    primary_recipe: Any,
     path_count: int,
 ):
-    try:
-        return build_stress_recipe_result_from_runtime_input(runtime_input, path_count=path_count)
-    except ValueError:
-        return None
+    stress_results: list[Any] = []
+    scenario_entries: list[tuple[str, Any, Any]] = []
+    for level, scenario_kind in (
+        ("mild", "deteriorated_mild"),
+        ("moderate", "deteriorated_moderate"),
+        ("severe", "deteriorated_severe"),
+    ):
+        deteriorated_runtime = build_deteriorated_runtime_input(runtime_input, level=level)
+        stress_recipe = _stress_recipe_for_level(primary_recipe, level=level, path_count=path_count)
+        stress_result = simulate_primary_paths(deteriorated_runtime, stress_recipe)
+        pressure = compute_market_pressure_snapshot(deteriorated_runtime, scenario_kind=scenario_kind)
+        stress_results.append(stress_result)
+        scenario_entries.append((scenario_kind, pressure, stress_result))
+    return stress_results, scenario_entries
 
 
 def _portfolio_return_series(runtime_input: DailyEngineRuntimeInput, history_matrix: list[list[float]]) -> list[float]:
@@ -302,8 +332,12 @@ def run_probability_engine(sim_input: Any) -> ProbabilityEngineRunResult:
             block_size=challenger_block_size,
             path_count=int(runtime_input.challenger_path_count or 32),
         )
-        stress_result = _run_live_stress(runtime_input, path_count=int(runtime_input.stress_path_count or 16))
-        stress_results = [stress_result] if stress_result is not None else []
+        current_market_pressure = compute_market_pressure_snapshot(runtime_input, scenario_kind="current_market")
+        stress_results, stress_scenarios = _run_deteriorated_stress_ladder(
+            runtime_input,
+            primary_recipe=selected_recipe,
+            path_count=int(runtime_input.stress_path_count or 16),
+        )
         observed_coverage = _observed_weight_adjusted_coverage(runtime_input, history_matrix)
         minimum_observed_history_days = _minimum_observed_history_days(history_matrix)
         distribution_readiness = _distribution_readiness_from_runtime(
@@ -332,11 +366,40 @@ def run_probability_engine(sim_input: Any) -> ProbabilityEngineRunResult:
             stress_available=bool(stress_results),
             execution_policy=execution_policy,
         )
+        scenario_comparison: list[ScenarioComparisonResult] = []
+        if challenger_result is not None:
+            scenario_comparison.append(
+                ScenarioComparisonResult(
+                    scenario_kind="historical_replay",
+                    label=_SCENARIO_LABELS["historical_replay"],
+                    pressure=None,
+                    recipe_result=challenger_result,
+                )
+            )
+        scenario_comparison.append(
+            ScenarioComparisonResult(
+                scenario_kind="current_market",
+                label=_SCENARIO_LABELS["current_market"],
+                pressure=current_market_pressure,
+                recipe_result=primary_result,
+            )
+        )
+        for scenario_kind, pressure, recipe_result in stress_scenarios:
+            scenario_comparison.append(
+                ScenarioComparisonResult(
+                    scenario_kind=scenario_kind,
+                    label=_SCENARIO_LABELS[scenario_kind],
+                    pressure=pressure,
+                    recipe_result=recipe_result,
+                )
+            )
         assembled = assemble_probability_run_result(
             primary=primary_result,
             challengers=[challenger_result] if challenger_result is not None else [],
             stresses=stress_results,
             evidence=evidence,
+            current_market_pressure=current_market_pressure,
+            scenario_comparison=scenario_comparison,
         )
         if assembled.output is None:
             return assembled
@@ -351,6 +414,8 @@ def run_probability_engine(sim_input: Any) -> ProbabilityEngineRunResult:
             model_disagreement=assembled_output.model_disagreement,
             probability_disclosure_payload=assembled_output.probability_disclosure_payload,
             evidence_refs=list(dict.fromkeys(evidence_refs)),
+            current_market_pressure=assembled_output.current_market_pressure,
+            scenario_comparison=assembled_output.scenario_comparison,
         )
         return ProbabilityEngineRunResult(
             run_outcome_status=assembled.run_outcome_status,

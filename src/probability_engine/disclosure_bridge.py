@@ -8,10 +8,12 @@ from probability_engine.contracts import (
     DISTRIBUTION_READINESS_ORDER,
     FACTOR_MAPPING_CONFIDENCE_ORDER,
     FailureArtifact,
+    MarketPressureSnapshot,
     ProbabilityDisclosurePayload,
     ProbabilityEngineOutput,
     ProbabilityEngineRunResult,
     RecipeSimulationResult,
+    ScenarioComparisonResult,
     factor_mapping_confidence_at_least,
     distribution_readiness_at_least,
     calibration_quality_at_least,
@@ -258,6 +260,8 @@ def assemble_probability_run_result(
     challengers: list[RecipeSimulationResult],
     stresses: list[RecipeSimulationResult],
     evidence: DisclosureEvidenceSpec,
+    current_market_pressure: MarketPressureSnapshot | None = None,
+    scenario_comparison: list[ScenarioComparisonResult] | None = None,
 ) -> ProbabilityEngineRunResult:
     if primary is None:
         return ProbabilityEngineRunResult(
@@ -332,6 +336,8 @@ def assemble_probability_run_result(
             widening_method=_WIDENING_METHOD,
         ),
         evidence_refs=[ref for ref in [primary.calibration_link_ref, *(item.calibration_link_ref for item in challengers), *(item.calibration_link_ref for item in stresses)] if ref],
+        current_market_pressure=current_market_pressure,
+        scenario_comparison=list(scenario_comparison or []),
     )
 
     return ProbabilityEngineRunResult(

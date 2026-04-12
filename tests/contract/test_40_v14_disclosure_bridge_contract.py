@@ -4,7 +4,15 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from probability_engine.contracts import ProbabilityDisclosurePayload, ProbabilityEngineRunResult
+from probability_engine.contracts import (
+    MarketPressureSnapshot,
+    PathStatsSummary,
+    ProbabilityDisclosurePayload,
+    ProbabilityEngineRunResult,
+    RecipeSimulationResult,
+    ScenarioComparisonResult,
+)
+from probability_engine.disclosure_bridge import DisclosureEvidenceSpec, assemble_probability_run_result
 from probability_engine.engine import run_probability_engine
 
 
@@ -121,3 +129,79 @@ def test_invalid_task4_formal_scope_does_not_publish_disclosure_payload() -> Non
     assert result.output is None
     assert result.failure_artifact is not None
     assert "success_event_spec" in result.failure_artifact.message
+
+
+def test_disclosure_bridge_preserves_current_market_pressure() -> None:
+    primary = RecipeSimulationResult(
+        recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+        role="primary",
+        success_probability=0.62,
+        success_probability_range=(0.56, 0.67),
+        cagr_range=(0.03, 0.08),
+        drawdown_range=(0.02, 0.10),
+        sample_count=64,
+        path_stats=PathStatsSummary(
+            terminal_value_mean=118000.0,
+            terminal_value_p05=109000.0,
+            terminal_value_p50=117500.0,
+            terminal_value_p95=125000.0,
+            cagr_p05=0.02,
+            cagr_p50=0.05,
+            cagr_p95=0.08,
+            max_drawdown_p05=0.01,
+            max_drawdown_p50=0.05,
+            max_drawdown_p95=0.10,
+            success_count=40,
+            path_count=64,
+        ),
+        calibration_link_ref="primary-calibration",
+    )
+    pressure = MarketPressureSnapshot(
+        scenario_kind="current_market",
+        market_pressure_score=42.0,
+        market_pressure_level="L1_中性偏紧",
+        current_regime="risk_off",
+        regime_component=55.0,
+        drift_haircut_component=20.0,
+        volatility_component=37.5,
+        jump_probability_component=18.0,
+        tail_severity_component=10.0,
+        effective_daily_drift=0.00021,
+        volatility_multiplier=1.15,
+        systemic_jump_probability_multiplier=1.30,
+        idio_jump_probability_multiplier=1.15,
+        systemic_jump_dispersion_multiplier=1.05,
+    )
+    scenario = ScenarioComparisonResult(
+        scenario_kind="current_market",
+        label="当前市场延续",
+        pressure=pressure,
+        recipe_result=primary,
+    )
+
+    assembled = assemble_probability_run_result(
+        primary=primary,
+        challengers=[],
+        stresses=[],
+        evidence=DisclosureEvidenceSpec(
+            daily_product_path_available=True,
+            monthly_fallback_used=False,
+            bucket_fallback_used=False,
+            independent_weight_adjusted_coverage=1.0,
+            observed_weight_adjusted_coverage=1.0,
+            estimated_weight_adjusted_coverage=0.0,
+            factor_mapping_confidence="high",
+            distribution_readiness="ready",
+            calibration_quality="strong",
+            challenger_available=False,
+            stress_available=False,
+            execution_policy="FORMAL_STRICT",
+        ),
+        current_market_pressure=pressure,
+        scenario_comparison=[scenario],
+    )
+
+    assert assembled.output is not None
+    assert assembled.output.current_market_pressure is not None
+    assert assembled.output.current_market_pressure.market_pressure_level == "L1_中性偏紧"
+    assert [item.scenario_kind for item in assembled.output.scenario_comparison] == ["current_market"]
