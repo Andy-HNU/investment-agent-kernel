@@ -73,6 +73,18 @@ def _observed_external_snapshot_source(
     )
 
 
+def _user_portfolio_bundle(
+    profile: UserOnboardingProfile,
+    *,
+    user_portfolio: list[dict[str, object]],
+    as_of: str = "2026-03-30T00:00:00Z",
+):
+    bundle = build_user_onboarding_inputs(profile, as_of=as_of)
+    bundle.raw_inputs = deepcopy(bundle.raw_inputs)
+    bundle.raw_inputs["user_portfolio"] = deepcopy(user_portfolio)
+    return bundle
+
+
 @pytest.mark.contract
 def test_observed_external_snapshot_uses_non_repeating_factor_history_series(tmp_path):
     profile = _profile(account_profile_id="observed_series_user")
@@ -190,6 +202,29 @@ def test_frontdesk_onboarding_enforces_formal_execution_policy(monkeypatch, tmp_
     assert summary["run_outcome_status"] in {"completed", "degraded", "blocked"}
     assert captured["raw_inputs"]["formal_path_required"] is True
     assert captured["raw_inputs"]["execution_policy"] == "formal_estimation_allowed"
+
+
+@pytest.mark.contract
+def test_frontdesk_persists_user_portfolio_evaluation_state(monkeypatch, tmp_path):
+    profile = _profile(account_profile_id="persisted_user_portfolio")
+    user_portfolio = [
+        {"product_id": "cn_equity_csi300_etf", "target_weight": 0.35},
+        {"product_id": "cn_gold_etf", "target_weight": 0.15},
+        {"product_id": "cn_cash_money_fund", "target_weight": 0.50},
+    ]
+
+    def _fake_build_user_onboarding_inputs(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return _user_portfolio_bundle(profile, user_portfolio=user_portfolio, as_of=kwargs.get("as_of") or "2026-03-30T00:00:00Z")
+
+    monkeypatch.setattr("frontdesk.service.build_user_onboarding_inputs", _fake_build_user_onboarding_inputs)
+
+    summary = run_frontdesk_onboarding(profile, db_path=tmp_path / "persisted_user_portfolio.sqlite")
+
+    assert summary["evaluation_mode"] == "user_specified_portfolio"
+    assert summary["requested_structure_visibility"]["requested_structure"] == user_portfolio
+    assert summary["user_state"]["latest_result"]["evaluation_mode"] == "user_specified_portfolio"
+    assert summary["user_state"]["latest_result"]["requested_structure_visibility"]["rewrite_applied"] is False
+    assert summary["user_state"]["latest_result"]["unknown_product_resolution"]["state"] == "resolved_formal_ready"
 
 
 @pytest.mark.contract

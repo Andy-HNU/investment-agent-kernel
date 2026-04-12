@@ -134,6 +134,56 @@ class ProxyUniverseSummary:
 
 
 @dataclass(frozen=True)
+class UserPortfolioResolutionItem:
+    product_id: str
+    requested_weight: float | None
+    product_state: Literal["recognized", "unrecognized_product"]
+    resolution_state: Literal[
+        "recognized",
+        "unrecognized_requires_user_action",
+        "user_selected_proxy",
+        "user_excluded_product",
+        "estimated_non_formal_allowed",
+        "resolved_formal_ready",
+    ]
+    entered_product_name: str | None = None
+    selected_proxy_product_id: str | None = None
+    selected_proxy_product_name: str | None = None
+    suggested_proxy_product_ids: list[str] = field(default_factory=list)
+    allowed_next_actions: list[str] = field(default_factory=list)
+    strict_formal_blocked: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
+class PortfolioEvaluationSummary:
+    evaluation_mode: Literal["system_recommended_portfolio", "user_specified_portfolio"]
+    requested_structure_visibility: dict[str, Any] = field(default_factory=dict)
+    requested_structure: dict[str, Any] = field(default_factory=dict)
+    unknown_product_resolution_state: Literal[
+        "recognized",
+        "unrecognized_requires_user_action",
+        "user_selected_proxy",
+        "user_excluded_product",
+        "estimated_non_formal_allowed",
+        "resolved_formal_ready",
+    ] = "recognized"
+    unknown_product_resolution_items: list[UserPortfolioResolutionItem] = field(default_factory=list)
+    strict_formal_blocked: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = _serialize(asdict(self))
+        payload["unknown_product_resolution"] = {
+            "state": payload.pop("unknown_product_resolution_state"),
+            "items": payload.pop("unknown_product_resolution_items"),
+            "strict_formal_blocked": payload.pop("strict_formal_blocked"),
+        }
+        return payload
+
+
+@dataclass(frozen=True)
 class ExecutionRealismSummary:
     executable: bool
     account_total_value: float | None = None

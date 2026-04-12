@@ -131,6 +131,10 @@ class OrchestratorResult:
     disclosure_decision: dict[str, Any] = field(default_factory=dict)
     evidence_bundle: dict[str, Any] = field(default_factory=dict)
     evidence_invariance_report: dict[str, Any] = field(default_factory=dict)
+    evaluation_mode: str | None = None
+    requested_structure_visibility: dict[str, Any] = field(default_factory=dict)
+    requested_structure: dict[str, Any] = field(default_factory=dict)
+    unknown_product_resolution: dict[str, Any] = field(default_factory=dict)
     runtime_telemetry: dict[str, Any] = field(default_factory=dict)
     blocking_reasons: list[str] = field(default_factory=list)
     degraded_notes: list[str] = field(default_factory=list)
@@ -165,6 +169,10 @@ class OrchestratorResult:
             "disclosure_decision": _serialize(self.disclosure_decision),
             "evidence_bundle": _serialize(self.evidence_bundle),
             "evidence_invariance_report": _serialize(self.evidence_invariance_report),
+            "evaluation_mode": self.evaluation_mode,
+            "requested_structure_visibility": _serialize(self.requested_structure_visibility),
+            "requested_structure": _serialize(self.requested_structure),
+            "unknown_product_resolution": _serialize(self.unknown_product_resolution),
             "runtime_telemetry": _serialize(self.runtime_telemetry),
             "blocking_reasons": list(self.blocking_reasons),
             "degraded_notes": list(self.degraded_notes),

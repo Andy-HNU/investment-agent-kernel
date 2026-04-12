@@ -21,7 +21,7 @@ from goal_solver.types import (
     normalize_product_probability_method,
 )
 from probability_engine.engine import run_probability_engine
-from product_mapping import build_candidate_product_context, build_execution_plan
+from product_mapping import build_candidate_product_context, build_execution_plan, load_builtin_catalog
 from product_mapping.types import ProductCandidate
 from product_mapping.runtime_inputs import enrich_market_raw_with_runtime_product_inputs
 from runtime_optimizer.engine import run_runtime_optimizer
@@ -51,6 +51,7 @@ from orchestrator.types import (
     WorkflowStatus,
     WorkflowType,
 )
+from product_mapping.types import PortfolioEvaluationSummary, ProductCandidate, UserPortfolioResolutionItem
 
 
 _GOAL_SOLVER_CONSTRAINT_FIELDS = (
@@ -66,6 +67,17 @@ _GOAL_SOLVER_CONSTRAINT_FIELDS = (
 
 _SAFE_ACTION_TYPES = ("freeze", "observe")
 _FORMAL_PATH_REQUIRED_FIELDS = {"market_raw", "account_raw", "behavior_raw", "live_portfolio"}
+_USER_PORTFOLIO_EVALUATION_MODES = {"system_recommended_portfolio", "user_specified_portfolio"}
+_UNKNOWN_PRODUCT_RESOLUTION_STATES = {
+    "recognized",
+    "unrecognized_requires_user_action",
+    "user_selected_proxy",
+    "user_excluded_product",
+    "estimated_non_formal_allowed",
+    "resolved_formal_ready",
+}
+_USER_PORTFOLIO_PROXY_KEYS = ("selected_proxy_product_id", "proxy_product_id", "proxy_product", "selected_proxy_id")
+_USER_PORTFOLIO_RESOLVED_KEYS = ("resolved_product_id", "resolved_product", "better_product_id", "product_alias")
 _FORMAL_EXECUTION_POLICIES = {
     ExecutionPolicy.FORMAL_STRICT,
     ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED,
@@ -3237,6 +3249,198 @@ def _extract_execution_plan_product_proxy_context(
     return proxy_result or None
 
 
+def _user_portfolio_entries(user_portfolio: Any) -> list[dict[str, Any]]:
+    if isinstance(user_portfolio, list):
+        return [dict(item) for item in user_portfolio if isinstance(item, dict)]
+    if isinstance(user_portfolio, dict):
+        items = user_portfolio.get("items")
+        if isinstance(items, list):
+            return [dict(item) for item in items if isinstance(item, dict)]
+        return [dict(user_portfolio)]
+    return []
+
+
+def _user_portfolio_selected_proxy(item: dict[str, Any]) -> str | None:
+    for key in _USER_PORTFOLIO_PROXY_KEYS:
+        candidate = _first_text(item.get(key))
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def _user_portfolio_resolved_product_id(item: dict[str, Any]) -> str | None:
+    for key in _USER_PORTFOLIO_RESOLVED_KEYS:
+        candidate = _first_text(item.get(key))
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def _user_portfolio_resolution_action(item: dict[str, Any]) -> str | None:
+    explicit = _first_text(
+        item.get("resolution_action"),
+        item.get("resolution_state"),
+        item.get("user_action"),
+        item.get("unknown_product_action"),
+    )
+    if explicit is not None:
+        return explicit
+    if _bool(item.get("exclude") or item.get("excluded") or item.get("user_excluded_product")):
+        return "user_excluded_product"
+    if _bool(item.get("allow_non_formal") or item.get("allow_estimate") or item.get("estimated_non_formal_allowed")):
+        return "estimated_non_formal_allowed"
+    if _user_portfolio_selected_proxy(item) is not None:
+        return "user_selected_proxy"
+    if _user_portfolio_resolved_product_id(item) is not None:
+        return "resolved_formal_ready"
+    return None
+
+
+def _user_portfolio_requested_structure(user_portfolio: Any) -> dict[str, Any]:
+    payload = deepcopy(user_portfolio)
+    return {
+        "requested_structure": payload,
+        "preserved_as_entered": True,
+        "rewrite_applied": False,
+        "requested_item_count": len(_user_portfolio_entries(user_portfolio)),
+    }
+
+
+def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvaluationSummary | None:
+    user_portfolio = envelope.get("user_portfolio")
+    if user_portfolio is None:
+        return None
+
+    recognized_ids = {
+        str(candidate.product_id)
+        for candidate in load_builtin_catalog()
+        if str(candidate.product_id).strip()
+    }
+    runtime_candidates = _extract_execution_plan_runtime_candidates(envelope) or []
+    recognized_ids.update(
+        str(candidate.product_id)
+        for candidate in runtime_candidates
+        if str(candidate.product_id).strip()
+    )
+
+    requested_entries = _user_portfolio_entries(user_portfolio)
+    evaluation_items: list[UserPortfolioResolutionItem] = []
+    states_seen: list[str] = []
+    strict_formal_blocked = False
+    unknown_count = 0
+    for raw_item in requested_entries:
+        product_id = _first_text(raw_item.get("product_id"), raw_item.get("product_name"), raw_item.get("name"))
+        if product_id is None:
+            product_id = "unknown_product"
+        requested_weight = raw_item.get("target_weight")
+        resolved_product_id = _user_portfolio_resolved_product_id(raw_item)
+        selected_proxy_product_id = _user_portfolio_selected_proxy(raw_item)
+        product_recognized = product_id in recognized_ids
+        resolution_action = _user_portfolio_resolution_action(raw_item)
+        if product_recognized:
+            product_state = "recognized"
+            resolution_state = "recognized"
+        elif resolution_action == "user_selected_proxy":
+            product_state = "unrecognized_product"
+            resolution_state = "user_selected_proxy"
+        elif resolution_action == "user_excluded_product":
+            product_state = "unrecognized_product"
+            resolution_state = "user_excluded_product"
+        elif resolution_action == "estimated_non_formal_allowed":
+            product_state = "unrecognized_product"
+            resolution_state = "estimated_non_formal_allowed"
+        elif resolution_action == "resolved_formal_ready" and resolved_product_id in recognized_ids:
+            product_state = "recognized"
+            resolution_state = "resolved_formal_ready"
+        else:
+            product_state = "unrecognized_product"
+            resolution_state = "unrecognized_requires_user_action"
+        if product_state == "unrecognized_product":
+            unknown_count += 1
+        states_seen.append(resolution_state)
+        strict_formal_blocked = strict_formal_blocked or resolution_state in {
+            "unrecognized_requires_user_action",
+            "user_selected_proxy",
+            "estimated_non_formal_allowed",
+        }
+        allowed_next_actions: list[str]
+        if resolution_state == "unrecognized_requires_user_action":
+            allowed_next_actions = ["select_proxy", "exclude", "provide_better_identifier", "allow_non_formal"]
+        elif resolution_state == "user_selected_proxy":
+            allowed_next_actions = ["confirm_proxy", "provide_better_identifier", "exclude"]
+        elif resolution_state == "user_excluded_product":
+            allowed_next_actions = ["continue_remaining_portfolio"]
+        elif resolution_state == "estimated_non_formal_allowed":
+            allowed_next_actions = ["continue_degraded", "provide_better_identifier"]
+        else:
+            allowed_next_actions = ["continue_formal"]
+        evaluation_items.append(
+            UserPortfolioResolutionItem(
+                product_id=str(product_id),
+                requested_weight=None if requested_weight is None else float(requested_weight),
+                product_state=product_state,
+                resolution_state=resolution_state,
+                entered_product_name=_first_text(raw_item.get("product_name"), raw_item.get("name")),
+                selected_proxy_product_id=selected_proxy_product_id,
+                selected_proxy_product_name=None,
+                suggested_proxy_product_ids=list(
+                    dict.fromkeys(
+                        [
+                            proxy
+                            for proxy in (
+                                selected_proxy_product_id,
+                                _user_portfolio_resolved_product_id(raw_item),
+                            )
+                            if proxy is not None and proxy != product_id
+                        ]
+                    )
+                ),
+                allowed_next_actions=allowed_next_actions,
+                strict_formal_blocked=resolution_state in {
+                    "unrecognized_requires_user_action",
+                    "user_selected_proxy",
+                    "estimated_non_formal_allowed",
+                },
+            )
+        )
+
+    if not evaluation_items:
+        return PortfolioEvaluationSummary(
+            evaluation_mode="user_specified_portfolio",
+            requested_structure_visibility=_user_portfolio_requested_structure(user_portfolio),
+            requested_structure=deepcopy(user_portfolio),
+            unknown_product_resolution_state="recognized",
+            unknown_product_resolution_items=[],
+            strict_formal_blocked=False,
+        )
+
+    if any(item.resolution_state == "unrecognized_requires_user_action" for item in evaluation_items):
+        overall_state = "unrecognized_requires_user_action"
+    elif any(item.resolution_state == "estimated_non_formal_allowed" for item in evaluation_items):
+        overall_state = "estimated_non_formal_allowed"
+    elif any(item.resolution_state == "user_selected_proxy" for item in evaluation_items):
+        overall_state = "user_selected_proxy"
+    elif all(item.resolution_state in {"recognized", "user_excluded_product", "resolved_formal_ready"} for item in evaluation_items):
+        overall_state = "resolved_formal_ready"
+    else:
+        overall_state = "recognized"
+
+    strict_formal_blocked = strict_formal_blocked or overall_state in {
+        "unrecognized_requires_user_action",
+        "user_selected_proxy",
+        "estimated_non_formal_allowed",
+    }
+    summary = PortfolioEvaluationSummary(
+        evaluation_mode="user_specified_portfolio",
+        requested_structure_visibility=_user_portfolio_requested_structure(user_portfolio),
+        requested_structure=deepcopy(user_portfolio),
+        unknown_product_resolution_state=overall_state,
+        unknown_product_resolution_items=evaluation_items,
+        strict_formal_blocked=strict_formal_blocked,
+    )
+    return summary
+
+
 def _extract_probability_engine_factor_mapping_context(
     envelope: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
@@ -3639,6 +3843,22 @@ def run_orchestrator(
         calibration_data,
         normalized_trigger,
     )
+    portfolio_evaluation = _build_user_portfolio_evaluation(envelope)
+    if portfolio_evaluation is None:
+        portfolio_evaluation_payload = PortfolioEvaluationSummary(
+            evaluation_mode="system_recommended_portfolio",
+            requested_structure_visibility={},
+            requested_structure={},
+            unknown_product_resolution_state="recognized",
+            unknown_product_resolution_items=[],
+            strict_formal_blocked=False,
+        ).to_dict()
+    else:
+        portfolio_evaluation_payload = portfolio_evaluation.to_dict()
+        if portfolio_evaluation_payload["unknown_product_resolution"]["strict_formal_blocked"]:
+            strict_block_reason = "user_portfolio_requires_resolution"
+            if strict_block_reason not in resolution_blocking_reasons:
+                resolution_blocking_reasons.append(strict_block_reason)
     workflow_decision = _select_workflow(
         requested_workflow=requested_workflow,
         trigger=normalized_trigger,
@@ -4181,6 +4401,10 @@ def run_orchestrator(
         disclosure_decision=canonical_disclosure_decision,
         evidence_bundle=canonical_evidence_bundle,
         evidence_invariance_report=evidence_invariance_report,
+        evaluation_mode=str(portfolio_evaluation_payload.get("evaluation_mode") or "system_recommended_portfolio"),
+        requested_structure_visibility=dict(portfolio_evaluation_payload.get("requested_structure_visibility") or {}),
+        requested_structure=deepcopy(portfolio_evaluation_payload.get("requested_structure") or {}),
+        unknown_product_resolution=dict(portfolio_evaluation_payload.get("unknown_product_resolution") or {}),
         runtime_telemetry=runtime_telemetry,
         requested_workflow_type=requested_workflow,
         bundle_id=bundle_id,

@@ -1919,6 +1919,7 @@ class FrontdeskStore:
         if "input_provenance" not in decision_card and baseline.get("input_provenance") is not None:
             decision_card["input_provenance"] = baseline["input_provenance"]
         latest_run_result_payload = dict(latest_run.get("result_payload") or {})
+        latest_result_payload = latest_run_result_payload or dict(baseline.get("result_payload") or {})
         reuse_context = dict(
             latest_run.get("reuse_context")
             or latest_run_result_payload.get("reuse_context")
@@ -1939,6 +1940,10 @@ class FrontdeskStore:
                 "run_id": latest_run.get("run_id"),
                 "workflow_type": latest_run.get("workflow_type"),
                 "status": latest_run.get("status"),
+                "evaluation_mode": latest_result_payload.get("evaluation_mode"),
+                "requested_structure_visibility": latest_result_payload.get("requested_structure_visibility") or {},
+                "requested_structure": latest_result_payload.get("requested_structure") or {},
+                "unknown_product_resolution": latest_result_payload.get("unknown_product_resolution") or {},
                 "reuse_context": reuse_context,
                 "evidence_invariance_report": evidence_invariance_report,
             },

@@ -172,6 +172,7 @@ def _reuse_signature_basis(
         "account_raw": _reuse_value(dict((raw_inputs or {}).get("account_raw") or {})),
         "behavior_raw": _reuse_value(dict((raw_inputs or {}).get("behavior_raw") or {})),
         "live_portfolio": _reuse_value(dict((raw_inputs or {}).get("live_portfolio") or {})),
+        "user_portfolio": _reuse_value((raw_inputs or {}).get("user_portfolio")),
         "formal_path_required": bool((raw_inputs or {}).get("formal_path_required")),
         "execution_policy": str((raw_inputs or {}).get("execution_policy") or ""),
     }
@@ -222,6 +223,32 @@ def _serialize_result(result: Any) -> dict[str, Any]:
     if hasattr(result, "to_dict"):
         return result.to_dict()
     return dict(result)
+
+
+def _annotate_user_portfolio_input_provenance(raw_inputs: dict[str, Any]) -> None:
+    user_portfolio = raw_inputs.get("user_portfolio")
+    if user_portfolio is None:
+        return
+    provenance = dict(raw_inputs.get("input_provenance") or {})
+    user_provided = list(provenance.get("user_provided") or [])
+    entry = {
+        "field": "user_portfolio",
+        "label": "用户指定组合",
+        "value": deepcopy(user_portfolio),
+        "note": "用户显式输入的组合结构，前台不应自动改写",
+        "source_type": "user_provided",
+        "source_label": "用户提供",
+    }
+    user_provided.append(entry)
+    provenance["user_provided"] = user_provided
+    items = list(provenance.get("items") or [])
+    items.append(entry)
+    provenance["items"] = items
+    counts = dict(provenance.get("counts") or {})
+    counts["user_provided"] = len(user_provided)
+    provenance["counts"] = counts
+    provenance.setdefault("source_labels", {}).setdefault("user_provided", "用户提供")
+    raw_inputs["input_provenance"] = provenance
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -1749,6 +1776,10 @@ def _frontdesk_summary(
         "bucket_fallback_used": bucket_fallback_used,
         "evidence_invariance_report": dict(result_payload.get("evidence_invariance_report") or {}),
         "reuse_context": dict(result_payload.get("reuse_context") or decision_card.get("reuse_context") or {}),
+        "evaluation_mode": result_payload.get("evaluation_mode"),
+        "requested_structure_visibility": dict(result_payload.get("requested_structure_visibility") or {}),
+        "requested_structure": result_payload.get("requested_structure"),
+        "unknown_product_resolution": dict(result_payload.get("unknown_product_resolution") or {}),
         "decision_card": decision_card,
         "key_metrics": decision_card.get("key_metrics", {}),
         "input_provenance": decision_card.get("input_provenance", {}),
@@ -2009,6 +2040,7 @@ def run_frontdesk_onboarding(
     )
     raw_inputs.setdefault("formal_path_required", True)
     raw_inputs.setdefault("execution_policy", ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
+    _annotate_user_portfolio_input_provenance(raw_inputs)
     reuse_signature, _ = _reuse_signature(
         workflow_type="onboarding",
         account_profile_id=onboarding.profile.account_profile_id,
@@ -2257,6 +2289,7 @@ def run_frontdesk_followup(
         )
     raw_inputs.setdefault("formal_path_required", True)
     raw_inputs.setdefault("execution_policy", ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED.value)
+    _annotate_user_portfolio_input_provenance(raw_inputs)
     reuse_signature, _ = _reuse_signature(
         workflow_type=workflow_type,
         account_profile_id=account_profile_id,
