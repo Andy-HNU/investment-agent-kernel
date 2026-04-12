@@ -159,6 +159,13 @@ def test_frontdesk_summary_exposes_pressure_ladder_from_probability_engine_outpu
         "deteriorated_moderate",
         "deteriorated_severe",
     ]
+    assert [item["label"] for item in summary["scenario_ladder"]] == [
+        "历史回测",
+        "当前市场延续",
+        "若市场轻度恶化",
+        "若市场中度恶化",
+        "若市场重度恶化",
+    ]
 
 
 @pytest.mark.contract

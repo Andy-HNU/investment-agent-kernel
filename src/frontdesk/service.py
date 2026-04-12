@@ -263,6 +263,39 @@ def _canonical_probability_method(
     return ""
 
 
+def _probability_engine_scenario_ladder(probability_output: dict[str, Any]) -> list[dict[str, Any]]:
+    explicit_ladder = [
+        dict(item)
+        for item in list(probability_output.get("scenario_ladder") or [])
+        if isinstance(item, dict)
+    ]
+    if explicit_ladder:
+        return explicit_ladder
+
+    scenario_comparison = [
+        dict(item)
+        for item in list(probability_output.get("scenario_comparison") or [])
+        if isinstance(item, dict)
+    ]
+    ladder: list[dict[str, Any]] = []
+    for item in scenario_comparison:
+        pressure = dict(item.get("pressure") or {})
+        recipe_result = dict(item.get("recipe_result") or {})
+        path_stats = dict(recipe_result.get("path_stats") or {})
+        ladder.append(
+            {
+                "scenario_kind": item.get("scenario_kind"),
+                "label": item.get("label"),
+                "pressure_level": pressure.get("market_pressure_level"),
+                "pressure_score": pressure.get("market_pressure_score"),
+                "success_probability": recipe_result.get("success_probability"),
+                "cagr_p50": path_stats.get("cagr_p50"),
+                "terminal_value_p50": path_stats.get("terminal_value_p50"),
+            }
+        )
+    return ladder
+
+
 def _canonical_probability_truth_view(
     *,
     result_payload: dict[str, Any],
@@ -1639,7 +1672,7 @@ def _frontdesk_summary(
     probability_disclosure_payload = dict(probability_output.get("probability_disclosure_payload") or {})
     current_market_pressure = dict(probability_output.get("current_market_pressure") or {})
     scenario_comparison = list(probability_output.get("scenario_comparison") or [])
-    scenario_ladder = list(probability_output.get("scenario_ladder") or [])
+    scenario_ladder = _probability_engine_scenario_ladder(probability_output)
     goal_solver_output = _as_dict(result_payload.get("goal_solver_output"))
     if probability_engine_result_payload:
         product_probability_method = (

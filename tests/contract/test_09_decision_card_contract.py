@@ -6,6 +6,221 @@ from decision_card.builder import build_decision_card
 from decision_card.types import DecisionCardBuildInput, DecisionCardType
 
 
+def _probability_result_with_pressure_ladder() -> dict[str, object]:
+    return {
+        "run_outcome_status": "success",
+        "resolved_result_category": "formal_strict_result",
+        "output": {
+            "primary_result": {
+                "recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1",
+                "role": "primary",
+                "success_probability": 0.62,
+                "success_probability_range": [0.58, 0.66],
+                "cagr_range": [0.04, 0.08],
+                "drawdown_range": [0.08, 0.16],
+                "sample_count": 128,
+                "path_stats": {
+                    "terminal_value_mean": 121_000.0,
+                    "terminal_value_p05": 95_000.0,
+                    "terminal_value_p50": 119_000.0,
+                    "terminal_value_p95": 140_000.0,
+                    "cagr_p05": 0.03,
+                    "cagr_p50": 0.05,
+                    "cagr_p95": 0.07,
+                    "max_drawdown_p05": 0.05,
+                    "max_drawdown_p50": 0.10,
+                    "max_drawdown_p95": 0.16,
+                    "success_count": 79,
+                    "path_count": 128,
+                },
+                "calibration_link_ref": "evidence://contract/v14",
+            },
+            "challenger_results": [],
+            "stress_results": [],
+            "model_disagreement": {},
+            "probability_disclosure_payload": {
+                "published_point": 0.62,
+                "published_range": [0.58, 0.66],
+                "disclosure_level": "point_and_range",
+                "confidence_level": "high",
+                "challenger_gap": None,
+                "stress_gap": None,
+                "gap_total": None,
+                "widening_method": "contract_fixture",
+            },
+            "evidence_refs": ["evidence://contract/v14"],
+            "current_market_pressure": {
+                "scenario_kind": "current_market",
+                "market_pressure_score": 43.0,
+                "market_pressure_level": "L1_中性偏紧",
+                "current_regime": "risk_off",
+            },
+            "scenario_comparison": [
+                {
+                    "scenario_kind": "historical_replay",
+                    "label": "历史回测",
+                    "pressure": None,
+                    "recipe_result": {
+                        "recipe_name": "challenger_regime_conditioned_block_bootstrap_v1",
+                        "role": "challenger",
+                        "success_probability": 0.68,
+                        "success_probability_range": [0.64, 0.70],
+                        "cagr_range": [0.05, 0.07],
+                        "drawdown_range": [0.02, 0.06],
+                        "sample_count": 64,
+                        "path_stats": {
+                            "terminal_value_mean": 123_000.0,
+                            "terminal_value_p05": 100_000.0,
+                            "terminal_value_p50": 121_000.0,
+                            "terminal_value_p95": 131_000.0,
+                            "cagr_p05": 0.04,
+                            "cagr_p50": 0.06,
+                            "cagr_p95": 0.07,
+                            "max_drawdown_p05": 0.01,
+                            "max_drawdown_p50": 0.03,
+                            "max_drawdown_p95": 0.05,
+                            "success_count": 43,
+                            "path_count": 64,
+                        },
+                    },
+                },
+                {
+                    "scenario_kind": "current_market",
+                    "label": "当前市场延续",
+                    "pressure": {
+                        "scenario_kind": "current_market",
+                        "market_pressure_score": 43.0,
+                        "market_pressure_level": "L1_中性偏紧",
+                        "current_regime": "risk_off",
+                    },
+                    "recipe_result": {
+                        "recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1",
+                        "role": "primary",
+                        "success_probability": 0.62,
+                        "success_probability_range": [0.58, 0.66],
+                        "cagr_range": [0.04, 0.08],
+                        "drawdown_range": [0.08, 0.16],
+                        "sample_count": 128,
+                        "path_stats": {
+                            "terminal_value_mean": 121_000.0,
+                            "terminal_value_p05": 95_000.0,
+                            "terminal_value_p50": 119_000.0,
+                            "terminal_value_p95": 140_000.0,
+                            "cagr_p05": 0.03,
+                            "cagr_p50": 0.05,
+                            "cagr_p95": 0.07,
+                            "max_drawdown_p05": 0.05,
+                            "max_drawdown_p50": 0.10,
+                            "max_drawdown_p95": 0.16,
+                            "success_count": 79,
+                            "path_count": 128,
+                        },
+                    },
+                },
+                {
+                    "scenario_kind": "deteriorated_mild",
+                    "label": "若市场轻度恶化",
+                    "pressure": {
+                        "scenario_kind": "deteriorated_mild",
+                        "market_pressure_score": 57.0,
+                        "market_pressure_level": "L2_风险偏高",
+                        "current_regime": "risk_off",
+                    },
+                    "recipe_result": {
+                        "recipe_name": "stress_deteriorated_mild_v1",
+                        "role": "stress",
+                        "success_probability": 0.49,
+                        "success_probability_range": [0.45, 0.53],
+                        "cagr_range": [0.02, 0.04],
+                        "drawdown_range": [0.12, 0.20],
+                        "sample_count": 32,
+                        "path_stats": {
+                            "terminal_value_mean": 116_000.0,
+                            "terminal_value_p05": 90_000.0,
+                            "terminal_value_p50": 114_000.0,
+                            "terminal_value_p95": 132_000.0,
+                            "cagr_p05": 0.02,
+                            "cagr_p50": 0.03,
+                            "cagr_p95": 0.04,
+                            "max_drawdown_p05": 0.06,
+                            "max_drawdown_p50": 0.11,
+                            "max_drawdown_p95": 0.18,
+                            "success_count": 16,
+                            "path_count": 32,
+                        },
+                    },
+                },
+                {
+                    "scenario_kind": "deteriorated_moderate",
+                    "label": "若市场中度恶化",
+                    "pressure": {
+                        "scenario_kind": "deteriorated_moderate",
+                        "market_pressure_score": 68.0,
+                        "market_pressure_level": "L2_风险偏高",
+                        "current_regime": "stress",
+                    },
+                    "recipe_result": {
+                        "recipe_name": "stress_deteriorated_moderate_v1",
+                        "role": "stress",
+                        "success_probability": 0.42,
+                        "success_probability_range": [0.38, 0.46],
+                        "cagr_range": [0.01, 0.03],
+                        "drawdown_range": [0.15, 0.24],
+                        "sample_count": 16,
+                        "path_stats": {
+                            "terminal_value_mean": 113_000.0,
+                            "terminal_value_p05": 85_000.0,
+                            "terminal_value_p50": 110_000.0,
+                            "terminal_value_p95": 126_000.0,
+                            "cagr_p05": 0.01,
+                            "cagr_p50": 0.02,
+                            "cagr_p95": 0.03,
+                            "max_drawdown_p05": 0.08,
+                            "max_drawdown_p50": 0.16,
+                            "max_drawdown_p95": 0.24,
+                            "success_count": 7,
+                            "path_count": 16,
+                        },
+                    },
+                },
+                {
+                    "scenario_kind": "deteriorated_severe",
+                    "label": "若市场重度恶化",
+                    "pressure": {
+                        "scenario_kind": "deteriorated_severe",
+                        "market_pressure_score": 87.0,
+                        "market_pressure_level": "L3_高压",
+                        "current_regime": "stress",
+                    },
+                    "recipe_result": {
+                        "recipe_name": "stress_deteriorated_severe_v1",
+                        "role": "stress",
+                        "success_probability": 0.18,
+                        "success_probability_range": [0.14, 0.22],
+                        "cagr_range": [-0.01, 0.01],
+                        "drawdown_range": [0.20, 0.32],
+                        "sample_count": 16,
+                        "path_stats": {
+                            "terminal_value_mean": 101_000.0,
+                            "terminal_value_p05": 76_000.0,
+                            "terminal_value_p50": 98_000.0,
+                            "terminal_value_p95": 112_000.0,
+                            "cagr_p05": -0.01,
+                            "cagr_p50": 0.00,
+                            "cagr_p95": 0.01,
+                            "max_drawdown_p05": 0.12,
+                            "max_drawdown_p50": 0.22,
+                            "max_drawdown_p95": 0.32,
+                            "success_count": 3,
+                            "path_count": 16,
+                        },
+                    },
+                },
+            ],
+        },
+    }
+
+
 @pytest.mark.contract
 def test_build_decision_card_validates_quarterly_inputs():
     with pytest.raises(ValueError, match="goal_solver_output"):
@@ -37,6 +252,7 @@ def test_runtime_action_card_surfaces_low_confidence_and_review_conditions():
             card_type=DecisionCardType.RUNTIME_ACTION,
             workflow_type="monthly",
             run_id="decision_card_runtime_low_confidence",
+            probability_engine_result=_probability_result_with_pressure_ladder(),
             runtime_result={
                 "candidate_poverty": True,
                 "candidates_after_filter": 1,
@@ -88,6 +304,15 @@ def test_runtime_action_card_surfaces_low_confidence_and_review_conditions():
     assert "treat_as_weak_signal" in card["next_steps"]
     assert card["key_metrics"]["delta_prob"] == "0.001000"
     assert "runner_up_action=freeze" in card["evidence_highlights"]
+    assert card["current_market_pressure"]["market_pressure_level"] == "L1_中性偏紧"
+    assert [item["label"] for item in card["scenario_ladder"]] == [
+        "历史回测",
+        "当前市场延续",
+        "若市场轻度恶化",
+        "若市场中度恶化",
+        "若市场重度恶化",
+    ]
+    assert card["probability_explanation"]["scenario_ladder"][0]["label"] == "历史回测"
 
 
 @pytest.mark.contract
@@ -157,6 +382,7 @@ def test_quarterly_review_card_keeps_review_action_and_consumes_dual_evidence():
             card_type=DecisionCardType.QUARTERLY_REVIEW,
             workflow_type="quarterly",
             run_id="decision_card_quarterly_review",
+            probability_engine_result=_probability_result_with_pressure_ladder(),
             goal_solver_output={
                 "recommended_result": {
                     "success_probability": 0.71,
@@ -193,6 +419,14 @@ def test_quarterly_review_card_keeps_review_action_and_consumes_dual_evidence():
     assert card["key_metrics"]["new_baseline_max_drawdown_90pct"] == "18.00%"
     assert "success_probability=0.71" in card["evidence_highlights"]
     assert card["runner_up_action"] is None
+    assert card["current_market_pressure"]["market_pressure_level"] == "L1_中性偏紧"
+    assert [item["label"] for item in card["scenario_ladder"]] == [
+        "历史回测",
+        "当前市场延续",
+        "若市场轻度恶化",
+        "若市场中度恶化",
+        "若市场重度恶化",
+    ]
 
 
 @pytest.mark.contract

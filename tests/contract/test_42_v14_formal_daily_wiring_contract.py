@@ -496,6 +496,79 @@ def test_decision_card_prefers_probability_engine_result_for_formal_probability_
     ]
 
 
+def test_quarterly_review_card_surfaces_probability_engine_pressure_ladder() -> None:
+    card = build_decision_card(
+        DecisionCardBuildInput(
+            card_type=DecisionCardType.QUARTERLY_REVIEW,
+            workflow_type="quarterly",
+            run_id="v14_quarterly_pressure_ladder",
+            goal_solver_output={
+                "recommended_result": {
+                    "success_probability": 0.71,
+                    "risk_summary": {"max_drawdown_90pct": 0.18},
+                },
+                "solver_notes": ["baseline refreshed"],
+            },
+            runtime_result={
+                "candidate_poverty": False,
+                "ev_report": {
+                    "ranked_actions": [
+                        {
+                            "action": {"type": "observe"},
+                            "score": {"total": 0.01},
+                            "rank": 1,
+                            "is_recommended": True,
+                            "recommendation_reason": "observe while validating new baseline",
+                        }
+                    ],
+                    "recommended_action": {"type": "observe"},
+                    "confidence_flag": "medium",
+                    "confidence_reason": "quarterly review context",
+                    "goal_solver_baseline": 0.69,
+                    "goal_solver_after_recommended": 0.70,
+                },
+            },
+            probability_engine_result=_probability_result(
+                run_outcome_status="success",
+                resolved_result_category="formal_strict_result",
+                disclosure_level="point_and_range",
+                confidence_level="high",
+            ),
+            run_outcome_status="completed",
+            resolved_result_category="formal_independent_result",
+            probability_truth_view={
+                "run_outcome_status": "completed",
+                "resolved_result_category": "formal_independent_result",
+                "product_probability_method": "product_independent_path",
+                "disclosure_decision": {
+                    "disclosure_level": "point_and_range",
+                    "confidence_level": "high",
+                },
+            },
+            disclosure_decision={
+                "disclosure_level": "point_and_range",
+                "confidence_level": "high",
+            },
+            evidence_bundle={
+                "run_outcome_status": "completed",
+                "resolved_result_category": "formal_independent_result",
+                "monthly_fallback_used": False,
+                "bucket_fallback_used": False,
+            },
+        )
+    )
+
+    assert card["current_market_pressure"]["market_pressure_level"] == "L1_中性偏紧"
+    assert [item["label"] for item in card["scenario_ladder"]] == [
+        "历史回测",
+        "当前市场延续",
+        "若市场轻度恶化",
+        "若市场中度恶化",
+        "若市场重度恶化",
+    ]
+    assert card["probability_explanation"]["scenario_ladder"][1]["label"] == "当前市场延续"
+
+
 def test_frontdesk_summary_prefers_top_level_probability_fields_over_decision_card_fallback() -> None:
     summary = _frontdesk_summary(
         account_profile_id="v14_truth_view_frontdesk",
