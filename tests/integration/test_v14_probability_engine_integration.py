@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from frontdesk.service import run_frontdesk_onboarding
 from probability_engine.engine import run_probability_engine
 from probability_engine.contracts import ProbabilityEngineRunResult
 from probability_engine.path_generator import (
@@ -27,6 +29,8 @@ from orchestrator.engine import (
     _build_probability_engine_run_input,
     _rescale_factor_runtime_state_from_selected_products,
 )
+from shared.onboarding import UserOnboardingProfile
+from tests.contract.test_12_frontdesk_regression import _observed_external_snapshot_source
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "v14" / "formal_daily_engine_input.json"
@@ -273,6 +277,43 @@ def test_benign_profile_regression_restores_positive_primary_and_orders_stress_b
     assert result.output.challenger_results[0].success_probability > 0.0
     assert result.output.stress_results
     assert result.output.stress_results[0].success_probability <= primary.success_probability
+
+
+def test_observed_delivery_path_primary_success_stays_above_sixty_percent(tmp_path: Path) -> None:
+    profile = UserOnboardingProfile(
+        account_profile_id="observed_primary_success_regression",
+        display_name="Andy",
+        current_total_assets=18_000.0,
+        monthly_contribution=2_500.0,
+        goal_amount=120_000.0,
+        goal_horizon_months=36,
+        risk_preference="中等",
+        max_drawdown_tolerance=0.20,
+        current_holdings="现金 12000 黄金 6000",
+        restrictions=[],
+    )
+    original_recipe = PRIMARY_RECIPE_V14
+    override = replace(PRIMARY_RECIPE_V14, path_count=128)
+    import probability_engine.recipes as recipe_module
+
+    recipe_module.PRIMARY_RECIPE_V14 = override
+    recipe_module.RECIPE_REGISTRY[override.recipe_name] = override
+    try:
+        result = run_frontdesk_onboarding(
+            profile,
+            db_path=tmp_path / "observed_primary_success.sqlite",
+            external_snapshot_source=_observed_external_snapshot_source(tmp_path, profile),
+        )
+    finally:
+        recipe_module.PRIMARY_RECIPE_V14 = original_recipe
+        recipe_module.RECIPE_REGISTRY[original_recipe.recipe_name] = original_recipe
+
+    probability_result = dict(result.get("probability_engine_result") or {})
+    output = dict(probability_result.get("output") or {})
+    primary = dict(output.get("primary_result") or {})
+
+    assert result["run_outcome_status"] == "completed"
+    assert primary.get("success_probability", 0.0) >= 0.60
 
 
 def test_same_month_twenty_trading_day_path_accepts_horizon_months_one() -> None:

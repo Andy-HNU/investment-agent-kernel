@@ -612,18 +612,24 @@ def _build_regime_state_spec(
             grouped[regime_name].append(float(portfolio_return))
 
         adjustments: dict[str, dict[str, float]] = {}
+        negative_floor = -max(base_daily_drift * 0.35, 0.00010)
+        positive_ceiling = max(base_daily_drift * 0.75, 0.00020)
         fallback_by_regime = {
             "normal": 0.0,
-            "risk_off": -max(base_daily_drift * 0.35, 0.00005),
-            "stress": -max(base_daily_drift * 0.70, 0.00010),
+            "risk_off": -max(base_daily_drift * 0.12, 0.00004),
+            "stress": -max(base_daily_drift * 0.20, 0.00006),
         }
         for regime_name in regime_names:
             values = grouped.get(regime_name) or []
             if values:
                 empirical_mean = sum(values) / len(values)
                 mean_shift = empirical_mean - base_daily_drift
-                floor = -max(base_daily_drift * 1.50, 0.00035)
-                ceiling = max(base_daily_drift * 0.50, 0.00015)
+                if regime_name == "normal":
+                    floor = -max(base_daily_drift * 0.20, 0.00004)
+                    ceiling = positive_ceiling
+                else:
+                    floor = negative_floor
+                    ceiling = max(base_daily_drift * 0.25, 0.00008)
                 mean_shift = float(max(min(mean_shift, ceiling), floor))
             else:
                 mean_shift = float(fallback_by_regime[regime_name])
@@ -642,10 +648,16 @@ def _build_regime_state_spec(
             [0.15, 0.68, 0.17],
             [0.06, 0.24, 0.70],
         ]
+    annual_expected_returns = list(dict(factor_dynamics.expected_return_by_factor or {}).values())
+    base_daily_drift = (
+        max(sum(float(value) for value in annual_expected_returns) / len(annual_expected_returns), 0.0) / 252.0
+        if annual_expected_returns
+        else 0.08 / 252.0
+    )
     regime_mean_adjustments = {
         "normal": {"mean_shift": 0.0},
-        "risk_off": {"mean_shift": -0.0005},
-        "stress": {"mean_shift": -0.0012},
+        "risk_off": {"mean_shift": -max(base_daily_drift * 0.12, 0.00004)},
+        "stress": {"mean_shift": -max(base_daily_drift * 0.20, 0.00006)},
     }
     if historical_dataset is not None:
         portfolio_returns = _portfolio_return_series_from_dataset(historical_dataset)
