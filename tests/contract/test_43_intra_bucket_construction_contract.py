@@ -124,6 +124,33 @@ def test_resolve_bucket_count_uses_auto_policy_branch() -> None:
     assert resolution.resolved_count == 1
 
 
+def test_resolve_bucket_count_responds_to_real_goal_context_inputs() -> None:
+    low_context = resolve_bucket_count(
+        bucket="equity_cn",
+        bucket_weight=0.40,
+        goal_horizon_months=12,
+        horizon_months=None,
+        risk_preference="conservative",
+        max_drawdown_tolerance=0.10,
+        current_market_pressure_score=5.0,
+        implied_required_annual_return=0.03,
+    )
+    high_context = resolve_bucket_count(
+        bucket="equity_cn",
+        bucket_weight=0.40,
+        goal_horizon_months=36,
+        horizon_months=None,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.35,
+        current_market_pressure_score=40.0,
+        implied_required_annual_return=0.10,
+    )
+
+    assert low_context.resolved_count < high_context.resolved_count
+    assert low_context.resolved_count == 1
+    assert high_context.resolved_count >= 2
+
+
 def test_equity_bucket_can_return_two_products_when_requested() -> None:
     plan = build_execution_plan(
         source_run_id="test",
@@ -180,3 +207,128 @@ def test_satellite_bucket_can_build_requested_five_member_structure_or_flag_unme
     assert explanation.requested_count == 5
     assert explanation.actual_count == len(satellite_items)
     assert explanation.actual_count == 5 or explanation.unmet_reason is not None
+
+
+def test_gold_bucket_stays_single_product_even_when_requested_more() -> None:
+    plan = build_execution_plan(
+        source_run_id="test",
+        source_allocation_id="alloc",
+        bucket_targets={
+            "gold": 0.10,
+            "cash_liquidity": 0.90,
+        },
+        bucket_count_preferences=[
+            BucketCardinalityPreference(
+                bucket="gold",
+                mode="target_count",
+                target_count=2,
+                min_count=None,
+                max_count=None,
+                source="user_requested",
+            ),
+        ],
+    )
+
+    gold_items = [item for item in plan.items if item.asset_bucket == "gold"]
+
+    assert len(gold_items) == 1
+    assert plan.bucket_construction_explanations["gold"].actual_count == 1
+
+
+def test_cash_liquidity_bucket_stays_single_product_even_when_requested_more() -> None:
+    plan = build_execution_plan(
+        source_run_id="test",
+        source_allocation_id="alloc",
+        bucket_targets={
+            "cash_liquidity": 0.30,
+            "equity_cn": 0.70,
+        },
+        bucket_count_preferences=[
+            BucketCardinalityPreference(
+                bucket="cash_liquidity",
+                mode="target_count",
+                target_count=3,
+                min_count=None,
+                max_count=None,
+                source="user_requested",
+            ),
+        ],
+    )
+
+    cash_items = [item for item in plan.items if item.asset_bucket == "cash_liquidity"]
+
+    assert len(cash_items) == 1
+    assert plan.bucket_construction_explanations["cash_liquidity"].actual_count == 1
+
+
+def test_bond_cn_auto_policy_caps_to_two_products() -> None:
+    resolution = resolve_bucket_count(
+        bucket="bond_cn",
+        bucket_weight=0.20,
+        goal_horizon_months=36,
+        horizon_months=None,
+        risk_preference="moderate",
+        max_drawdown_tolerance=0.20,
+        current_market_pressure_score=30.0,
+        implied_required_annual_return=0.09,
+    )
+
+    assert resolution.source == "auto_policy"
+    assert resolution.resolved_count == 2
+
+
+def test_explicit_satellite_request_is_not_collapsed_by_minimum_position_rules() -> None:
+    plan = build_execution_plan(
+        source_run_id="test",
+        source_allocation_id="alloc",
+        bucket_targets={
+            "satellite": 0.04,
+            "cash_liquidity": 0.96,
+        },
+        bucket_count_preferences=[
+            BucketCardinalityPreference(
+                bucket="satellite",
+                mode="target_count",
+                target_count=3,
+                min_count=None,
+                max_count=None,
+                source="user_requested",
+            ),
+        ],
+    )
+
+    satellite_items = [item for item in plan.items if item.asset_bucket == "satellite"]
+    explanation = plan.bucket_construction_explanations["satellite"]
+
+    assert len(satellite_items) == 3
+    assert explanation.actual_count == 3
+    assert explanation.unmet_reason is None
+    assert any("minimum_position_guidance" in reason for reason in explanation.why_split)
+
+
+def test_explicit_bond_request_is_not_collapsed_by_minimum_position_rules() -> None:
+    plan = build_execution_plan(
+        source_run_id="test",
+        source_allocation_id="alloc",
+        bucket_targets={
+            "bond_cn": 0.10,
+            "cash_liquidity": 0.90,
+        },
+        bucket_count_preferences=[
+            BucketCardinalityPreference(
+                bucket="bond_cn",
+                mode="target_count",
+                target_count=2,
+                min_count=None,
+                max_count=None,
+                source="user_requested",
+            ),
+        ],
+    )
+
+    bond_items = [item for item in plan.items if item.asset_bucket == "bond_cn"]
+    explanation = plan.bucket_construction_explanations["bond_cn"]
+
+    assert len(bond_items) == 2
+    assert explanation.actual_count == 2
+    assert explanation.unmet_reason is None

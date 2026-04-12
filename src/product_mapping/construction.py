@@ -11,10 +11,10 @@ from product_mapping.types import RuntimeProductCandidate
 _SINGLE_PRODUCT_BUCKETS = {"gold", "cash_liquidity"}
 _MIN_MEMBER_WEIGHT_BY_BUCKET = {
     "equity_cn": 0.05,
-    "bond_cn": 0.08,
+    "bond_cn": 0.05,
     "gold": 0.10,
     "cash_liquidity": 0.10,
-    "satellite": 0.05,
+    "satellite": 0.02,
 }
 
 
@@ -92,12 +92,18 @@ def build_bucket_subset(
         return []
     working_pool = _domestic_only_pool(candidates)
     desired_count = _desired_count(requested_resolution)
-    capped_count = min(
-        desired_count,
-        _policy_cap(bucket, requested_resolution, len(working_pool)),
-        _minimum_position_member_cap(bucket, float(bucket_weight)),
-        len(working_pool),
-    )
+    is_explicit_request = requested_resolution.source in {"explicit_user", "persisted_user"}
+    if bucket in _SINGLE_PRODUCT_BUCKETS:
+        capped_count = 1
+    elif is_explicit_request:
+        capped_count = min(desired_count, len(working_pool))
+    else:
+        capped_count = min(
+            desired_count,
+            _policy_cap(bucket, requested_resolution, len(working_pool)),
+            _minimum_position_member_cap(bucket, float(bucket_weight)),
+            len(working_pool),
+        )
     return _select_subset(bucket, working_pool, max(1, capped_count))
 
 
@@ -114,6 +120,7 @@ def build_bucket_construction_explanation(
     desired_count = int(requested_count or requested_resolution.resolved_count)
     count_satisfied = actual_count >= desired_count
     minimum_weight = float(_MIN_MEMBER_WEIGHT_BY_BUCKET.get(bucket, 0.05) or 0.05)
+    is_explicit_request = requested_resolution.source in {"explicit_user", "persisted_user"}
     reasons: list[str] = []
     if bucket in _SINGLE_PRODUCT_BUCKETS:
         reasons.append(f"bucket {bucket} remains single-product")
@@ -133,6 +140,10 @@ def build_bucket_construction_explanation(
             reasons.append(
                 f"requested_count={desired_count} could not be realized within the available candidate set"
             )
+    elif is_explicit_request and desired_count > 1 and float(bucket_weight) / max(desired_count, 1) < minimum_weight:
+        reasons.append(
+            f"explicit_request_honored_despite_minimum_position_guidance={minimum_weight:.0%}"
+        )
     if actual_count > 1 and not reasons:
         reasons.append(f"bucket {bucket} is split across {actual_count} domestic members for construction-time diversification")
     if actual_count <= 1 and bucket not in _SINGLE_PRODUCT_BUCKETS and not reasons:

@@ -1750,6 +1750,11 @@ def build_execution_plan(
     source_allocation_id: str,
     bucket_targets: dict[str, float],
     bucket_count_preferences: list[BucketCardinalityPreference] | None = None,
+    goal_horizon_months: int | None = None,
+    risk_preference: str | None = None,
+    max_drawdown_tolerance: float | None = None,
+    current_market_pressure_score: float | None = None,
+    implied_required_annual_return: float | None = None,
     restrictions: list[str] | None = None,
     plan_version: int = 1,
     catalog: list[ProductCandidate] | None = None,
@@ -1895,6 +1900,8 @@ def build_execution_plan(
     bucket_count_preference_lookup = {
         str(preference.bucket).strip(): preference for preference in list(bucket_count_preferences or [])
     }
+    effective_risk_preference = str(risk_preference or "moderate")
+    effective_max_drawdown_tolerance = 0.20 if max_drawdown_tolerance is None else float(max_drawdown_tolerance)
     for bucket, target_weight in adjusted_targets.items():
         if target_weight <= 0:
             continue
@@ -1906,13 +1913,20 @@ def build_execution_plan(
         if not bucket_candidates:
             continue
         bucket_weight = float(target_weight)
+        resolved_goal_horizon_months = (
+            int(goal_horizon_months)
+            if goal_horizon_months is not None
+            else (24 if bucket_weight >= 0.20 else 12)
+        )
         count_resolution = resolve_bucket_count(
             bucket=bucket,
             bucket_weight=bucket_weight,
-            horizon_months=24 if bucket_weight >= 0.20 else 12,
-            risk_preference="moderate",
-            max_drawdown_tolerance=0.20,
-            current_market_pressure_score=30.0,
+            horizon_months=resolved_goal_horizon_months,
+            goal_horizon_months=resolved_goal_horizon_months,
+            risk_preference=effective_risk_preference,
+            max_drawdown_tolerance=effective_max_drawdown_tolerance,
+            current_market_pressure_score=current_market_pressure_score,
+            implied_required_annual_return=implied_required_annual_return,
             explicit_request=bucket_count_preference_lookup.get(bucket),
         )
         selected_members = build_bucket_subset(

@@ -3378,6 +3378,25 @@ def _maybe_build_execution_plan(
     )
     if not weights or allocation_name is None:
         return None
+    goal_solver_input_dict = _as_dict(envelope.get("goal_solver_input"))
+    goal_input = _as_dict(goal_solver_input_dict.get("goal"))
+    constraint_input = _as_dict(goal_solver_input_dict.get("constraints"))
+    recommended_result = _as_dict(goal_output.get("recommended_result"))
+    frontier_analysis = _as_dict(goal_output.get("frontier_analysis"))
+    current_market_pressure = _as_dict(goal_output.get("current_market_pressure"))
+    goal_horizon_months = (
+        goal_input.get("horizon_months")
+        or goal_solver_input_dict.get("goal_horizon_months")
+        or goal_solver_input_dict.get("remaining_horizon_months")
+    )
+    risk_preference = _first_text(goal_input.get("risk_preference"), goal_solver_input_dict.get("risk_preference"))
+    max_drawdown_tolerance = constraint_input.get("max_drawdown_tolerance")
+    implied_required_annual_return = (
+        frontier_analysis.get("implied_required_annual_return")
+        if frontier_analysis.get("implied_required_annual_return") is not None
+        else recommended_result.get("implied_required_annual_return")
+    )
+    current_market_pressure_score = current_market_pressure.get("market_pressure_score")
     valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
     product_universe_inputs, product_universe_result = _extract_execution_plan_product_universe_context(envelope)
     runtime_candidates = _extract_execution_plan_runtime_candidates(envelope)
@@ -3399,6 +3418,15 @@ def _maybe_build_execution_plan(
         valuation_result=valuation_result,
         policy_news_signals=policy_news_signals,
         product_proxy_result=product_proxy_result,
+        goal_horizon_months=None if goal_horizon_months is None else int(goal_horizon_months),
+        risk_preference=risk_preference,
+        max_drawdown_tolerance=None if max_drawdown_tolerance is None else float(max_drawdown_tolerance),
+        current_market_pressure_score=(
+            None if current_market_pressure_score is None else float(current_market_pressure_score)
+        ),
+        implied_required_annual_return=(
+            None if implied_required_annual_return is None else float(implied_required_annual_return)
+        ),
         formal_path_required=formal_path_required,
         execution_policy=execution_policy.value,
         account_total_value=account_total_value,

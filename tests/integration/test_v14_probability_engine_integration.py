@@ -435,6 +435,11 @@ def test_execution_plan_payload_exposes_bucket_construction_explanations() -> No
             "satellite": 0.20,
             "cash_liquidity": 0.10,
         },
+        goal_horizon_months=36,
+        risk_preference="moderate",
+        max_drawdown_tolerance=0.20,
+        current_market_pressure_score=30.0,
+        implied_required_annual_return=0.09,
         bucket_count_preferences=[
             BucketCardinalityPreference(
                 bucket="equity_cn",
