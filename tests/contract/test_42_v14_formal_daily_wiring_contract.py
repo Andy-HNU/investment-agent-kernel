@@ -219,6 +219,9 @@ def test_orchestrator_top_level_surface_tracks_bridged_probability_result_when_e
     assert result["probability_engine_result"] is not None
     assert result["run_outcome_status"] == "completed"
     assert result["resolved_result_category"] == "formal_estimated_result"
+    assert set(result["bucket_construction_explanations"]) >= {"equity_cn", "bond_cn", "gold", "satellite"}
+    assert result["product_explanations"]
+    assert result["product_group_explanations"]
     assert result["disclosure_decision"]["confidence_level"] == "medium"
     assert result["evidence_bundle"]["run_outcome_status"] == "completed"
     assert result["evidence_bundle"]["resolved_result_category"] == "formal_estimated_result"

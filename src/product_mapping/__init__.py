@@ -1,6 +1,6 @@
 from .catalog import load_builtin_catalog
 from .cardinality import resolve_bucket_count
-from .explanations import validate_product_scenario_metrics
+from .explanations import build_portfolio_explanation_surfaces, validate_product_scenario_metrics
 from .types import (
     BucketCardinalityPreference,
     BucketConstructionExplanation,
@@ -42,6 +42,7 @@ __all__ = [
     "ProxyUniverseSummary",
     "build_candidate_product_context",
     "build_execution_plan",
+    "build_portfolio_explanation_surfaces",
     "load_builtin_catalog",
     "resolve_bucket_count",
     "validate_product_scenario_metrics",

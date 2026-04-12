@@ -152,6 +152,8 @@ def test_estimated_non_formal_allowed_continues_in_degraded_mode(monkeypatch, tm
     assert result["unknown_product_resolution"]["state"] == "estimated_non_formal_allowed"
     assert result["unknown_product_resolution"]["strict_formal_blocked"] is False
     assert result["unknown_product_resolution"]["items"][0]["resolution_state"] == "estimated_non_formal_allowed"
+    assert result["probability_engine_result"] is not None
+    assert result["probability_engine_result"]["run_outcome_status"] in {"success", "degraded"}
     assert result["pending_execution_plan"]["items"][0]["primary_product_id"] == "mystery_fund_estimate"
     assert result["pending_execution_plan"]["items"][0]["target_weight"] == 0.20
     assert result["run_outcome_status"] == "degraded"
@@ -189,6 +191,7 @@ def test_runtime_only_candidate_is_resolved_consistently_across_evaluation_and_p
         "runtime_equity_proxy",
         "cn_gold_etf",
     ]
+    assert result["pending_execution_plan"]["items"][0]["primary_product"]["product_id"] == "runtime_equity_proxy"
 
 
 @pytest.mark.contract
@@ -215,6 +218,8 @@ def test_user_portfolio_probability_engine_result_is_populated_for_evaluation_mo
     assert result["evaluation_mode"] == "user_specified_portfolio"
     assert result["probability_engine_result"] is not None
     assert result["probability_engine_result"]["run_outcome_status"] in {"success", "degraded"}
+    assert result["probability_engine_result"]["output"]["primary_result"]["success_probability"] is not None
+    assert result["probability_engine_result"]["output"]["primary_result"]["path_stats"]
 
 
 @pytest.mark.contract
@@ -240,6 +245,7 @@ def test_user_excluded_product_continues_without_strict_block(monkeypatch, tmp_p
     assert result["unknown_product_resolution"]["state"] == "user_excluded_product"
     assert result["unknown_product_resolution"]["strict_formal_blocked"] is False
     assert result["unknown_product_resolution"]["items"][0]["resolution_state"] == "user_excluded_product"
+    assert all(item["primary_product_id"] != "mystery_fund_drop" for item in result["pending_execution_plan"]["items"])
     assert [item["primary_product_id"] for item in result["pending_execution_plan"]["items"]] == [
         "cn_gold_etf",
     ]

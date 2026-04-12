@@ -119,6 +119,9 @@ class OrchestratorResult:
     runtime_result: Any | None = None
     probability_engine_result: ProbabilityEngineRunResult | None = None
     execution_plan: Any | None = None
+    bucket_construction_explanations: dict[str, Any] = field(default_factory=dict)
+    product_explanations: dict[str, Any] = field(default_factory=dict)
+    product_group_explanations: dict[str, Any] = field(default_factory=dict)
     card_build_input: DecisionCardBuildInput | None = None
     decision_card: DecisionCard | dict[str, Any] | None = None
     workflow_decision: WorkflowDecision | None = None
@@ -157,6 +160,9 @@ class OrchestratorResult:
             "runtime_result": _serialize(self.runtime_result),
             "probability_engine_result": _serialize(self.probability_engine_result),
             "execution_plan": _serialize(self.execution_plan),
+            "bucket_construction_explanations": _serialize(self.bucket_construction_explanations),
+            "product_explanations": _serialize(self.product_explanations),
+            "product_group_explanations": _serialize(self.product_group_explanations),
             "card_build_input": _serialize(self.card_build_input),
             "decision_card": _serialize(self.decision_card),
             "workflow_decision": _serialize(self.workflow_decision),

@@ -21,7 +21,12 @@ from goal_solver.types import (
     normalize_product_probability_method,
 )
 from probability_engine.engine import run_probability_engine
-from product_mapping import build_candidate_product_context, build_execution_plan, load_builtin_catalog
+from product_mapping import (
+    build_candidate_product_context,
+    build_execution_plan,
+    build_portfolio_explanation_surfaces,
+    load_builtin_catalog,
+)
 from product_mapping.engine import _build_product_simulation_input
 from product_mapping.types import ExecutionPlan, ExecutionPlanItem, ProductCandidate
 from product_mapping.runtime_inputs import enrich_market_raw_with_runtime_product_inputs
@@ -4861,6 +4866,18 @@ def run_orchestrator(
     )
     audit_record.artifact_refs["has_runtime_telemetry"] = True
     audit_record.artifact_refs["runtime_telemetry"] = runtime_telemetry
+    explanation_surfaces = (
+        build_portfolio_explanation_surfaces(
+            execution_plan=execution_plan,
+            probability_engine_result=probability_engine_result,
+        )
+        if execution_plan is not None
+        else {
+            "bucket_construction_explanations": {},
+            "product_explanations": {},
+            "product_group_explanations": {},
+        }
+    )
     return OrchestratorResult(
         run_id=run_id,
         workflow_type=effective_trigger.workflow_type,
@@ -4886,6 +4903,9 @@ def run_orchestrator(
         runtime_result=runtime_result,
         probability_engine_result=probability_engine_result,
         execution_plan=execution_plan,
+        bucket_construction_explanations=dict(explanation_surfaces.get("bucket_construction_explanations") or {}),
+        product_explanations=dict(explanation_surfaces.get("product_explanations") or {}),
+        product_group_explanations=dict(explanation_surfaces.get("product_group_explanations") or {}),
         card_build_input=card_build_input,
         decision_card=decision_card,
         workflow_decision=workflow_decision,

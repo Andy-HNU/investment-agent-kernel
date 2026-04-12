@@ -7,6 +7,9 @@ from product_mapping import (
     ProductExplanation,
     ProductGroupExplanation,
     ProductScenarioMetrics,
+    build_portfolio_explanation_surfaces,
+    load_builtin_catalog,
+    build_execution_plan,
 )
 
 
@@ -257,3 +260,85 @@ def test_bucket_construction_explanation_matches_spec_shape() -> None:
         "satellite_alpha": "theme_offset",
         "satellite_beta": "diversifier",
     }
+
+
+def test_portfolio_explanation_surfaces_include_top_level_sets() -> None:
+    catalog = load_builtin_catalog()
+    equity = next(item for item in catalog if item.product_id == "cn_equity_dividend_etf")
+    equity_peer = next(item for item in catalog if item.product_id == "cn_equity_csi300_etf")
+    gold = next(item for item in catalog if item.product_id == "cn_gold_etf")
+    cash = next(item for item in catalog if item.product_id == "cn_cash_money_fund")
+    plan = build_execution_plan(
+        source_run_id="explanation_surface_test",
+        source_allocation_id="explanation_surface_alloc",
+        bucket_targets={"equity_cn": 0.50, "gold": 0.10, "cash_liquidity": 0.40},
+        catalog=[equity, equity_peer, gold, cash],
+        runtime_candidates=[equity, equity_peer, gold, cash],
+        formal_path_required=False,
+        execution_policy="exploratory",
+    )
+    surfaces = build_portfolio_explanation_surfaces(
+        execution_plan=plan,
+        probability_engine_result={
+            "run_outcome_status": "success",
+            "resolved_result_category": "formal_independent_result",
+            "output": {
+                "primary_result": {
+                    "success_probability": 0.62,
+                    "path_stats": {
+                        "terminal_value_mean": 121000.0,
+                        "terminal_value_p50": 119000.0,
+                        "cagr_p50": 0.05,
+                        "max_drawdown_p95": 0.16,
+                    },
+                },
+                "current_market_pressure": {
+                    "scenario_kind": "current_market",
+                    "market_pressure_score": 43.0,
+                    "market_pressure_level": "L1_中性偏紧",
+                },
+                "scenario_comparison": [
+                    {"scenario_kind": "historical_replay", "label": "历史回测", "pressure": None},
+                    {
+                        "scenario_kind": "current_market",
+                        "label": "当前市场延续",
+                        "pressure": {"market_pressure_score": 43.0, "market_pressure_level": "L1_中性偏紧"},
+                    },
+                    {
+                        "scenario_kind": "deteriorated_mild",
+                        "label": "若市场轻度恶化",
+                        "pressure": {"market_pressure_score": 57.0, "market_pressure_level": "L2_风险偏高"},
+                    },
+                    {
+                        "scenario_kind": "deteriorated_moderate",
+                        "label": "若市场中度恶化",
+                        "pressure": {"market_pressure_score": 68.0, "market_pressure_level": "L2_风险偏高"},
+                    },
+                    {
+                        "scenario_kind": "deteriorated_severe",
+                        "label": "若市场重度恶化",
+                        "pressure": {"market_pressure_score": 87.0, "market_pressure_level": "L3_高压"},
+                    },
+                ],
+            },
+        },
+    )
+
+    assert set(surfaces) == {
+        "bucket_construction_explanations",
+        "product_explanations",
+        "product_group_explanations",
+    }
+    assert set(surfaces["bucket_construction_explanations"]) == {"equity_cn", "gold", "cash_liquidity"}
+    assert {item.scenario_kind for item in surfaces["product_explanations"]["cn_equity_dividend_etf"].scenario_metrics} == {
+        "historical_replay",
+        "current_market",
+        "deteriorated_mild",
+        "deteriorated_moderate",
+        "deteriorated_severe",
+    }
+    assert surfaces["product_explanations"]["cn_equity_dividend_etf"].success_delta_if_removed is not None
+    assert any(
+        group.group_type == "duplicate_exposure_group"
+        for group in surfaces["product_group_explanations"].values()
+    )
