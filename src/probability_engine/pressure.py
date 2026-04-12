@@ -110,31 +110,6 @@ def _drift_haircut_component(runtime_input: DailyEngineRuntimeInput) -> float:
 
 
 def _volatility_component(runtime_input: DailyEngineRuntimeInput) -> float:
-    current_vol_multiplier = _current_regime_adjustments(runtime_input)[1]["volatility_multiplier"]
-    return 100.0 * _clamp01((current_vol_multiplier - 1.0) / 0.40)
-
-
-def _jump_probability_component(runtime_input: DailyEngineRuntimeInput) -> float:
-    adjustments = _current_regime_adjustments(runtime_input)[1]
-    sys_mult = adjustments["systemic_jump_probability_multiplier"]
-    idio_mult = adjustments["idio_jump_probability_multiplier"]
-    return 50.0 * _clamp01((sys_mult - 1.0) / 1.0) + 50.0 * _clamp01((idio_mult - 1.0) / 0.50)
-
-
-def _tail_severity_component(runtime_input: DailyEngineRuntimeInput) -> float:
-    disp_mult = _current_regime_adjustments(runtime_input)[1]["systemic_jump_dispersion_multiplier"]
-    return 100.0 * _clamp01((disp_mult - 1.0) / 0.20)
-
-
-def _drift_haircut_component(runtime_input: DailyEngineRuntimeInput) -> float:
-    base_daily_drift = _base_daily_drift(runtime_input)
-    current_mean_shift = _current_regime_mean_shift(runtime_input)
-    effective_daily_drift = max(base_daily_drift + current_mean_shift, -0.005)
-    drift_haircut_ratio = _clamp01((base_daily_drift - effective_daily_drift) / max(base_daily_drift, 1e-9))
-    return 100.0 * drift_haircut_ratio
-
-
-def _volatility_component(runtime_input: DailyEngineRuntimeInput) -> float:
     current_vol_multiplier = _current_regime_volatility_multiplier(runtime_input)
     return 100.0 * _clamp01((current_vol_multiplier - 1.0) / 0.40)
 
