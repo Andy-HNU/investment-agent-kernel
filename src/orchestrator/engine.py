@@ -3425,10 +3425,7 @@ def _build_execution_plan_from_user_portfolio(
             )
             alternate_product_ids = []
         state_seen.append(resolution_state)
-        strict_formal_blocked = strict_formal_blocked or resolution_state in {
-            "unrecognized_requires_user_action",
-            "estimated_non_formal_allowed",
-        }
+        strict_formal_blocked = strict_formal_blocked or resolution_state == "unrecognized_requires_user_action"
         item = ExecutionPlanItem(
             asset_bucket=str(raw_item.get("asset_bucket") or primary_product.asset_bucket),
             target_weight=0.0 if requested_weight is None else round(float(requested_weight), 4),
@@ -3453,7 +3450,8 @@ def _build_execution_plan_from_user_portfolio(
             primary_product=primary_product,
             alternate_products=[catalog[item] for item in alternate_product_ids if item in catalog],
         )
-        items.append(item)
+        if resolution_state != "user_excluded_product":
+            items.append(item)
         resolution_items.append(
             {
                 "product_id": product_id,
@@ -3479,7 +3477,7 @@ def _build_execution_plan_from_user_portfolio(
                     if resolution_state == "user_excluded_product"
                     else ["continue_degraded", "provide_better_identifier"]
                 ),
-                "strict_formal_blocked": resolution_state in {"unrecognized_requires_user_action", "estimated_non_formal_allowed"},
+                "strict_formal_blocked": resolution_state == "unrecognized_requires_user_action",
             }
         )
         if product_state == "unrecognized_product":
@@ -3633,10 +3631,7 @@ def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvalu
         if product_state == "unrecognized_product":
             unknown_count += 1
         states_seen.append(resolution_state)
-        strict_formal_blocked = strict_formal_blocked or resolution_state in {
-            "unrecognized_requires_user_action",
-            "estimated_non_formal_allowed",
-        }
+        strict_formal_blocked = strict_formal_blocked or resolution_state == "unrecognized_requires_user_action"
         allowed_next_actions: list[str]
         if resolution_state == "unrecognized_requires_user_action":
             allowed_next_actions = ["select_proxy", "exclude", "provide_better_identifier", "allow_non_formal"]
@@ -3670,10 +3665,7 @@ def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvalu
                     )
                 ),
                 allowed_next_actions=allowed_next_actions,
-        strict_formal_blocked=resolution_state in {
-            "unrecognized_requires_user_action",
-            "estimated_non_formal_allowed",
-        },
+                strict_formal_blocked=resolution_state == "unrecognized_requires_user_action",
             )
         )
 
@@ -3698,10 +3690,7 @@ def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvalu
     else:
         overall_state = "recognized"
 
-    strict_formal_blocked = strict_formal_blocked or overall_state in {
-        "unrecognized_requires_user_action",
-        "estimated_non_formal_allowed",
-    }
+    strict_formal_blocked = strict_formal_blocked or overall_state == "unrecognized_requires_user_action"
     summary = PortfolioEvaluationSummary(
         evaluation_mode="user_specified_portfolio",
         requested_structure_visibility=_user_portfolio_requested_structure(user_portfolio),
@@ -4134,6 +4123,7 @@ def run_orchestrator(
         calibration_data,
         normalized_trigger,
     )
+    user_portfolio_non_formal_estimate = False
     portfolio_evaluation = _build_user_portfolio_evaluation(envelope)
     if portfolio_evaluation is None:
         portfolio_evaluation_payload = PortfolioEvaluationSummary(
@@ -4150,6 +4140,8 @@ def run_orchestrator(
             strict_block_reason = "user_portfolio_requires_resolution"
             if strict_block_reason not in resolution_blocking_reasons:
                 resolution_blocking_reasons.append(strict_block_reason)
+        elif portfolio_evaluation_payload["unknown_product_resolution"]["state"] == "estimated_non_formal_allowed":
+            user_portfolio_non_formal_estimate = True
     workflow_decision = _select_workflow(
         requested_workflow=requested_workflow,
         trigger=normalized_trigger,
@@ -4179,6 +4171,10 @@ def run_orchestrator(
         snapshot_bundle=snapshot_bundle,
         calibration_result=calibration_result,
     )
+    if user_portfolio_non_formal_estimate:
+        degraded_reason = "user_portfolio_non_formal_estimate"
+        if degraded_reason not in degraded_notes:
+            degraded_notes.append(degraded_reason)
     blocking_reasons = list(resolution_blocking_reasons) + blocking_reasons
     if control_flags["enforce_provenance_checks"]:
         _append_bundle_provenance_checks(bundle_id, calibration_data, blocking_reasons)
