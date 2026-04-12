@@ -3491,8 +3491,6 @@ def _build_execution_plan_from_user_portfolio(
         overall_state = "estimated_non_formal_allowed"
     elif any(state == "user_selected_proxy" for state in state_seen):
         overall_state = "user_selected_proxy"
-    elif any(state == "resolved_formal_ready" for state in state_seen):
-        overall_state = "resolved_formal_ready"
     elif any(state == "user_excluded_product" for state in state_seen):
         overall_state = "user_excluded_product"
     else:
@@ -3697,8 +3695,6 @@ def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvalu
         overall_state = "user_selected_proxy"
     elif any(item.resolution_state == "user_excluded_product" for item in evaluation_items):
         overall_state = "user_excluded_product"
-    elif any(item.resolution_state == "resolved_formal_ready" for item in evaluation_items):
-        overall_state = "resolved_formal_ready"
     else:
         overall_state = "recognized"
 

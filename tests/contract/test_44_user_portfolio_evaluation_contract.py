@@ -67,6 +67,12 @@ def test_user_portfolio_is_evaluated_as_entered_without_rewrite(monkeypatch, tmp
         "cn_gold_etf",
         "cn_cash_money_fund",
     ]
+    assert [item["target_weight"] for item in result["pending_execution_plan"]["items"]] == [
+        0.25,
+        0.25,
+        0.10,
+        0.40,
+    ]
     assert result["unknown_product_resolution"]["state"] == "recognized"
 
 
@@ -89,6 +95,7 @@ def test_unrecognized_product_blocks_strict_formal_until_user_resolves(monkeypat
     assert result["unknown_product_resolution"]["strict_formal_blocked"] is True
     assert result["unknown_product_resolution"]["items"][0]["product_state"] == "unrecognized_product"
     assert result["pending_execution_plan"]["items"][0]["primary_product_id"] == "mystery_fund_x"
+    assert result["pending_execution_plan"]["items"][0]["target_weight"] == 1.0
     assert result["run_outcome_status"] == "blocked"
 
 
@@ -116,4 +123,32 @@ def test_user_selected_proxy_can_proceed_without_strict_block(monkeypatch, tmp_p
     assert result["unknown_product_resolution"]["strict_formal_blocked"] is False
     assert result["unknown_product_resolution"]["items"][0]["resolution_state"] == "user_selected_proxy"
     assert result["pending_execution_plan"]["items"][0]["primary_product_id"] == "mystery_fund_proxy"
+    assert result["pending_execution_plan"]["items"][0]["target_weight"] == 0.30
     assert result["run_outcome_status"] in {"completed", "degraded"}
+
+
+@pytest.mark.contract
+def test_user_excluded_product_continues_without_strict_block(monkeypatch, tmp_path):
+    user_portfolio = [
+        {
+            "product_id": "mystery_fund_drop",
+            "target_weight": 0.20,
+            "exclude": True,
+        },
+        {"product_id": "cn_gold_etf", "target_weight": 0.80},
+    ]
+    profile = _profile(account_profile_id="user_portfolio_excluded")
+
+    def _fake_build_user_onboarding_inputs(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return _profile_bundle_with_user_portfolio(profile, user_portfolio=user_portfolio, as_of=kwargs.get("as_of") or "2026-04-07T00:00:00Z")
+
+    monkeypatch.setattr("frontdesk.service.build_user_onboarding_inputs", _fake_build_user_onboarding_inputs)
+
+    result = run_frontdesk_onboarding(profile, db_path=tmp_path / "frontdesk_excluded.sqlite")
+
+    assert result["evaluation_mode"] == "user_specified_portfolio"
+    assert result["unknown_product_resolution"]["state"] == "user_excluded_product"
+    assert result["unknown_product_resolution"]["strict_formal_blocked"] is False
+    assert result["unknown_product_resolution"]["items"][0]["resolution_state"] == "user_excluded_product"
+    assert result["pending_execution_plan"]["items"][0]["primary_product_id"] == "mystery_fund_drop"
+    assert result["pending_execution_plan"]["items"][0]["target_weight"] == 0.20

@@ -227,6 +227,11 @@ def test_frontdesk_persists_user_portfolio_evaluation_state(monkeypatch, tmp_pat
         "cn_gold_etf",
         "cn_cash_money_fund",
     ]
+    assert [item["target_weight"] for item in summary["pending_execution_plan"]["items"]] == [
+        0.35,
+        0.15,
+        0.50,
+    ]
     assert summary["user_state"]["latest_result"]["evaluation_mode"] == "user_specified_portfolio"
     assert summary["user_state"]["latest_result"]["requested_structure_visibility"]["rewrite_applied"] is False
     assert summary["user_state"]["latest_result"]["unknown_product_resolution"]["state"] == "recognized"
