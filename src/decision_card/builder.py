@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -2147,6 +2148,82 @@ def _execution_plan_summary(inp: DecisionCardBuildInput) -> dict[str, Any]:
     return dict(inp.execution_plan_summary or {})
 
 
+def _requested_structure_result_from_execution_summary(
+    execution_plan_summary: dict[str, Any],
+) -> dict[str, Any]:
+    explicit = _obj(execution_plan_summary.get("requested_structure_result") or {})
+    if explicit:
+        return deepcopy(explicit)
+
+    requested_structure = deepcopy(execution_plan_summary.get("requested_structure"))
+    requested_structure_visibility = _obj(execution_plan_summary.get("requested_structure_visibility") or {})
+    unknown_product_resolution = _obj(execution_plan_summary.get("unknown_product_resolution") or {})
+    evaluation_mode = _metric(execution_plan_summary.get("evaluation_mode")) or ""
+    requested_execution_plan = _obj(execution_plan_summary.get("requested_execution_plan") or {})
+    items = list(requested_execution_plan.get("items") or [])
+    if not items and evaluation_mode == "user_specified_portfolio":
+        items = list(execution_plan_summary.get("items") or [])
+
+    if requested_structure is None and requested_structure_visibility:
+        requested_structure = deepcopy(requested_structure_visibility.get("requested_structure"))
+    if not requested_structure_visibility and requested_structure is not None:
+        requested_structure_visibility = {"requested_structure": deepcopy(requested_structure)}
+
+    if requested_structure in (None, "", [], {}) and not requested_structure_visibility and not unknown_product_resolution:
+        return {}
+
+    return {
+        "status": "evaluated" if items else "visibility_only",
+        "evaluation_mode": evaluation_mode,
+        "requested_structure": [] if requested_structure in (None, "") else requested_structure,
+        "requested_structure_visibility": requested_structure_visibility or {},
+        "unknown_product_resolution": unknown_product_resolution or {},
+        "items": deepcopy(items),
+    }
+
+
+def _system_suggested_alternative_from_execution_summary(
+    execution_plan_summary: dict[str, Any],
+) -> dict[str, Any]:
+    explicit = _obj(execution_plan_summary.get("system_suggested_alternative") or {})
+    if explicit:
+        return deepcopy(explicit)
+    has_requested_context = bool(
+        execution_plan_summary.get("requested_structure_result")
+        or execution_plan_summary.get("requested_structure")
+        or execution_plan_summary.get("requested_structure_visibility")
+        or execution_plan_summary.get("unknown_product_resolution")
+    )
+    if not has_requested_context:
+        return {}
+    return {
+        "status": "not_generated",
+        "reason": "system_suggested_alternative_not_generated",
+    }
+
+
+def _attach_structure_surfaces(rendered: dict[str, Any]) -> dict[str, Any]:
+    execution_plan_summary = dict(rendered.get("execution_plan_summary") or {})
+    requested_structure_result = _requested_structure_result_from_execution_summary(execution_plan_summary)
+    system_suggested_alternative = _system_suggested_alternative_from_execution_summary(execution_plan_summary)
+
+    if requested_structure_result:
+        rendered["requested_structure_result"] = requested_structure_result
+        execution_plan_summary.setdefault("requested_structure_result", requested_structure_result)
+    if system_suggested_alternative:
+        rendered["system_suggested_alternative"] = system_suggested_alternative
+        execution_plan_summary["system_suggested_alternative"] = system_suggested_alternative
+
+    for key in ("bucket_construction_explanations", "product_explanations", "product_group_explanations"):
+        payload = deepcopy(execution_plan_summary.get(key) or {})
+        if payload and key not in rendered:
+            rendered[key] = payload
+        execution_plan_summary.setdefault(key, payload)
+
+    rendered["execution_plan_summary"] = execution_plan_summary
+    return rendered
+
+
 def _first_title(workflow_type: str, preferred: Any, fallback: str) -> str:
     title = _text(preferred)
     if title is not None:
@@ -2245,6 +2322,7 @@ def _build_runtime_action_card(inp: DecisionCardBuildInput, runtime_result: dict
         **_gate1_card_fields(inp),
     )
     rendered = _finalize_card(card)
+    rendered = _attach_structure_surfaces(rendered)
     if inp.probability_engine_result is not None:
         rendered = _attach_probability_engine_scenario_fields(rendered, inp)
     return rendered
@@ -2399,6 +2477,7 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         **_gate1_card_fields(inp),
     )
     rendered = _finalize_card(card)
+    rendered = _attach_structure_surfaces(rendered)
     if inp.probability_engine_result is not None:
         rendered = _attach_probability_engine_scenario_fields(rendered, inp)
     return rendered
@@ -2558,6 +2637,7 @@ def _build_quarterly_review_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         **_gate1_card_fields(inp),
     )
     rendered = _finalize_card(card)
+    rendered = _attach_structure_surfaces(rendered)
     if inp.probability_engine_result is not None:
         rendered = _attach_probability_engine_scenario_fields(rendered, inp)
     return rendered

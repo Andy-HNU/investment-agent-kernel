@@ -222,6 +222,13 @@ def test_frontdesk_persists_user_portfolio_evaluation_state(monkeypatch, tmp_pat
 
     assert summary["evaluation_mode"] == "user_specified_portfolio"
     assert summary["requested_structure_visibility"]["requested_structure"] == user_portfolio
+    assert summary["requested_structure_result"]["requested_structure"] == user_portfolio
+    assert summary["requested_structure_result"]["requested_structure_visibility"]["requested_structure"] == user_portfolio
+    assert summary["system_suggested_alternative"] is not None
+    if summary["system_suggested_alternative"].get("status") in {"not_generated", "unavailable"}:
+        assert summary["system_suggested_alternative"]["status"] in {"not_generated", "unavailable"}
+    else:
+        assert summary["system_suggested_alternative"]["items"][0]["primary_product_id"] == "cn_equity_csi300_etf"
     assert [item["primary_product_id"] for item in summary["pending_execution_plan"]["items"]] == [
         "cn_equity_csi300_etf",
         "cn_gold_etf",
@@ -235,6 +242,22 @@ def test_frontdesk_persists_user_portfolio_evaluation_state(monkeypatch, tmp_pat
     assert summary["user_state"]["latest_result"]["evaluation_mode"] == "user_specified_portfolio"
     assert summary["user_state"]["latest_result"]["requested_structure_visibility"]["rewrite_applied"] is False
     assert summary["user_state"]["latest_result"]["unknown_product_resolution"]["state"] == "recognized"
+    assert summary["decision_card"]["requested_structure_result"]["requested_structure"] == user_portfolio
+    assert summary["decision_card"]["execution_plan_summary"]["requested_structure_result"]["requested_structure"] == user_portfolio
+    assert summary["decision_card"]["system_suggested_alternative"] is not None
+    if summary["decision_card"]["system_suggested_alternative"].get("status") in {"not_generated", "unavailable"}:
+        assert summary["decision_card"]["system_suggested_alternative"]["status"] in {"not_generated", "unavailable"}
+    else:
+        assert summary["decision_card"]["system_suggested_alternative"]["items"][0]["primary_product_id"] == "cn_equity_csi300_etf"
+    assert summary["decision_card"]["execution_plan_summary"]["system_suggested_alternative"]["status"] in {
+        "not_generated",
+        "unavailable",
+        "available",
+    }
+    assert summary["decision_card"]["bucket_construction_explanations"] == summary["bucket_construction_explanations"]
+    assert summary["decision_card"]["execution_plan_summary"]["bucket_construction_explanations"] == summary[
+        "bucket_construction_explanations"
+    ]
 
 
 @pytest.mark.contract

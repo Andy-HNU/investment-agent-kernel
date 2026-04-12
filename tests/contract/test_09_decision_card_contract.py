@@ -316,6 +316,84 @@ def test_runtime_action_card_surfaces_low_confidence_and_review_conditions():
 
 
 @pytest.mark.contract
+def test_runtime_action_card_surfaces_requested_and_suggested_structures_in_execution_summary():
+    requested_structure = [
+        {"product_id": "cn_equity_csi300_etf", "target_weight": 0.35},
+        {"product_id": "cn_gold_etf", "target_weight": 0.15},
+        {"product_id": "cn_cash_money_fund", "target_weight": 0.50},
+    ]
+    card = build_decision_card(
+        DecisionCardBuildInput(
+            card_type=DecisionCardType.RUNTIME_ACTION,
+            workflow_type="monthly",
+            runtime_result={"ev_report": {"recommended_action": {"type": "observe"}}},
+            execution_plan_summary={
+                "evaluation_mode": "user_specified_portfolio",
+                "requested_structure": requested_structure,
+                "requested_structure_visibility": {
+                    "requested_structure": requested_structure,
+                    "rewrite_applied": False,
+                },
+                "unknown_product_resolution": {"state": "recognized"},
+                "items": [
+                    {
+                        "asset_bucket": "equity_cn",
+                        "primary_product_id": "cn_equity_csi300_etf",
+                        "target_weight": 0.35,
+                    }
+                ],
+                "bucket_construction_explanations": {
+                    "equity_cn": {"actual_count": 1, "count_satisfied": True}
+                },
+                "product_explanations": {
+                    "cn_equity_csi300_etf": {"suggested_action": "keep"}
+                },
+                "product_group_explanations": {
+                    "limited_contribution_group": {"product_ids": ["cn_cash_money_fund"]}
+                },
+            },
+        )
+    )
+
+    execution_summary = card["execution_plan_summary"]
+    assert execution_summary["requested_structure_result"]["requested_structure"] == requested_structure
+    assert execution_summary["requested_structure_result"]["unknown_product_resolution"]["state"] == "recognized"
+    assert execution_summary["system_suggested_alternative"]["status"] == "not_generated"
+    assert card["bucket_construction_explanations"] == execution_summary["bucket_construction_explanations"]
+    assert card["product_explanations"] == execution_summary["product_explanations"]
+    assert card["product_group_explanations"] == execution_summary["product_group_explanations"]
+
+
+@pytest.mark.contract
+def test_decision_card_does_not_promote_generic_items_to_requested_structure_result():
+    requested_structure = [{"product_id": "cn_equity_csi300_etf", "target_weight": 1.0}]
+    card = build_decision_card(
+        DecisionCardBuildInput(
+            card_type=DecisionCardType.RUNTIME_ACTION,
+            workflow_type="monthly",
+            runtime_result={"ev_report": {"recommended_action": {"type": "observe"}}},
+            execution_plan_summary={
+                "requested_structure_visibility": {"requested_structure": requested_structure},
+                "items": [
+                    {
+                        "asset_bucket": "equity_cn",
+                        "primary_product_id": "cn_equity_dividend_etf",
+                        "target_weight": 1.0,
+                    }
+                ],
+                "bucket_construction_explanations": {
+                    "equity_cn": {"actual_count": 1, "count_satisfied": True}
+                },
+            },
+        )
+    )
+
+    requested_result = card["execution_plan_summary"]["requested_structure_result"]
+    assert requested_result["status"] == "visibility_only"
+    assert requested_result["items"] == []
+
+
+@pytest.mark.contract
 def test_runtime_action_card_requires_recommended_action_or_ranked_actions():
     with pytest.raises(ValueError, match="recommended_action or ranked_actions"):
         build_decision_card(

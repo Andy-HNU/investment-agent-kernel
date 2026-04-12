@@ -1626,6 +1626,77 @@ def _quarterly_raw_inputs(
     return raw_inputs
 
 
+def _requested_structure_result(
+    *,
+    result_payload: dict[str, Any],
+    user_state: dict[str, Any],
+    run_outcome_status: str | None,
+    resolved_result_category: str | None,
+    formal_path_visibility: dict[str, Any],
+    bucket_construction_explanations: dict[str, Any],
+    product_explanations: dict[str, Any],
+    product_group_explanations: dict[str, Any],
+) -> dict[str, Any]:
+    explicit = _as_dict(result_payload.get("requested_structure_result"))
+    if explicit:
+        return deepcopy(explicit)
+
+    evaluation_mode = str(result_payload.get("evaluation_mode") or "").strip()
+    requested_structure = deepcopy(result_payload.get("requested_structure"))
+    requested_structure_visibility = dict(result_payload.get("requested_structure_visibility") or {})
+    unknown_product_resolution = dict(result_payload.get("unknown_product_resolution") or {})
+    pending_execution_plan = _as_dict(user_state.get("pending_execution_plan"))
+
+    if requested_structure in (None, "", [], {}) and not requested_structure_visibility and not unknown_product_resolution:
+        return {}
+
+    if requested_structure is None and requested_structure_visibility:
+        requested_structure = deepcopy(requested_structure_visibility.get("requested_structure"))
+    include_plan_details = evaluation_mode == "user_specified_portfolio"
+    items = list(pending_execution_plan.get("items") or []) if include_plan_details else []
+    return {
+        "status": "evaluated" if include_plan_details else "visibility_only",
+        "evaluation_mode": evaluation_mode,
+        "run_outcome_status": run_outcome_status,
+        "resolved_result_category": resolved_result_category,
+        "requested_structure": [] if requested_structure in (None, "") else requested_structure,
+        "requested_structure_visibility": requested_structure_visibility,
+        "unknown_product_resolution": unknown_product_resolution,
+        "formal_path_visibility": deepcopy(formal_path_visibility),
+        "items": deepcopy(items),
+        "bucket_construction_explanations": deepcopy(bucket_construction_explanations) if include_plan_details else {},
+        "product_explanations": deepcopy(product_explanations) if include_plan_details else {},
+        "product_group_explanations": deepcopy(product_group_explanations) if include_plan_details else {},
+    }
+
+
+def _system_suggested_alternative(
+    *,
+    result_payload: dict[str, Any],
+    user_state: dict[str, Any],
+) -> dict[str, Any]:
+    explicit = _as_dict(result_payload.get("system_suggested_alternative"))
+    if explicit:
+        return deepcopy(explicit)
+    has_requested_context = bool(
+        result_payload.get("requested_structure_result")
+        or result_payload.get("requested_structure")
+        or result_payload.get("requested_structure_visibility")
+        or result_payload.get("unknown_product_resolution")
+        or str(result_payload.get("evaluation_mode") or "").strip() == "user_specified_portfolio"
+    )
+    if not has_requested_context:
+        return {}
+    comparison = _as_dict(user_state.get("execution_plan_comparison"))
+    payload = {
+        "status": "not_generated",
+        "reason": "system_suggested_alternative_not_generated",
+    }
+    if comparison:
+        payload["comparison"] = deepcopy(comparison)
+    return payload
+
+
 def _frontdesk_summary(
     *,
     account_profile_id: str,
@@ -1753,6 +1824,38 @@ def _frontdesk_summary(
     )
     if disclosure_decision.get("result_category") is None and resolved_result_category is not None:
         disclosure_decision["result_category"] = resolved_result_category
+    bucket_construction_explanations = dict(result_payload.get("bucket_construction_explanations") or {})
+    product_explanations = dict(result_payload.get("product_explanations") or {})
+    product_group_explanations = dict(result_payload.get("product_group_explanations") or {})
+    requested_structure_result = _requested_structure_result(
+        result_payload=result_payload,
+        user_state=user_state,
+        run_outcome_status=run_outcome_status,
+        resolved_result_category=resolved_result_category,
+        formal_path_visibility=formal_path_visibility,
+        bucket_construction_explanations=bucket_construction_explanations,
+        product_explanations=product_explanations,
+        product_group_explanations=product_group_explanations,
+    )
+    system_suggested_alternative = _system_suggested_alternative(
+        result_payload=result_payload,
+        user_state=user_state,
+    )
+    decision_card_execution_summary = dict(decision_card.get("execution_plan_summary") or {})
+    if requested_structure_result:
+        decision_card_execution_summary["requested_structure_result"] = deepcopy(requested_structure_result)
+        decision_card["requested_structure_result"] = deepcopy(requested_structure_result)
+    if system_suggested_alternative:
+        decision_card_execution_summary["system_suggested_alternative"] = deepcopy(system_suggested_alternative)
+        decision_card["system_suggested_alternative"] = deepcopy(system_suggested_alternative)
+    for key, payload in (
+        ("bucket_construction_explanations", bucket_construction_explanations),
+        ("product_explanations", product_explanations),
+        ("product_group_explanations", product_group_explanations),
+    ):
+        decision_card_execution_summary.setdefault(key, deepcopy(payload))
+        decision_card[key] = deepcopy(payload)
+    decision_card["execution_plan_summary"] = decision_card_execution_summary
     summary = {
         "account_profile_id": account_profile_id,
         "display_name": display_name,
@@ -1775,13 +1878,15 @@ def _frontdesk_summary(
         "monthly_fallback_used": monthly_fallback_used,
         "bucket_fallback_used": bucket_fallback_used,
         "evidence_invariance_report": dict(result_payload.get("evidence_invariance_report") or {}),
-        "bucket_construction_explanations": dict(result_payload.get("bucket_construction_explanations") or {}),
-        "product_explanations": dict(result_payload.get("product_explanations") or {}),
-        "product_group_explanations": dict(result_payload.get("product_group_explanations") or {}),
+        "bucket_construction_explanations": bucket_construction_explanations,
+        "product_explanations": product_explanations,
+        "product_group_explanations": product_group_explanations,
         "reuse_context": dict(result_payload.get("reuse_context") or decision_card.get("reuse_context") or {}),
         "evaluation_mode": result_payload.get("evaluation_mode"),
         "requested_structure_visibility": dict(result_payload.get("requested_structure_visibility") or {}),
         "requested_structure": result_payload.get("requested_structure"),
+        "requested_structure_result": requested_structure_result,
+        "system_suggested_alternative": system_suggested_alternative,
         "unknown_product_resolution": dict(result_payload.get("unknown_product_resolution") or {}),
         "decision_card": decision_card,
         "key_metrics": decision_card.get("key_metrics", {}),
