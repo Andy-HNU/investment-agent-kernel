@@ -61,7 +61,13 @@ def test_user_portfolio_is_evaluated_as_entered_without_rewrite(monkeypatch, tmp
     assert result["evaluation_mode"] == "user_specified_portfolio"
     assert result["requested_structure_visibility"]["rewrite_applied"] is False
     assert result["requested_structure_visibility"]["requested_structure"] == user_portfolio
-    assert result["unknown_product_resolution"]["state"] == "resolved_formal_ready"
+    assert [item["primary_product_id"] for item in result["pending_execution_plan"]["items"]] == [
+        "cn_equity_dividend_etf",
+        "cn_equity_csi300_etf",
+        "cn_gold_etf",
+        "cn_cash_money_fund",
+    ]
+    assert result["unknown_product_resolution"]["state"] == "recognized"
 
 
 @pytest.mark.contract
@@ -82,4 +88,32 @@ def test_unrecognized_product_blocks_strict_formal_until_user_resolves(monkeypat
     assert result["unknown_product_resolution"]["state"] == "unrecognized_requires_user_action"
     assert result["unknown_product_resolution"]["strict_formal_blocked"] is True
     assert result["unknown_product_resolution"]["items"][0]["product_state"] == "unrecognized_product"
+    assert result["pending_execution_plan"]["items"][0]["primary_product_id"] == "mystery_fund_x"
     assert result["run_outcome_status"] == "blocked"
+
+
+@pytest.mark.contract
+def test_user_selected_proxy_can_proceed_without_strict_block(monkeypatch, tmp_path):
+    user_portfolio = [
+        {
+            "product_id": "mystery_fund_proxy",
+            "target_weight": 0.30,
+            "selected_proxy_product_id": "cn_cash_money_fund",
+        },
+        {"product_id": "cn_gold_etf", "target_weight": 0.70},
+    ]
+    profile = _profile(account_profile_id="user_portfolio_proxy")
+
+    def _fake_build_user_onboarding_inputs(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return _profile_bundle_with_user_portfolio(profile, user_portfolio=user_portfolio, as_of=kwargs.get("as_of") or "2026-04-07T00:00:00Z")
+
+    monkeypatch.setattr("frontdesk.service.build_user_onboarding_inputs", _fake_build_user_onboarding_inputs)
+
+    result = run_frontdesk_onboarding(profile, db_path=tmp_path / "frontdesk_proxy.sqlite")
+
+    assert result["evaluation_mode"] == "user_specified_portfolio"
+    assert result["unknown_product_resolution"]["state"] == "user_selected_proxy"
+    assert result["unknown_product_resolution"]["strict_formal_blocked"] is False
+    assert result["unknown_product_resolution"]["items"][0]["resolution_state"] == "user_selected_proxy"
+    assert result["pending_execution_plan"]["items"][0]["primary_product_id"] == "mystery_fund_proxy"
+    assert result["run_outcome_status"] in {"completed", "degraded"}

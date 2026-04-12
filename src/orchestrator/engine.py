@@ -22,7 +22,7 @@ from goal_solver.types import (
 )
 from probability_engine.engine import run_probability_engine
 from product_mapping import build_candidate_product_context, build_execution_plan, load_builtin_catalog
-from product_mapping.types import ProductCandidate
+from product_mapping.types import ExecutionPlan, ExecutionPlanItem, ProductCandidate
 from product_mapping.runtime_inputs import enrich_market_raw_with_runtime_product_inputs
 from runtime_optimizer.engine import run_runtime_optimizer
 from runtime_optimizer.types import RuntimeOptimizerMode
@@ -78,6 +78,8 @@ _UNKNOWN_PRODUCT_RESOLUTION_STATES = {
 }
 _USER_PORTFOLIO_PROXY_KEYS = ("selected_proxy_product_id", "proxy_product_id", "proxy_product", "selected_proxy_id")
 _USER_PORTFOLIO_RESOLVED_KEYS = ("resolved_product_id", "resolved_product", "better_product_id", "product_alias")
+_USER_PORTFOLIO_NAME_KEYS = ("product_name", "name", "label")
+_USER_PORTFOLIO_WEIGHT_KEYS = ("target_weight", "weight", "allocation_weight")
 _FORMAL_EXECUTION_POLICIES = {
     ExecutionPolicy.FORMAL_STRICT,
     ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED,
@@ -3306,6 +3308,281 @@ def _user_portfolio_requested_structure(user_portfolio: Any) -> dict[str, Any]:
     }
 
 
+def _user_portfolio_catalog() -> dict[str, ProductCandidate]:
+    return {
+        str(candidate.product_id): candidate
+        for candidate in load_builtin_catalog()
+        if str(candidate.product_id).strip()
+    }
+
+
+def _placeholder_user_portfolio_candidate(
+    *,
+    product_id: str,
+    product_name: str | None,
+    entered_item: dict[str, Any],
+) -> ProductCandidate:
+    bucket = str(entered_item.get("asset_bucket") or "user_specified_portfolio")
+    wrapper_type = str(entered_item.get("wrapper_type") or "other")
+    if wrapper_type not in {"etf", "fund", "bond", "cash_mgmt", "stock", "other"}:
+        wrapper_type = "other"
+    return ProductCandidate(
+        product_id=product_id,
+        product_name=product_name or product_id,
+        asset_bucket=bucket,
+        product_family=str(entered_item.get("product_family") or "user_entered"),
+        wrapper_type=wrapper_type,  # type: ignore[arg-type]
+        provider_source="user_portfolio",
+        provider_symbol=_first_text(entered_item.get("provider_symbol")),
+        region=str(entered_item.get("region") or "CN"),
+        currency=str(entered_item.get("currency") or "CNY"),
+        liquidity_tier=str(entered_item.get("liquidity_tier") or "medium"),  # type: ignore[arg-type]
+        fee_tier=str(entered_item.get("fee_tier") or "medium"),  # type: ignore[arg-type]
+        enabled=True,
+        deprecated=False,
+        tags=[str(tag) for tag in list(entered_item.get("tags") or []) if str(tag).strip()],
+        risk_labels=[str(label) for label in list(entered_item.get("risk_labels") or []) if str(label).strip()],
+        notes=["entered directly by user for explicit evaluation"],
+    )
+
+
+def _build_execution_plan_from_user_portfolio(
+    *,
+    source_run_id: str,
+    source_allocation_id: str,
+    user_portfolio: Any,
+    account_total_value: float | None = None,
+    current_weights: dict[str, float] | None = None,
+    formal_path_required: bool = False,
+    execution_policy: ExecutionPolicy | str | None = None,
+) -> ExecutionPlan:
+    entries = _user_portfolio_entries(user_portfolio)
+    catalog = _user_portfolio_catalog()
+    current_weights = dict(current_weights or {})
+    items: list[ExecutionPlanItem] = []
+    unknown_items: list[dict[str, Any]] = []
+    resolution_items: list[dict[str, Any]] = []
+    state_seen: list[str] = []
+    strict_formal_blocked = False
+    for raw_item in entries:
+        product_id = _first_text(raw_item.get("product_id"), raw_item.get("ticker"), raw_item.get("symbol"))
+        if product_id is None:
+            product_id = "unknown_product"
+        requested_weight_value = next((raw_item.get(key) for key in _USER_PORTFOLIO_WEIGHT_KEYS if raw_item.get(key) is not None), None)
+        requested_weight = None if requested_weight_value is None else float(requested_weight_value)
+        recognized_candidate = catalog.get(product_id)
+        entered_product_name = next(
+            (_first_text(raw_item.get(key)) for key in _USER_PORTFOLIO_NAME_KEYS if _first_text(raw_item.get(key)) is not None),
+            None,
+        )
+        selected_proxy = _user_portfolio_selected_proxy(raw_item)
+        resolved_product_id = _user_portfolio_resolved_product_id(raw_item)
+        resolution_action = _user_portfolio_resolution_action(raw_item)
+        if recognized_candidate is not None:
+            product_state = "recognized"
+            resolution_state = "recognized"
+            primary_product = recognized_candidate
+            alternate_product_ids = [selected_proxy] if selected_proxy else []
+        elif resolution_action == "user_selected_proxy":
+            product_state = "unrecognized_product"
+            resolution_state = "user_selected_proxy"
+            primary_product = catalog.get(selected_proxy) if selected_proxy in catalog else _placeholder_user_portfolio_candidate(
+                product_id=product_id,
+                product_name=entered_product_name,
+                entered_item=raw_item,
+            )
+            alternate_product_ids = [product_id] if product_id != primary_product.product_id else []
+        elif resolution_action == "user_excluded_product":
+            product_state = "unrecognized_product"
+            resolution_state = "user_excluded_product"
+            primary_product = _placeholder_user_portfolio_candidate(
+                product_id=product_id,
+                product_name=entered_product_name,
+                entered_item=raw_item,
+            )
+            alternate_product_ids = []
+        elif resolution_action == "estimated_non_formal_allowed":
+            product_state = "unrecognized_product"
+            resolution_state = "estimated_non_formal_allowed"
+            primary_product = _placeholder_user_portfolio_candidate(
+                product_id=product_id,
+                product_name=entered_product_name,
+                entered_item=raw_item,
+            )
+            alternate_product_ids = []
+        elif resolution_action == "resolved_formal_ready" and resolved_product_id in catalog:
+            product_state = "recognized"
+            resolution_state = "resolved_formal_ready"
+            primary_product = catalog[resolved_product_id]
+            alternate_product_ids = [selected_proxy] if selected_proxy else []
+        else:
+            product_state = "unrecognized_product"
+            resolution_state = "unrecognized_requires_user_action"
+            primary_product = _placeholder_user_portfolio_candidate(
+                product_id=product_id,
+                product_name=entered_product_name,
+                entered_item=raw_item,
+            )
+            alternate_product_ids = []
+        state_seen.append(resolution_state)
+        strict_formal_blocked = strict_formal_blocked or resolution_state in {
+            "unrecognized_requires_user_action",
+            "estimated_non_formal_allowed",
+        }
+        item = ExecutionPlanItem(
+            asset_bucket=str(raw_item.get("asset_bucket") or primary_product.asset_bucket),
+            target_weight=0.0 if requested_weight is None else round(float(requested_weight), 4),
+            current_weight=current_weights.get(product_id),
+            current_amount=None if account_total_value is None or current_weights.get(product_id) is None else round(float(account_total_value) * float(current_weights.get(product_id) or 0.0), 2),
+            target_amount=None if account_total_value is None or requested_weight is None else round(float(account_total_value) * float(requested_weight), 2),
+            trade_direction=None,
+            trade_amount=None,
+            initial_trade_amount=None,
+            deferred_trade_amount=None,
+            estimated_fee=None,
+            estimated_slippage=None,
+            violates_minimum_trade=False,
+            trigger_conditions=[],
+            primary_product_id=product_id,
+            alternate_product_ids=[str(item) for item in alternate_product_ids if str(item).strip() and str(item) != product_id],
+            rationale=[
+                "用户显式输入的组合结构保持原样评估。",
+                "该执行项未经过系统推荐结构重写。",
+            ],
+            risk_labels=list(primary_product.risk_labels),
+            primary_product=primary_product,
+            alternate_products=[catalog[item] for item in alternate_product_ids if item in catalog],
+        )
+        items.append(item)
+        resolution_items.append(
+            {
+                "product_id": product_id,
+                "requested_weight": requested_weight,
+                "product_state": product_state,
+                "resolution_state": resolution_state,
+                "entered_product_name": entered_product_name,
+                "selected_proxy_product_id": selected_proxy,
+                "selected_proxy_product_name": None if selected_proxy is None else catalog.get(selected_proxy, _placeholder_user_portfolio_candidate(
+                    product_id=selected_proxy,
+                    product_name=selected_proxy,
+                    entered_item={},
+                )).product_name,
+                "suggested_proxy_product_ids": [selected_proxy] if selected_proxy else [],
+                "allowed_next_actions": (
+                    ["select_proxy", "exclude", "provide_better_identifier", "allow_non_formal"]
+                    if resolution_state == "unrecognized_requires_user_action"
+                    else ["continue_formal"]
+                    if resolution_state == "recognized"
+                    else ["confirm_proxy", "provide_better_identifier", "exclude"]
+                    if resolution_state == "user_selected_proxy"
+                    else ["continue_remaining_portfolio"]
+                    if resolution_state == "user_excluded_product"
+                    else ["continue_degraded", "provide_better_identifier"]
+                ),
+                "strict_formal_blocked": resolution_state in {"unrecognized_requires_user_action", "estimated_non_formal_allowed"},
+            }
+        )
+        if product_state == "unrecognized_product":
+            unknown_items.append(raw_item)
+
+    if any(state == "unrecognized_requires_user_action" for state in state_seen):
+        overall_state = "unrecognized_requires_user_action"
+    elif any(state == "estimated_non_formal_allowed" for state in state_seen):
+        overall_state = "estimated_non_formal_allowed"
+    elif any(state == "user_selected_proxy" for state in state_seen):
+        overall_state = "user_selected_proxy"
+    elif any(state == "resolved_formal_ready" for state in state_seen):
+        overall_state = "resolved_formal_ready"
+    elif any(state == "user_excluded_product" for state in state_seen):
+        overall_state = "user_excluded_product"
+    else:
+        overall_state = "recognized"
+
+    return ExecutionPlan(
+        plan_id=f"{source_run_id}:{source_allocation_id}:user_portfolio",
+        source_run_id=source_run_id,
+        source_allocation_id=source_allocation_id,
+        items=items,
+        bucket_construction_explanations={},
+        bucket_construction_suggestions={},
+        warnings=[
+            "user_portfolio_evaluation_mode",
+            "entered structure preserved as supplied by user",
+        ],
+        confirmation_required=True,
+        plan_version=1,
+        registry_candidate_count=len(catalog),
+        runtime_candidate_count=len(catalog),
+        runtime_candidates=[],
+        product_proxy_specs=[],
+        proxy_universe_summary=None,
+        execution_realism_summary=None,
+        maintenance_policy_summary={
+            "evaluation_mode": "user_specified_portfolio",
+            "unknown_product_resolution_state": overall_state,
+            "strict_formal_blocked": strict_formal_blocked,
+            "unknown_product_count": len(unknown_items),
+        },
+        candidate_filter_breakdown=None,
+        valuation_audit_summary={},
+        policy_news_audit_summary={},
+        formal_path_preflight={
+            "formal_path_required": bool(formal_path_required),
+            "execution_policy": None if execution_policy is None else str(getattr(execution_policy, "value", execution_policy)),
+            "run_outcome_status": "blocked" if strict_formal_blocked else "completed",
+        },
+        failure_artifact=None,
+    )
+
+
+def _build_user_portfolio_goal_solver_output(
+    *,
+    execution_plan: ExecutionPlan,
+    portfolio_evaluation: PortfolioEvaluationSummary,
+) -> dict[str, Any]:
+    requested_weights = {
+        str(item.primary_product_id): float(item.target_weight)
+        for item in execution_plan.items
+        if str(item.primary_product_id).strip()
+    }
+    return {
+        "goal_description": "用户输入组合评估",
+        "recommended_allocation": {
+            "name": "user_specified_portfolio",
+            "description": "按用户输入的产品与权重原样评估，不经过系统推荐重写。",
+            "weights": requested_weights,
+        },
+        "recommended_result": {
+            "allocation_name": "user_specified_portfolio",
+            "product_probability_method": "user_specified_portfolio",
+            "success_probability": None,
+            "expected_terminal_value": None,
+            "expected_annual_return": None,
+            "risk_summary": {},
+        },
+        "frontier_analysis": {
+            "recommended": {
+                "allocation_name": "user_specified_portfolio",
+                "weights": requested_weights,
+            }
+        },
+        "candidate_options": [
+            {
+                "name": "user_specified_portfolio",
+                "label": "用户输入组合",
+                "description": "按用户输入的产品与权重原样评估。",
+            }
+        ],
+        "goal_semantics": {
+            "evaluation_mode": portfolio_evaluation.evaluation_mode,
+            "requested_structure_visibility": portfolio_evaluation.requested_structure_visibility.to_dict()
+            if hasattr(portfolio_evaluation.requested_structure_visibility, "to_dict")
+            else deepcopy(portfolio_evaluation.requested_structure_visibility),
+            "unknown_product_resolution_state": portfolio_evaluation.unknown_product_resolution_state,
+        },
+    }
+
+
 def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvaluationSummary | None:
     user_portfolio = envelope.get("user_portfolio")
     if user_portfolio is None:
@@ -3360,7 +3637,6 @@ def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvalu
         states_seen.append(resolution_state)
         strict_formal_blocked = strict_formal_blocked or resolution_state in {
             "unrecognized_requires_user_action",
-            "user_selected_proxy",
             "estimated_non_formal_allowed",
         }
         allowed_next_actions: list[str]
@@ -3396,11 +3672,10 @@ def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvalu
                     )
                 ),
                 allowed_next_actions=allowed_next_actions,
-                strict_formal_blocked=resolution_state in {
-                    "unrecognized_requires_user_action",
-                    "user_selected_proxy",
-                    "estimated_non_formal_allowed",
-                },
+        strict_formal_blocked=resolution_state in {
+            "unrecognized_requires_user_action",
+            "estimated_non_formal_allowed",
+        },
             )
         )
 
@@ -3420,14 +3695,15 @@ def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvalu
         overall_state = "estimated_non_formal_allowed"
     elif any(item.resolution_state == "user_selected_proxy" for item in evaluation_items):
         overall_state = "user_selected_proxy"
-    elif all(item.resolution_state in {"recognized", "user_excluded_product", "resolved_formal_ready"} for item in evaluation_items):
+    elif any(item.resolution_state == "user_excluded_product" for item in evaluation_items):
+        overall_state = "user_excluded_product"
+    elif any(item.resolution_state == "resolved_formal_ready" for item in evaluation_items):
         overall_state = "resolved_formal_ready"
     else:
         overall_state = "recognized"
 
     strict_formal_blocked = strict_formal_blocked or overall_state in {
         "unrecognized_requires_user_action",
-        "user_selected_proxy",
         "estimated_non_formal_allowed",
     }
     summary = PortfolioEvaluationSummary(
@@ -3579,10 +3855,29 @@ def _maybe_build_execution_plan(
     formal_path_required: bool,
     execution_policy: ExecutionPolicy,
 ) -> Any | None:
-    if status == WorkflowStatus.BLOCKED or workflow_type not in {
+    if workflow_type not in {
         WorkflowType.ONBOARDING,
         WorkflowType.QUARTERLY,
     }:
+        return None
+    user_portfolio = envelope.get("user_portfolio")
+    if user_portfolio is not None:
+        goal_solver_input_dict = _as_dict(envelope.get("goal_solver_input"))
+        account_context = _extract_execution_plan_account_context(envelope)
+        return _build_execution_plan_from_user_portfolio(
+            source_run_id=run_id,
+            source_allocation_id=_first_text(
+                _as_dict(envelope.get("goal_solver_input")).get("allocation_name"),
+                "user_portfolio",
+            )
+            or "user_portfolio",
+            user_portfolio=user_portfolio,
+            account_total_value=account_context[0],
+            current_weights=account_context[1],
+            formal_path_required=formal_path_required,
+            execution_policy=execution_policy,
+        )
+    if status == WorkflowStatus.BLOCKED:
         return None
     goal_output = _as_dict(goal_solver_output)
     recommended = _as_dict(goal_output.get("recommended_allocation"))
@@ -3903,10 +4198,20 @@ def run_orchestrator(
     solver_snapshot_id = None
     has_prior_baseline = prior_solver_output is not None and prior_solver_input is not None
 
-    if not blocking_reasons and effective_trigger.workflow_type in {
-        WorkflowType.ONBOARDING,
-        WorkflowType.QUARTERLY,
-    }:
+    skip_solver_for_user_portfolio = (
+        portfolio_evaluation is not None
+        and str(portfolio_evaluation_payload.get("evaluation_mode") or "") == "user_specified_portfolio"
+        and not portfolio_evaluation_payload["unknown_product_resolution"]["strict_formal_blocked"]
+    )
+
+    if (
+        not blocking_reasons
+        and effective_trigger.workflow_type in {
+            WorkflowType.ONBOARDING,
+            WorkflowType.QUARTERLY,
+        }
+        and not skip_solver_for_user_portfolio
+    ):
         allocation_input = envelope.get("allocation_engine_input")
         if allocation_input is None:
             blocking_reasons.append("allocation_engine_input is required")
@@ -4016,7 +4321,7 @@ def run_orchestrator(
                                 ev_params=runtime_inputs["ev_params"],
                                 optimizer_params=runtime_inputs["optimizer_params"],
                                 mode=RuntimeOptimizerMode.QUARTERLY,
-                            )
+                                )
 
     if not blocking_reasons and effective_trigger.workflow_type in {
         WorkflowType.MONTHLY,
@@ -4094,6 +4399,16 @@ def run_orchestrator(
         formal_path_required=formal_path_required,
         execution_policy=execution_policy,
     )
+    if (
+        skip_solver_for_user_portfolio
+        and goal_solver_output is None
+        and portfolio_evaluation is not None
+        and execution_plan is not None
+    ):
+        goal_solver_output = _build_user_portfolio_goal_solver_output(
+            execution_plan=execution_plan,
+            portfolio_evaluation=portfolio_evaluation,
+        )
     if execution_plan is not None:
         execution_plan_preflight = _as_dict(_as_dict(execution_plan).get("formal_path_preflight"))
         if _text(execution_plan_preflight.get("run_outcome_status")) == "blocked":

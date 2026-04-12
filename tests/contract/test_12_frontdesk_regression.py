@@ -222,9 +222,14 @@ def test_frontdesk_persists_user_portfolio_evaluation_state(monkeypatch, tmp_pat
 
     assert summary["evaluation_mode"] == "user_specified_portfolio"
     assert summary["requested_structure_visibility"]["requested_structure"] == user_portfolio
+    assert [item["primary_product_id"] for item in summary["pending_execution_plan"]["items"]] == [
+        "cn_equity_csi300_etf",
+        "cn_gold_etf",
+        "cn_cash_money_fund",
+    ]
     assert summary["user_state"]["latest_result"]["evaluation_mode"] == "user_specified_portfolio"
     assert summary["user_state"]["latest_result"]["requested_structure_visibility"]["rewrite_applied"] is False
-    assert summary["user_state"]["latest_result"]["unknown_product_resolution"]["state"] == "resolved_formal_ready"
+    assert summary["user_state"]["latest_result"]["unknown_product_resolution"]["state"] == "recognized"
 
 
 @pytest.mark.contract
