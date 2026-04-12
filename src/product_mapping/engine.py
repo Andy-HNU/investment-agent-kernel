@@ -12,6 +12,8 @@ from shared.datasets.types import DatasetSpec, VersionPin
 from shared.profile_parser import parse_profile_semantics
 from shared.providers.timeseries import fetch_timeseries
 
+from product_mapping.cardinality import BucketCardinalityPreference, BucketCountResolution, resolve_bucket_count
+from product_mapping.construction import build_bucket_construction_explanation, build_bucket_subset, split_bucket_weight
 from product_mapping.catalog import load_builtin_catalog
 from product_mapping.policy_news import apply_policy_news_scores
 from product_mapping.types import (
@@ -584,6 +586,7 @@ def _build_item(
     target_weight: float,
     candidates: list[RuntimeProductCandidate],
     *,
+    primary_runtime_candidate: RuntimeProductCandidate | None = None,
     account_total_value: float | None = None,
     current_weight: float | None = None,
     minimum_trade_amount: float | None = None,
@@ -592,9 +595,19 @@ def _build_item(
     wrapper_slippage_rate: dict[str, float] | None = None,
 ) -> ExecutionPlanItem:
     ordered_candidates = sorted(candidates, key=_candidate_sort_key)
-    primary_runtime_candidate = ordered_candidates[0]
+    if primary_runtime_candidate is not None:
+        forced_product_id = primary_runtime_candidate.candidate.product_id
+        primary_runtime_candidate = next(
+            (item for item in ordered_candidates if item.candidate.product_id == forced_product_id),
+            primary_runtime_candidate,
+        )
+        alternate_runtime_candidates = [
+            item for item in ordered_candidates if item.candidate.product_id != primary_runtime_candidate.candidate.product_id
+        ]
+    else:
+        primary_runtime_candidate = ordered_candidates[0]
+        alternate_runtime_candidates = ordered_candidates[1:]
     primary_product = primary_runtime_candidate.candidate
-    alternate_runtime_candidates = ordered_candidates[1:]
     alternate_products = [item.candidate for item in alternate_runtime_candidates]
     bucket_policy_audits = [
         item.policy_news_audit
@@ -1736,6 +1749,7 @@ def build_execution_plan(
     source_run_id: str,
     source_allocation_id: str,
     bucket_targets: dict[str, float],
+    bucket_count_preferences: list[BucketCardinalityPreference] | None = None,
     restrictions: list[str] | None = None,
     plan_version: int = 1,
     catalog: list[ProductCandidate] | None = None,
@@ -1877,6 +1891,10 @@ def build_execution_plan(
             )
 
     items: list[ExecutionPlanItem] = []
+    bucket_explanations: dict[str, Any] = {}
+    bucket_count_preference_lookup = {
+        str(preference.bucket).strip(): preference for preference in list(bucket_count_preferences or [])
+    }
     for bucket, target_weight in adjusted_targets.items():
         if target_weight <= 0:
             continue
@@ -1887,19 +1905,54 @@ def build_execution_plan(
         bucket_candidates = grouped_candidates.get(bucket, [])
         if not bucket_candidates:
             continue
-        items.append(
-            _build_item(
-                bucket,
-                target_weight,
-                bucket_candidates,
-                account_total_value=account_total_value,
-                current_weight=normalized_current_weights.get(bucket, 0.0),
-                minimum_trade_amount=minimum_trade_amount,
-                initial_deploy_fraction=initial_deploy_fraction,
-                transaction_fee_rate=transaction_fee_rate,
-                wrapper_slippage_rate=wrapper_slippage_rate,
-            )
+        bucket_weight = float(target_weight)
+        count_resolution = resolve_bucket_count(
+            bucket=bucket,
+            bucket_weight=bucket_weight,
+            horizon_months=24 if bucket_weight >= 0.20 else 12,
+            risk_preference="moderate",
+            max_drawdown_tolerance=0.20,
+            current_market_pressure_score=30.0,
+            explicit_request=bucket_count_preference_lookup.get(bucket),
         )
+        selected_members = build_bucket_subset(
+            bucket=bucket,
+            bucket_weight=bucket_weight,
+            requested_resolution=count_resolution,
+            candidates=bucket_candidates,
+        )
+        bucket_construction_explanation = build_bucket_construction_explanation(
+            bucket=bucket,
+            bucket_weight=bucket_weight,
+            requested_resolution=count_resolution,
+            selected_members=selected_members,
+            candidates=bucket_candidates,
+        )
+        if bucket_construction_explanation.unmet_reason:
+            warnings.append(f"资金桶 {bucket} 结构约束未完全满足: {bucket_construction_explanation.unmet_reason}")
+        split_target_weights = split_bucket_weight(bucket_weight, len(selected_members))
+        current_bucket_weight = normalized_current_weights.get(bucket, 0.0)
+        split_current_weights = split_bucket_weight(current_bucket_weight, len(selected_members))
+        bucket_explanations[bucket] = bucket_construction_explanation
+        for selected_member, member_target_weight, member_current_weight in zip(
+            selected_members,
+            split_target_weights,
+            split_current_weights,
+        ):
+            items.append(
+                _build_item(
+                    bucket,
+                    member_target_weight,
+                    selected_members,
+                    primary_runtime_candidate=selected_member,
+                    account_total_value=account_total_value,
+                    current_weight=member_current_weight,
+                    minimum_trade_amount=minimum_trade_amount,
+                    initial_deploy_fraction=initial_deploy_fraction,
+                    transaction_fee_rate=transaction_fee_rate,
+                    wrapper_slippage_rate=wrapper_slippage_rate,
+                )
+            )
 
     execution_realism_summary = _build_execution_realism_summary(
         items=items,
@@ -1946,6 +1999,7 @@ def build_execution_plan(
         source_run_id=source_run_id,
         source_allocation_id=source_allocation_id,
         items=items,
+        bucket_construction_explanations=bucket_explanations,
         warnings=warnings,
         plan_version=max(int(plan_version), 1),
         registry_candidate_count=len(registry),
