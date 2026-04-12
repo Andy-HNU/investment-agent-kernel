@@ -235,6 +235,26 @@ hedge_compatibility_score =
 
 The score is used to rank valid diversification candidates. It must not create relations between products with no prior relationship family.
 
+### 6.4 Modeling boundary
+
+The candidate relationship model is a construction-time and explanation-time layer only.
+
+It may be used for:
+
+- intra-bucket subset construction
+- overlap filtering
+- diversification ranking
+- product explanation
+- product-group explanation
+
+It may not be used for:
+
+- direct return uplift or haircut inside `primary`
+- direct success probability adjustment inside `primary`, `historical_replay`, or deteriorated scenarios
+- any extra path-generation factor added on top of the `v1.4` probability engine
+
+The `v1.4` probability engine remains the single source of truth for path generation, dependence, volatility, jump, and market-state evolution.
+
 ## 7. Intra-Bucket Construction
 
 ### 7.1 `equity_cn`
