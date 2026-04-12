@@ -16,13 +16,32 @@ def _serialize(value: Any) -> Any:
     return value
 
 
-def _pair(value: Any) -> tuple[int, int] | None:
-    if value is None:
-        return None
-    pair = tuple(value)
-    if len(pair) != 2:
-        raise ValueError("expected a pair-like value")
-    return int(pair[0]), int(pair[1])
+_BUCKET_CARDINALITY_MODES = {"auto", "target_count", "count_range"}
+_BUCKET_CARDINALITY_SOURCES = {"system_default", "user_requested", "persisted_user"}
+_BUCKET_COUNT_RESOLUTION_SOURCES = {"explicit_user", "persisted_user", "auto_policy"}
+
+
+def _require_nonempty_str_choice(value: Any, *, field_name: str, allowed: set[str]) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    normalized = value.strip()
+    if normalized not in allowed:
+        raise ValueError(f"invalid {field_name}: {value!r}")
+    return normalized
+
+
+def _require_real_bool(value: Any, *, field_name: str) -> bool:
+    if type(value) is not bool:
+        raise TypeError(f"{field_name} must be a bool")
+    return value
+
+
+def _require_positive_int(value: Any, *, field_name: str) -> int:
+    if type(value) is bool or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be a positive integer")
+    if value < 1:
+        raise ValueError(f"{field_name} must be >= 1")
+    return value
 
 
 @dataclass(frozen=True)
@@ -36,14 +55,28 @@ class BucketCardinalityPreference:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "bucket", str(self.bucket).strip())
-        object.__setattr__(self, "mode", str(self.mode).strip().lower())
-        object.__setattr__(self, "source", str(self.source).strip().lower())
+        object.__setattr__(self, "mode", _require_nonempty_str_choice(self.mode, field_name="mode", allowed=_BUCKET_CARDINALITY_MODES))
+        object.__setattr__(self, "source", _require_nonempty_str_choice(self.source, field_name="source", allowed=_BUCKET_CARDINALITY_SOURCES))
         if self.target_count is not None:
-            object.__setattr__(self, "target_count", int(self.target_count))
+            object.__setattr__(self, "target_count", _require_positive_int(self.target_count, field_name="target_count"))
         if self.min_count is not None:
-            object.__setattr__(self, "min_count", int(self.min_count))
+            object.__setattr__(self, "min_count", _require_positive_int(self.min_count, field_name="min_count"))
         if self.max_count is not None:
-            object.__setattr__(self, "max_count", int(self.max_count))
+            object.__setattr__(self, "max_count", _require_positive_int(self.max_count, field_name="max_count"))
+        if self.mode == "target_count" and self.target_count is None:
+            raise ValueError("target_count is required when mode='target_count'")
+        if self.mode == "count_range":
+            if self.target_count is None and self.min_count is None and self.max_count is None:
+                raise ValueError("at least one of target_count, min_count, or max_count is required when mode='count_range'")
+            if self.min_count is not None and self.max_count is not None and self.min_count > self.max_count:
+                raise ValueError("min_count must be <= max_count")
+            if (
+                self.target_count is not None
+                and self.min_count is not None
+                and self.max_count is not None
+                and not (self.min_count <= self.target_count <= self.max_count)
+            ):
+                raise ValueError("target_count must fall within min_count and max_count")
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
@@ -61,11 +94,11 @@ class BucketCountResolution:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "bucket", str(self.bucket).strip())
-        object.__setattr__(self, "resolved_count", int(self.resolved_count))
+        object.__setattr__(self, "resolved_count", _require_positive_int(self.resolved_count, field_name="resolved_count"))
         if self.requested_count is not None:
-            object.__setattr__(self, "requested_count", int(self.requested_count))
-        object.__setattr__(self, "source", str(self.source).strip().lower())
-        object.__setattr__(self, "fully_satisfied", bool(self.fully_satisfied))
+            object.__setattr__(self, "requested_count", _require_positive_int(self.requested_count, field_name="requested_count"))
+        object.__setattr__(self, "source", _require_nonempty_str_choice(self.source, field_name="source", allowed=_BUCKET_COUNT_RESOLUTION_SOURCES))
+        object.__setattr__(self, "fully_satisfied", _require_real_bool(self.fully_satisfied, field_name="fully_satisfied"))
         object.__setattr__(
             self,
             "unmet_reasons",
@@ -74,7 +107,7 @@ class BucketCountResolution:
         object.__setattr__(
             self,
             "alternative_counts_considered",
-            [int(item) for item in list(self.alternative_counts_considered or [])],
+            [_require_positive_int(item, field_name="alternative_counts_considered") for item in list(self.alternative_counts_considered or [])],
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -150,6 +183,11 @@ def _preference_to_alternatives(preference: BucketCardinalityPreference | None, 
     return list(dict.fromkeys(item for item in [requested - 1, requested, requested + 1] if item > 0))
 
 
+def _assert_matching_bucket(preference: BucketCardinalityPreference | None, *, bucket: str, field_name: str) -> None:
+    if preference is not None and str(preference.bucket).strip() != str(bucket).strip():
+        raise ValueError(f"{field_name}.bucket must match bucket being resolved")
+
+
 def resolve_bucket_count(
     *,
     bucket: str,
@@ -161,6 +199,8 @@ def resolve_bucket_count(
     explicit_request: BucketCardinalityPreference | None = None,
     persisted_preference: BucketCardinalityPreference | None = None,
 ) -> BucketCountResolution:
+    _assert_matching_bucket(explicit_request, bucket=bucket, field_name="explicit_request")
+    _assert_matching_bucket(persisted_preference, bucket=bucket, field_name="persisted_preference")
     if explicit_request is not None:
         requested_count = _preference_to_requested_count(explicit_request)
         if requested_count is None:
@@ -219,4 +259,3 @@ def resolve_bucket_count(
         unmet_reasons=[],
         alternative_counts_considered=_preference_to_alternatives(None, resolved_count),
     )
-

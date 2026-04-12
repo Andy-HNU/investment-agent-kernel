@@ -32,6 +32,24 @@ def _pair(value: Any) -> tuple[float, float]:
     return float(pair[0]), float(pair[1])
 
 
+_BUCKET_COUNT_SOURCES = {"explicit_user", "persisted_user", "auto_policy"}
+
+
+def _require_real_bool(value: Any, *, field_name: str) -> bool:
+    if type(value) is not bool:
+        raise TypeError(f"{field_name} must be a bool")
+    return value
+
+
+def _require_count_source(value: Any) -> str:
+    if not isinstance(value, str):
+        raise TypeError("count_source must be a string")
+    normalized = value.strip()
+    if normalized not in _BUCKET_COUNT_SOURCES:
+        raise ValueError(f"invalid count_source: {value!r}")
+    return normalized
+
+
 @dataclass(frozen=True)
 class ProductScenarioMetrics:
     scenario_kind: str
@@ -80,7 +98,7 @@ class ProductExplanation:
     highest_overlap_product_ids: list[str] = field(default_factory=list)
     highest_diversification_product_ids: list[str] = field(default_factory=list)
     quality_labels: list[str] = field(default_factory=list)
-    suggested_action: str | None = "keep"
+    suggested_action: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "product_id", str(self.product_id).strip())
@@ -150,10 +168,18 @@ class BucketConstructionExplanation:
     def __post_init__(self) -> None:
         object.__setattr__(self, "bucket", str(self.bucket).strip())
         if self.requested_count is not None:
-            object.__setattr__(self, "requested_count", int(self.requested_count))
-        object.__setattr__(self, "actual_count", int(self.actual_count))
-        object.__setattr__(self, "count_source", str(self.count_source).strip().lower())
-        object.__setattr__(self, "count_satisfied", bool(self.count_satisfied))
+            if type(self.requested_count) is bool or not isinstance(self.requested_count, int):
+                raise TypeError("requested_count must be a positive integer")
+            if self.requested_count < 1:
+                raise ValueError("requested_count must be >= 1")
+            object.__setattr__(self, "requested_count", self.requested_count)
+        if type(self.actual_count) is bool or not isinstance(self.actual_count, int):
+            raise TypeError("actual_count must be a positive integer")
+        if self.actual_count < 1:
+            raise ValueError("actual_count must be >= 1")
+        object.__setattr__(self, "actual_count", self.actual_count)
+        object.__setattr__(self, "count_source", _require_count_source(self.count_source))
+        object.__setattr__(self, "count_satisfied", _require_real_bool(self.count_satisfied, field_name="count_satisfied"))
         if self.unmet_reason is not None:
             object.__setattr__(self, "unmet_reason", str(self.unmet_reason).strip())
         object.__setattr__(self, "why_split", [str(item).strip() for item in self.why_split if str(item).strip()])

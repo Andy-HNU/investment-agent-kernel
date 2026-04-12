@@ -132,6 +132,59 @@ def test_product_explanation_preserves_optional_none_fields() -> None:
     assert explanation.suggested_action is None
 
 
+def test_product_explanation_defaults_suggested_action_to_none() -> None:
+    explanation = ProductExplanation(
+        product_id="cn_equity_dividend_etf",
+        role_in_portfolio="main_growth",
+        scenario_metrics=[
+            ProductScenarioMetrics(
+                scenario_kind="historical_replay",
+                annualized_range=None,
+                terminal_value_range=None,
+                pressure_score=None,
+                pressure_level=None,
+            ),
+            ProductScenarioMetrics(
+                scenario_kind="current_market",
+                annualized_range=None,
+                terminal_value_range=None,
+                pressure_score=8.0,
+                pressure_level="L0_宽松",
+            ),
+            ProductScenarioMetrics(
+                scenario_kind="deteriorated_mild",
+                annualized_range=None,
+                terminal_value_range=None,
+                pressure_score=21.0,
+                pressure_level="L0_宽松",
+            ),
+            ProductScenarioMetrics(
+                scenario_kind="deteriorated_moderate",
+                annualized_range=None,
+                terminal_value_range=None,
+                pressure_score=37.0,
+                pressure_level="L1_中性偏紧",
+            ),
+            ProductScenarioMetrics(
+                scenario_kind="deteriorated_severe",
+                annualized_range=None,
+                terminal_value_range=None,
+                pressure_score=60.0,
+                pressure_level="L2_风险偏高",
+            ),
+        ],
+        success_delta_if_removed=None,
+        terminal_mean_delta_if_removed=None,
+        drawdown_delta_if_removed=None,
+        median_return_delta_if_removed=None,
+        highest_overlap_product_ids=[],
+        highest_diversification_product_ids=[],
+        quality_labels=[],
+    )
+
+    assert explanation.suggested_action is None
+
+
 def test_product_explanation_rejects_incomplete_scenario_ladder() -> None:
     with pytest.raises(ValueError, match="full five-scenario ladder"):
         ProductExplanation(
