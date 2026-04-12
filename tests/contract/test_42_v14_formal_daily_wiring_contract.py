@@ -356,7 +356,7 @@ def test_orchestrator_uses_product_level_factor_betas_from_snapshot_mapping_payl
     def _capture(sim_input: dict[str, object]) -> ProbabilityEngineRunResult:
         incoming_products = list(sim_input.get("products") or [])
         captured_products = list(captured.get("products") or [])
-        if len(incoming_products) >= len(captured_products):
+        if not captured or len(incoming_products) > len(captured_products):
             captured.clear()
             captured.update(deepcopy(sim_input))
         return _probability_result(
@@ -664,7 +664,7 @@ def test_formal_daily_builder_uses_product_level_factor_mapping_for_smoke_path(m
     def _capture(sim_input: dict[str, object]) -> ProbabilityEngineRunResult:
         incoming_products = list(sim_input.get("products") or [])
         captured_products = list(captured.get("products") or [])
-        if len(incoming_products) >= len(captured_products):
+        if not captured or len(incoming_products) > len(captured_products):
             captured.clear()
             captured.update(deepcopy(sim_input))
         return _probability_result(

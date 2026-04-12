@@ -100,6 +100,10 @@ def test_unrecognized_product_blocks_strict_formal_until_user_resolves(monkeypat
     assert result["pending_execution_plan"]["items"][0]["primary_product_id"] == "mystery_fund_x"
     assert result["pending_execution_plan"]["items"][0]["target_weight"] == 1.0
     assert result["run_outcome_status"] == "blocked"
+    product_explanation = result["product_explanations"]["mystery_fund_x"]
+    assert product_explanation["quality_labels"] == []
+    assert product_explanation["suggested_action"] is None
+    assert product_explanation["success_delta_if_removed"] is None
 
 
 @pytest.mark.contract

@@ -359,9 +359,11 @@ def _product_quality_labels(
     *,
     role_in_portfolio: str,
     weight_share: float,
-    success_delta_if_removed: float,
-    drawdown_delta_if_removed: float,
+    success_delta_if_removed: float | None,
+    drawdown_delta_if_removed: float | None,
 ) -> list[str]:
+    if success_delta_if_removed is None or drawdown_delta_if_removed is None:
+        return []
     labels: list[str] = []
     if role_in_portfolio in {"defensive_buffer", "liquidity_management"}:
         labels.append("defensive")
@@ -436,14 +438,13 @@ def _counterfactual_probability_input(
     for recipe in list(counterfactual.get("recipes") or []):
         recipe_payload = dict(_obj(recipe) or {})
         path_count = recipe_payload.get("path_count")
-        if path_count is not None:
-            try:
-                recipe_payload["path_count"] = max(
-                    1,
-                    min(int(path_count), _EXPLANATION_RECIPE_PATH_COUNT_BUDGET),
-                )
-            except (TypeError, ValueError):
-                recipe_payload["path_count"] = _EXPLANATION_RECIPE_PATH_COUNT_BUDGET
+        try:
+            recipe_payload["path_count"] = max(
+                1,
+                min(int(path_count), _EXPLANATION_RECIPE_PATH_COUNT_BUDGET),
+            )
+        except (TypeError, ValueError):
+            recipe_payload["path_count"] = _EXPLANATION_RECIPE_PATH_COUNT_BUDGET
         recipes.append(recipe_payload)
     if recipes:
         counterfactual["recipes"] = recipes
@@ -627,16 +628,20 @@ def build_portfolio_explanation_surfaces(
         quality_labels = _product_quality_labels(
             role_in_portfolio=role_in_portfolio,
             weight_share=weight_map.get(product_id, 0.0),
-            success_delta_if_removed=0.0 if success_delta_if_removed is None else success_delta_if_removed,
-            drawdown_delta_if_removed=0.0 if drawdown_delta_if_removed is None else drawdown_delta_if_removed,
+            success_delta_if_removed=success_delta_if_removed,
+            drawdown_delta_if_removed=drawdown_delta_if_removed,
         )
-        suggested_action = "keep"
-        if role_in_portfolio in {"defensive_buffer", "liquidity_management"}:
+        suggested_action = None
+        if not quality_labels:
+            suggested_action = None
+        elif role_in_portfolio in {"defensive_buffer", "liquidity_management"}:
             suggested_action = "keep_as_hedge_leg"
         elif "limited_contribution" in quality_labels:
             suggested_action = "reduce"
         elif highest_overlap_product_ids:
             suggested_action = "replace"
+        else:
+            suggested_action = "keep"
         product_explanations[product_id] = ProductExplanation(
             product_id=product_id,
             role_in_portfolio=role_in_portfolio,

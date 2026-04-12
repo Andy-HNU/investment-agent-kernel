@@ -645,6 +645,34 @@ def test_portfolio_explanation_surfaces_use_supplied_probability_runner_for_grou
     assert surfaces["product_group_explanations"]["duplicate_exposure_group"].success_delta_if_removed is not None
 
 
+def test_portfolio_explanation_surfaces_inject_budget_when_recipe_path_count_is_missing(monkeypatch) -> None:
+    plan = _execution_plan_for_three_products()
+    probability_input = _probability_input_for_three_products()
+    probability_input["recipes"] = [{"recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1"}]
+    captured_recipe_counts: list[list[int]] = []
+
+    monkeypatch.setattr(
+        "product_mapping.explanations.run_probability_engine",
+        lambda sim_input: (
+            captured_recipe_counts.append(
+                [int(recipe.get("path_count") or 0) for recipe in list(sim_input.get("recipes") or [])]
+            )
+            or _fake_probability_result(
+                {position["product_id"]: float(position["weight"]) for position in sim_input["current_positions"]}
+            )
+        ),
+    )
+
+    build_portfolio_explanation_surfaces(
+        execution_plan=plan,
+        probability_engine_result=_fake_probability_result({"equity_a": 0.50, "equity_b": 0.30, "gold_c": 0.20}),
+        probability_engine_input=probability_input,
+    )
+
+    assert captured_recipe_counts
+    assert all(recipe_counts == [1] for recipe_counts in captured_recipe_counts)
+
+
 def test_portfolio_explanation_surfaces_include_top_level_sets(monkeypatch) -> None:
     catalog = load_builtin_catalog()
     equity = next(item for item in catalog if item.product_id == "cn_equity_dividend_etf")
