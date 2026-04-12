@@ -285,6 +285,19 @@ def _scenario_result_summary(result: dict[str, Any], pressure: dict[str, Any] | 
     }
 
 
+def _empty_scenario_summary(pressure: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "success_probability": None,
+        "terminal_value_mean": None,
+        "terminal_value_range": None,
+        "cagr_range": None,
+        "cagr_p50": None,
+        "max_drawdown_p95": None,
+        "pressure_score": _float((pressure or {}).get("market_pressure_score")),
+        "pressure_level": _text((pressure or {}).get("market_pressure_level")) or None,
+    }
+
+
 def _scenario_summaries_from_probability_output(probability_output: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
     output = dict(probability_output or {})
     primary = _obj(output.get("primary_result")) or {}
@@ -297,10 +310,15 @@ def _scenario_summaries_from_probability_output(probability_output: dict[str, An
         scenario_kind = _text(item.get("scenario_kind"))
         if not scenario_kind:
             continue
-        recipe_result = _obj(item.get("recipe_result")) or primary
-        summary_by_kind[scenario_kind] = _scenario_result_summary(recipe_result, _obj(item.get("pressure")))
+        pressure = _obj(item.get("pressure"))
+        recipe_result = _obj(item.get("recipe_result"))
+        summary_by_kind[scenario_kind] = (
+            _scenario_result_summary(recipe_result, pressure)
+            if recipe_result
+            else _empty_scenario_summary(pressure)
+        )
     for scenario_kind in PRODUCT_SCENARIO_LADDER:
-        summary_by_kind.setdefault(scenario_kind, summary_by_kind.get("current_market") or _scenario_result_summary(primary, current_pressure))
+        summary_by_kind.setdefault(scenario_kind, _empty_scenario_summary())
     return summary_by_kind
 
 

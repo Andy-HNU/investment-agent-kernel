@@ -539,6 +539,32 @@ def test_portfolio_explanation_surfaces_use_scenario_specific_summaries() -> Non
     assert scenario_metrics[4].pressure_level == "L4_测试"
 
 
+def test_portfolio_explanation_surfaces_do_not_backfill_missing_scenarios_from_primary() -> None:
+    plan = _execution_plan_for_three_products()
+    probability_result = _fake_probability_result({"equity_a": 0.50, "equity_b": 0.30, "gold_c": 0.20}).to_dict()
+    probability_output = probability_result["output"]
+    probability_output["scenario_comparison"] = [
+        item
+        for item in list(probability_output["scenario_comparison"])
+        if item["scenario_kind"] != "deteriorated_severe"
+    ]
+
+    surfaces = build_portfolio_explanation_surfaces(
+        execution_plan=plan,
+        probability_engine_result=probability_result,
+        probability_engine_input=_probability_input_for_three_products(),
+    )
+
+    scenario_by_kind = {
+        metric.scenario_kind: metric
+        for metric in surfaces["product_explanations"]["equity_a"].scenario_metrics
+    }
+    assert scenario_by_kind["current_market"].annualized_range is not None
+    assert scenario_by_kind["deteriorated_severe"].annualized_range is None
+    assert scenario_by_kind["deteriorated_severe"].terminal_value_range is None
+    assert scenario_by_kind["deteriorated_severe"].pressure_score is None
+
+
 def test_portfolio_explanation_surfaces_recompute_leave_out_from_redistributed_weights(monkeypatch) -> None:
     plan = _execution_plan_for_three_products()
     probability_input = _probability_input_for_three_products()
