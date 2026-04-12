@@ -310,9 +310,7 @@ class ExecutionPlan:
             "maintenance_policy_summary": dict(self.maintenance_policy_summary or {}),
             "candidate_filter_dropped_reasons": dict(breakdown.dropped_reasons),
             "candidate_filter_stages": [stage.to_dict() for stage in breakdown.stages],
-            "product_universe_audit_summary": dict(
-                breakdown.product_universe_audit_summary or {}
-            ),
+            "product_universe_audit_summary": dict(breakdown.product_universe_audit_summary or {}),
             "valuation_audit_summary": dict(self.valuation_audit_summary or breakdown.valuation_audit_summary or {}),
             "policy_news_audit_summary": dict(
                 self.policy_news_audit_summary or breakdown.policy_news_audit_summary or {}
@@ -320,3 +318,12 @@ class ExecutionPlan:
             "formal_path_preflight": dict(self.formal_path_preflight or breakdown.formal_path_preflight or {}),
             "failure_artifact": dict(self.failure_artifact or breakdown.failure_artifact or {}),
         }
+
+
+from .cardinality import BucketCardinalityPreference, BucketCountResolution
+from .explanations import (
+    BucketConstructionExplanation,
+    ProductExplanation,
+    ProductGroupExplanation,
+    ProductScenarioMetrics,
+)

@@ -1,5 +1,19 @@
 from .catalog import load_builtin_catalog
-from .types import ExecutionPlan, ExecutionPlanItem, ProductCandidate, ProductProxySpec, ProxyUniverseSummary
+from .cardinality import resolve_bucket_count
+from .explanations import validate_product_scenario_metrics
+from .types import (
+    BucketCardinalityPreference,
+    BucketConstructionExplanation,
+    BucketCountResolution,
+    ExecutionPlan,
+    ExecutionPlanItem,
+    ProductCandidate,
+    ProductExplanation,
+    ProductGroupExplanation,
+    ProductProxySpec,
+    ProductScenarioMetrics,
+    ProxyUniverseSummary,
+)
 
 
 def build_execution_plan(*args, **kwargs):
@@ -13,13 +27,22 @@ def build_candidate_product_context(*args, **kwargs):
 
     return _build_candidate_product_context(*args, **kwargs)
 
+
 __all__ = [
+    "BucketCardinalityPreference",
+    "BucketConstructionExplanation",
+    "BucketCountResolution",
     "ExecutionPlan",
     "ExecutionPlanItem",
     "ProductCandidate",
+    "ProductExplanation",
+    "ProductGroupExplanation",
     "ProductProxySpec",
+    "ProductScenarioMetrics",
     "ProxyUniverseSummary",
     "build_candidate_product_context",
     "build_execution_plan",
     "load_builtin_catalog",
+    "resolve_bucket_count",
+    "validate_product_scenario_metrics",
 ]
