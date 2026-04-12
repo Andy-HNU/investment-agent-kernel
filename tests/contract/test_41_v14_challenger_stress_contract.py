@@ -23,6 +23,7 @@ from probability_engine.disclosure_bridge import DisclosureEvidenceSpec, assembl
 from probability_engine.engine import _observed_weight_adjusted_coverage, run_probability_engine
 from probability_engine.jumps import JumpStateSpec
 from probability_engine.path_generator import DailyEngineRuntimeInput, ProductMarginalSpec, simulate_primary_paths
+from probability_engine.pressure import build_deteriorated_runtime_input, compute_market_pressure_snapshot, scenario_pressure_level
 from probability_engine.portfolio_policy import ContributionInstruction, CurrentPosition, RebalancingPolicySpec, WithdrawalInstruction
 from probability_engine.recipes import PRIMARY_RECIPE_V14
 from probability_engine.regime import RegimeStateSpec
@@ -713,6 +714,37 @@ def test_stress_tail_df_is_monotone_worse_near_low_df_boundary() -> None:
     assert stressed_df is not None
     assert stressed_df > 2.0
     assert stressed_df < 2.05
+
+
+def test_scenario_pressure_level_maps_numeric_scores_to_labels() -> None:
+    assert scenario_pressure_level(12.0) == "L0_宽松"
+    assert scenario_pressure_level(43.0) == "L1_中性偏紧"
+    assert scenario_pressure_level(61.0) == "L2_风险偏高"
+    assert scenario_pressure_level(88.0) == "L3_高压"
+
+
+def test_market_pressure_score_is_monotonic_across_deterioration_levels() -> None:
+    runtime_input = _build_benign_positive_drift_runtime_input()
+
+    current = compute_market_pressure_snapshot(runtime_input, scenario_kind="current_market")
+    mild = compute_market_pressure_snapshot(
+        build_deteriorated_runtime_input(runtime_input, level="mild"),
+        scenario_kind="deteriorated_mild",
+    )
+    moderate = compute_market_pressure_snapshot(
+        build_deteriorated_runtime_input(runtime_input, level="moderate"),
+        scenario_kind="deteriorated_moderate",
+    )
+    severe = compute_market_pressure_snapshot(
+        build_deteriorated_runtime_input(runtime_input, level="severe"),
+        scenario_kind="deteriorated_severe",
+    )
+
+    assert current.market_pressure_score is not None
+    assert mild.market_pressure_score is not None
+    assert moderate.market_pressure_score is not None
+    assert severe.market_pressure_score is not None
+    assert current.market_pressure_score < mild.market_pressure_score < moderate.market_pressure_score < severe.market_pressure_score
 
 
 def test_probability_engine_stress_recipe_stays_finite_and_downside_bounded_on_long_horizon_balanced_input() -> None:
