@@ -324,6 +324,95 @@ def test_probability_engine_output_round_trips_pressure_structures() -> None:
     assert rehydrated.scenario_comparison[0].recipe_result.recipe_name == "scheme_b_primary"
 
 
+def test_scenario_comparison_result_from_any_rejects_missing_recipe_result() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        ScenarioComparisonResult.from_any(
+            {
+                "scenario_kind": "current_market",
+                "label": "当前市场延续",
+                "pressure": {
+                    "scenario_kind": "current_market",
+                    "market_pressure_score": 42.0,
+                    "market_pressure_level": "L1_中性偏紧",
+                    "current_regime": "risk_off",
+                    "regime_component": 55.0,
+                    "drift_haircut_component": 20.0,
+                    "volatility_component": 37.5,
+                    "jump_probability_component": 18.0,
+                    "tail_severity_component": 10.0,
+                    "effective_daily_drift": 0.00021,
+                    "volatility_multiplier": 1.15,
+                    "systemic_jump_probability_multiplier": 1.30,
+                    "idio_jump_probability_multiplier": 1.15,
+                    "systemic_jump_dispersion_multiplier": 1.05,
+                },
+            }
+        )
+
+
+def test_probability_engine_output_from_any_rejects_null_scenario_comparison_entry() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        ProbabilityEngineOutput.from_any(
+            {
+                "primary_result": {
+                    "recipe_name": "scheme_b_primary",
+                    "role": "primary",
+                    "success_probability": 0.71,
+                    "success_probability_range": [0.68, 0.74],
+                    "cagr_range": [0.05, 0.11],
+                    "drawdown_range": [0.08, 0.16],
+                    "sample_count": 2000,
+                    "path_stats": {
+                        "terminal_value_mean": 125000.0,
+                        "terminal_value_p05": 110000.0,
+                        "terminal_value_p50": 123000.0,
+                        "terminal_value_p95": 139000.0,
+                        "cagr_p05": 0.04,
+                        "cagr_p50": 0.07,
+                        "cagr_p95": 0.12,
+                        "max_drawdown_p05": 0.06,
+                        "max_drawdown_p50": 0.09,
+                        "max_drawdown_p95": 0.18,
+                        "success_count": 1420,
+                        "path_count": 2000,
+                    },
+                    "calibration_link_ref": "cal://primary",
+                },
+                "challenger_results": [],
+                "stress_results": [],
+                "model_disagreement": {"gap": 0.03},
+                "probability_disclosure_payload": {
+                    "published_point": 0.71,
+                    "published_range": [0.68, 0.74],
+                    "disclosure_level": "point_and_range",
+                    "confidence_level": "medium",
+                    "challenger_gap": 0.02,
+                    "stress_gap": 0.05,
+                    "gap_total": 0.07,
+                    "widening_method": "max_gap",
+                },
+                "current_market_pressure": {
+                    "scenario_kind": "current_market",
+                    "market_pressure_score": 42.0,
+                    "market_pressure_level": "L1_中性偏紧",
+                    "current_regime": "risk_off",
+                    "regime_component": 55.0,
+                    "drift_haircut_component": 20.0,
+                    "volatility_component": 37.5,
+                    "jump_probability_component": 18.0,
+                    "tail_severity_component": 10.0,
+                    "effective_daily_drift": 0.00021,
+                    "volatility_multiplier": 1.15,
+                    "systemic_jump_probability_multiplier": 1.30,
+                    "idio_jump_probability_multiplier": 1.15,
+                    "systemic_jump_dispersion_multiplier": 1.05,
+                },
+                "scenario_comparison": [None],
+                "evidence_refs": ["evidence://primary"],
+            }
+        )
+
+
 def test_probability_engine_output_rehydrates_market_pressure_and_scenario_comparison() -> None:
     output = ProbabilityEngineOutput.from_any(
         {

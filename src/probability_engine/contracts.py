@@ -159,11 +159,14 @@ class ScenarioComparisonResult:
         if value is None or isinstance(value, cls):
             return value
         payload = dict(value)
+        recipe_result = RecipeSimulationResult.from_any(payload.get("recipe_result"))
+        if recipe_result is None:
+            raise ValueError("scenario_comparison requires recipe_result")
         return cls(
             scenario_kind=str(payload.get("scenario_kind", "")),
             label=str(payload.get("label", "")),
             pressure=MarketPressureSnapshot.from_any(payload.get("pressure")),
-            recipe_result=RecipeSimulationResult.from_any(payload.get("recipe_result")),
+            recipe_result=recipe_result,
         )
 
 
@@ -261,12 +264,20 @@ class ProbabilityEngineOutput:
             ),
             evidence_refs=[str(item) for item in list(payload.get("evidence_refs") or [])],
             current_market_pressure=MarketPressureSnapshot.from_any(payload.get("current_market_pressure")),
-            scenario_comparison=[
-                result
-                for result in (ScenarioComparisonResult.from_any(item) for item in list(payload.get("scenario_comparison") or []))
-                if result is not None
-            ],
+            scenario_comparison=cls._scenario_comparison_from_any(payload.get("scenario_comparison")),
         )
+
+    @staticmethod
+    def _scenario_comparison_from_any(
+        value: list[ScenarioComparisonResult] | list[dict[str, Any]] | None,
+    ) -> list[ScenarioComparisonResult]:
+        results: list[ScenarioComparisonResult] = []
+        for item in list(value or []):
+            result = ScenarioComparisonResult.from_any(item)
+            if result is None:
+                raise ValueError("scenario_comparison entries must not be null")
+            results.append(result)
+        return results
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
