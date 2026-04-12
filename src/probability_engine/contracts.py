@@ -118,6 +118,56 @@ class ProbabilityDisclosurePayload:
 
 
 @dataclass(frozen=True)
+class MarketPressureSnapshot:
+    scenario_kind: str
+    market_pressure_score: float | None
+    market_pressure_level: str | None
+    current_regime: str | None
+    regime_component: float | None
+    drift_haircut_component: float | None
+    volatility_component: float | None
+    jump_probability_component: float | None
+    tail_severity_component: float | None
+    effective_daily_drift: float | None
+    volatility_multiplier: float | None
+    systemic_jump_probability_multiplier: float | None
+    idio_jump_probability_multiplier: float | None
+    systemic_jump_dispersion_multiplier: float | None
+
+    @classmethod
+    def from_any(
+        cls,
+        value: "MarketPressureSnapshot | dict[str, Any] | None",
+    ) -> "MarketPressureSnapshot | None":
+        if value is None or isinstance(value, cls):
+            return value
+        return cls(**dict(value))
+
+
+@dataclass(frozen=True)
+class ScenarioComparisonResult:
+    scenario_kind: str
+    label: str
+    pressure: MarketPressureSnapshot | None
+    recipe_result: RecipeSimulationResult
+
+    @classmethod
+    def from_any(
+        cls,
+        value: "ScenarioComparisonResult | dict[str, Any] | None",
+    ) -> "ScenarioComparisonResult | None":
+        if value is None or isinstance(value, cls):
+            return value
+        payload = dict(value)
+        return cls(
+            scenario_kind=str(payload.get("scenario_kind", "")),
+            label=str(payload.get("label", "")),
+            pressure=MarketPressureSnapshot.from_any(payload.get("pressure")),
+            recipe_result=RecipeSimulationResult.from_any(payload.get("recipe_result")),
+        )
+
+
+@dataclass(frozen=True)
 class RecipeSimulationResult:
     recipe_name: str
     role: str
@@ -182,6 +232,8 @@ class ProbabilityEngineOutput:
     model_disagreement: dict[str, Any]
     probability_disclosure_payload: ProbabilityDisclosurePayload
     evidence_refs: list[str]
+    current_market_pressure: MarketPressureSnapshot | None = None
+    scenario_comparison: list[ScenarioComparisonResult] = field(default_factory=list)
 
     @classmethod
     def from_any(
@@ -208,6 +260,12 @@ class ProbabilityEngineOutput:
                 payload.get("probability_disclosure_payload")
             ),
             evidence_refs=[str(item) for item in list(payload.get("evidence_refs") or [])],
+            current_market_pressure=MarketPressureSnapshot.from_any(payload.get("current_market_pressure")),
+            scenario_comparison=[
+                result
+                for result in (ScenarioComparisonResult.from_any(item) for item in list(payload.get("scenario_comparison") or []))
+                if result is not None
+            ],
         )
 
     def to_dict(self) -> dict[str, Any]:
