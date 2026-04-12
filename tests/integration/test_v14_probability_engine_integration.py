@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,7 @@ from probability_engine.portfolio_policy import (
     apply_daily_cashflows_and_rebalance,
 )
 from probability_engine.recipes import PRIMARY_RECIPE_V14
+from orchestrator.engine import _build_probability_engine_run_input
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "v14" / "formal_daily_engine_input.json"
@@ -42,6 +44,72 @@ def _load_v14_formal_daily_input() -> dict[str, object]:
     return payload
 
 
+def _build_benign_profile_regression_input(*, path_count: int = 256, horizon_days: int = 756) -> dict[str, object]:
+    payload = _load_v14_formal_daily_input()
+    as_of = date.fromisoformat(str(payload["as_of"]))
+    trading_calendar: list[str] = []
+    cursor = as_of
+    while len(trading_calendar) < int(horizon_days):
+        cursor += timedelta(days=1)
+        if cursor.weekday() < 5:
+            trading_calendar.append(cursor.isoformat())
+
+    payload["trading_calendar"] = trading_calendar
+    payload["path_horizon_days"] = int(horizon_days)
+    payload["success_event_spec"]["horizon_days"] = int(horizon_days)
+    payload["success_event_spec"]["horizon_months"] = 36
+    payload["success_event_spec"]["target_value"] = 120000.0
+    payload["success_event_spec"]["drawdown_constraint"] = 0.20
+    payload["recipes"] = [
+        {
+            "recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1",
+            "role": "primary",
+            "path_count": int(path_count),
+        }
+    ]
+    payload["challenger_path_count"] = 64
+    payload["stress_path_count"] = 32
+
+    balanced_patterns = {
+        "cn_equity_balanced_fund": [0.0035, -0.0040, 0.0022, -0.0025, 0.0014, -0.0016, 0.0028, 0.0004],
+        "cn_bond_short_history": [0.0006, 0.0003, -0.0004, 0.0005, 0.0003, -0.0001, 0.0004, 0.0002],
+        "cn_equity_empty_holdings": [0.0050, -0.0060, 0.0030, -0.0035, 0.0020, -0.0025, 0.0040, 0.0006],
+    }
+    observed_regime_pattern = ["risk_off", "risk_off", "normal", "normal", "risk_off", "normal", "normal", "risk_off"]
+    repeats = (126 + len(observed_regime_pattern) - 1) // len(observed_regime_pattern)
+    payload["observed_regime_labels"] = (observed_regime_pattern * repeats)[:126]
+    for product in list(payload.get("products") or []):
+        pattern = balanced_patterns[str(product["product_id"])]
+        product_repeats = (126 + len(pattern) - 1) // len(pattern)
+        product["observed_daily_returns"] = (pattern * product_repeats)[:126]
+        product["mapping_confidence"] = "high"
+
+    target_weights = {}
+    for position in payload["current_positions"]:
+        position["market_value"] *= 0.18
+        position["units"] *= 0.18
+        position["cost_basis"] *= 0.18
+        target_weights[str(position["product_id"])] = float(position["weight"])
+
+    contribution_schedule = []
+    for month_index in range(1, 37):
+        year = as_of.year + (as_of.month - 1 + month_index) // 12
+        month = (as_of.month - 1 + month_index) % 12 + 1
+        contribution_date = date(year, month, min(as_of.day, 28)).isoformat()
+        target_date = next((item for item in trading_calendar if item >= contribution_date), trading_calendar[-1])
+        contribution_schedule.append(
+            {
+                "date": target_date,
+                "amount": 2500.0,
+                "allocation_mode": "target_weights",
+                "target_weights": dict(target_weights),
+            }
+        )
+    payload["contribution_schedule"] = contribution_schedule
+    payload["withdrawal_schedule"] = []
+    return payload
+
+
 def test_primary_recipe_returns_formal_output_for_full_daily_input() -> None:
     result = run_probability_engine(_load_v14_formal_daily_input())
 
@@ -53,6 +121,70 @@ def test_primary_recipe_returns_formal_output_for_full_daily_input() -> None:
     assert result.output.primary_result.sample_count == 4000
     assert result.output.primary_result.path_stats.path_count == 4000
     assert result.output.probability_disclosure_payload is not None
+
+
+def test_probability_engine_builder_residualizes_product_long_run_variance() -> None:
+    run_input, _ = _build_probability_engine_run_input(
+        run_id="residual_variance_builder",
+        envelope={
+            "as_of": "2026-04-09",
+            "live_portfolio": {"total_value": 100.0},
+        },
+        calibration_result={
+            "factor_dynamics": {
+                "factor_names": ["CN_EQ_BROAD"],
+                "tail_df": 7.0,
+                "long_run_covariance": {
+                    "CN_EQ_BROAD": {"CN_EQ_BROAD": 0.0001},
+                },
+            },
+            "regime_state": {
+                "regime_names": ["normal", "risk_off", "stress"],
+                "transition_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                "current_regime": "normal",
+            },
+            "jump_state": {},
+        },
+        goal_solver_input={
+            "goal": {"horizon_months": 1},
+            "constraints": {},
+            "cashflow_plan": {},
+            "current_portfolio_value": 100.0,
+            "candidate_product_contexts": {
+                "test_allocation": {
+                    "product_simulation_input": {
+                        "products": [
+                            {
+                                "product_id": "factor_clone_product",
+                                "asset_bucket": "equity_cn",
+                                "target_weight": 1.0,
+                                "factor_betas": {"CN_EQ_BROAD": 1.0},
+                                "return_series": [0.01, -0.01, 0.01, -0.01],
+                                "observation_dates": [
+                                    "2026-04-01",
+                                    "2026-04-02",
+                                    "2026-04-03",
+                                    "2026-04-06",
+                                ],
+                            }
+                        ]
+                    }
+                }
+            },
+        },
+        goal_solver_output={
+            "recommended_allocation_name": "test_allocation",
+            "recommended_result": {"allocation_name": "test_allocation"},
+        },
+    )
+
+    assert run_input is not None
+    product = run_input["products"][0]
+    raw_variance = 0.0001
+
+    assert product["garch_params"]["long_run_variance"] < raw_variance
+    assert product["garch_params"]["long_run_variance"] <= raw_variance * 0.05
+    assert product["garch_params"]["omega"] < raw_variance * 0.03
 
 
 def test_primary_recipe_populates_live_challenger_and_stress_gap_signals() -> None:
@@ -68,6 +200,18 @@ def test_primary_recipe_populates_live_challenger_and_stress_gap_signals() -> No
     assert disclosure_payload.challenger_gap is not None
     assert disclosure_payload.stress_gap is not None
     assert disclosure_payload.gap_total is not None
+
+
+def test_benign_profile_regression_restores_positive_primary_and_orders_stress_below_primary() -> None:
+    result = run_probability_engine(_build_benign_profile_regression_input())
+
+    assert result.output is not None
+    primary = result.output.primary_result
+    assert primary.success_probability > 0.01
+    assert result.output.challenger_results
+    assert result.output.challenger_results[0].success_probability > 0.0
+    assert result.output.stress_results
+    assert result.output.stress_results[0].success_probability <= primary.success_probability
 
 
 def test_same_month_twenty_trading_day_path_accepts_horizon_months_one() -> None:

@@ -249,6 +249,179 @@ def _series_variance(series: list[Any]) -> float:
     return max(variance, 1e-6)
 
 
+def _factor_explained_variance(
+    *,
+    factor_betas: dict[str, float],
+    factor_covariance: dict[str, dict[str, Any]],
+    factor_names: list[str],
+) -> float:
+    if not factor_names:
+        return 0.0
+
+    def _covariance_value(factor_name: str, peer_name: str) -> float:
+        direct_row = _as_dict(factor_covariance.get(factor_name))
+        reverse_row = _as_dict(factor_covariance.get(peer_name))
+        if peer_name in direct_row:
+            return float(direct_row.get(peer_name, 0.0))
+        if factor_name in reverse_row:
+            return float(reverse_row.get(factor_name, 0.0))
+        return 0.0
+
+    beta_vector = np.asarray([float(factor_betas.get(factor_name, 0.0)) for factor_name in factor_names], dtype=float)
+    covariance_matrix = np.asarray(
+        [
+            [_covariance_value(factor_name, peer) for peer in factor_names]
+            for factor_name in factor_names
+        ],
+        dtype=float,
+    )
+    explained_variance = float(beta_vector @ covariance_matrix @ beta_vector.T)
+    return max(explained_variance, 0.0)
+
+
+def _residualized_product_variance(
+    *,
+    series: list[Any],
+    factor_betas: dict[str, float],
+    factor_covariance: dict[str, dict[str, Any]],
+    factor_names: list[str],
+) -> float:
+    total_variance = _series_variance(series)
+    explained_variance = _factor_explained_variance(
+        factor_betas=factor_betas,
+        factor_covariance=factor_covariance,
+        factor_names=factor_names,
+    )
+    return max(total_variance - explained_variance, 1e-6)
+
+
+def _rescale_factor_runtime_state_from_selected_products(
+    *,
+    factor_dynamics: dict[str, Any],
+    jump_state: dict[str, Any],
+    products: list[dict[str, Any]],
+    target_weights: dict[str, float],
+    factor_names: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    if not products or not factor_names:
+        return products, factor_dynamics, jump_state
+
+    ordered_products = [product for product in products if list(product.get("observed_return_series") or [])]
+    if not ordered_products:
+        return products, factor_dynamics, jump_state
+    series_lengths = {len(list(product.get("observed_return_series") or [])) for product in ordered_products}
+    if len(series_lengths) != 1:
+        return products, factor_dynamics, jump_state
+
+    weights = np.asarray(
+        [float(target_weights.get(str(product.get("product_id") or ""), 0.0)) for product in ordered_products],
+        dtype=float,
+    )
+    weight_sum = float(np.sum(weights))
+    if weight_sum <= 0.0:
+        weights = np.full(len(ordered_products), 1.0 / float(len(ordered_products)), dtype=float)
+    else:
+        weights = weights / weight_sum
+
+    observed_matrix = np.asarray(
+        [list(product.get("observed_return_series") or []) for product in ordered_products],
+        dtype=float,
+    )
+    observed_portfolio_returns = weights @ observed_matrix
+    observed_mean = float(np.mean(observed_portfolio_returns))
+    observed_variance = float(np.var(observed_portfolio_returns))
+
+    beta_matrix = np.asarray(
+        [
+            [float(_as_dict(product.get("factor_betas")).get(factor_name, 0.0)) for factor_name in factor_names]
+            for product in ordered_products
+        ],
+        dtype=float,
+    )
+    factor_exposure = weights @ beta_matrix
+
+    expected_return_map = {
+        factor_name: float(_as_dict(factor_dynamics.get("expected_return_by_factor")).get(factor_name, 0.0))
+        for factor_name in factor_names
+    }
+    factor_mean_daily = float(
+        factor_exposure
+        @ np.asarray([expected_return_map[factor_name] / 252.0 for factor_name in factor_names], dtype=float)
+    )
+
+    factor_covariance = _as_dict(factor_dynamics.get("long_run_covariance"))
+    factor_covariance_matrix = np.asarray(
+        [
+            [float(_as_dict(factor_covariance.get(factor_name)).get(peer_name, 0.0)) for peer_name in factor_names]
+            for factor_name in factor_names
+        ],
+        dtype=float,
+    )
+    factor_portfolio_variance = float(factor_exposure @ factor_covariance_matrix @ factor_exposure.T)
+
+    mean_scale = 1.0
+    if abs(factor_mean_daily) > 1e-9:
+        mean_scale = float(max(min(observed_mean / factor_mean_daily, 1.75), 0.60))
+    vol_scale = 1.0
+    if factor_portfolio_variance > 1e-10:
+        vol_scale = float(max(min(observed_variance / factor_portfolio_variance, 1.50), 0.02))
+
+    scaled_factor_dynamics = deepcopy(factor_dynamics)
+    scaled_expected_return_map = _as_dict(scaled_factor_dynamics.get("expected_return_by_factor"))
+    scaled_garch_params_by_factor = _as_dict(scaled_factor_dynamics.get("garch_params_by_factor"))
+    for factor_name in factor_names:
+        if factor_name in scaled_expected_return_map:
+            scaled_expected_return_map[factor_name] = float(scaled_expected_return_map[factor_name]) * mean_scale
+        garch_params = _as_dict(scaled_garch_params_by_factor.get(factor_name))
+        if garch_params:
+            if "long_run_variance" in garch_params:
+                garch_params["long_run_variance"] = max(float(garch_params["long_run_variance"]) * vol_scale, 1e-6)
+            if "omega" in garch_params:
+                garch_params["omega"] = max(float(garch_params["omega"]) * vol_scale, 0.0)
+            scaled_garch_params_by_factor[factor_name] = garch_params
+    scaled_factor_dynamics["expected_return_by_factor"] = scaled_expected_return_map
+    scaled_factor_dynamics["garch_params_by_factor"] = scaled_garch_params_by_factor
+
+    scaled_covariance = _as_dict(scaled_factor_dynamics.get("long_run_covariance"))
+    for factor_name, row in list(scaled_covariance.items()):
+        scaled_covariance[factor_name] = {
+            str(peer_name): float(value) * vol_scale
+            for peer_name, value in _as_dict(row).items()
+        }
+    scaled_factor_dynamics["long_run_covariance"] = scaled_covariance
+
+    jump_scale = float(np.sqrt(max(vol_scale, 1e-12)))
+    scaled_jump_state = deepcopy(jump_state)
+    scaled_systemic_impact = {
+        str(factor_name): float(value) * jump_scale
+        for factor_name, value in _as_dict(scaled_jump_state.get("systemic_jump_impact_by_factor")).items()
+    }
+    if scaled_systemic_impact:
+        scaled_jump_state["systemic_jump_impact_by_factor"] = scaled_systemic_impact
+    if scaled_jump_state.get("systemic_jump_dispersion") is not None:
+        scaled_jump_state["systemic_jump_dispersion"] = max(
+            float(scaled_jump_state.get("systemic_jump_dispersion", 0.0)) * jump_scale,
+            1e-12,
+        )
+    scaled_products: list[dict[str, Any]] = []
+    scaled_covariance = _as_dict(scaled_factor_dynamics.get("long_run_covariance"))
+    for product in products:
+        scaled_product = deepcopy(product)
+        residual_variance = _residualized_product_variance(
+            series=list(product.get("observed_return_series") or []),
+            factor_betas=_as_dict(product.get("factor_betas")),
+            factor_covariance=scaled_covariance,
+            factor_names=factor_names,
+        )
+        garch_params = _as_dict(scaled_product.get("garch_params"))
+        if garch_params:
+            garch_params["long_run_variance"] = residual_variance
+            garch_params["omega"] = residual_variance * 0.03
+            scaled_product["garch_params"] = garch_params
+        scaled_products.append(scaled_product)
+    return scaled_products, scaled_factor_dynamics, scaled_jump_state
+
+
 def _negative_loss_profile(series: list[Any]) -> tuple[float, float]:
     negatives = [abs(float(value)) for value in series if float(value) < 0.0]
     if not negatives:
@@ -256,6 +429,15 @@ def _negative_loss_profile(series: list[Any]) -> tuple[float, float]:
     mean_loss = sum(negatives) / len(negatives)
     variance = sum((value - mean_loss) ** 2 for value in negatives) / max(len(negatives), 1)
     return (max(mean_loss, 0.005), max(variance**0.5, 0.0025))
+
+
+def _idiosyncratic_jump_probability(series: list[Any]) -> float:
+    values = [float(item) for item in series]
+    if not values:
+        return 0.0005
+    tail_hits = [value for value in values if value < -0.02]
+    empirical_rate = len(tail_hits) / float(len(values))
+    return float(min(max(0.0005, empirical_rate * 0.20 + 0.0005), 0.008))
 
 
 def _asset_bucket_factor_betas(asset_bucket: str, factor_names: list[str]) -> dict[str, float]:
@@ -396,6 +578,7 @@ def _build_probability_engine_run_input(
         return None, {}
 
     factor_mapping_products = _extract_probability_engine_factor_mapping_context(envelope)
+    factor_covariance = _as_dict(_as_dict(factor_dynamics).get("long_run_covariance"))
     products: list[dict[str, Any]] = []
     current_positions: list[dict[str, Any]] = []
     jump_data = _as_dict(jump_state)
@@ -414,9 +597,8 @@ def _build_probability_engine_run_input(
             if str(value).strip()
         ]
         loss_mean, loss_std = _negative_loss_profile(series)
-        variance = _series_variance(series)
         jump_profile = jump_profiles.get(product_id) or {
-            "probability_1d": 0.012,
+            "probability_1d": _idiosyncratic_jump_probability(series),
             "loss_mean": -loss_mean,
             "loss_std": loss_std,
         }
@@ -432,6 +614,12 @@ def _build_probability_engine_run_input(
         }
         if not any(abs(value) > 0.0 for value in factor_betas.values()):
             factor_betas = _asset_bucket_factor_betas(_text(item.get("asset_bucket")) or "", factor_names)
+        variance = _residualized_product_variance(
+            series=series,
+            factor_betas=factor_betas,
+            factor_covariance=factor_covariance,
+            factor_names=factor_names,
+        )
         mapping_confidence = _first_text(
             mapping_payload.get("mapping_confidence"),
             item.get("mapping_confidence"),
@@ -493,6 +681,14 @@ def _build_probability_engine_run_input(
 
     if not products or not current_positions:
         return None, {}
+
+    products, factor_dynamics, jump_state = _rescale_factor_runtime_state_from_selected_products(
+        factor_dynamics=_as_dict(factor_dynamics),
+        jump_state=_as_dict(jump_state),
+        products=products,
+        target_weights=target_weights,
+        factor_names=factor_names,
+    )
 
     monthly_contribution = float(cashflow_plan.get("monthly_contribution") or 0.0)
     contribution_schedule: list[dict[str, Any]] = []

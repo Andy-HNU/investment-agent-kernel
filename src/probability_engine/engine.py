@@ -232,6 +232,10 @@ def _run_live_challenger(
             success_event_spec=runtime_input.success_event_spec,
             current_positions=runtime_input.current_positions,
             initial_portfolio_value=sum(float(position.market_value) for position in runtime_input.current_positions),
+            contribution_schedule=runtime_input.contribution_schedule,
+            withdrawal_schedule=runtime_input.withdrawal_schedule,
+            rebalancing_policy=runtime_input.rebalancing_policy,
+            step_dates=runtime_input.trading_step_dates(),
             random_seed=int(runtime_input.random_seed),
         ).result
     except ValueError as exc:

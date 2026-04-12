@@ -14,13 +14,18 @@ from probability_engine.challengers import (
     STRESS_RECIPE_V14,
     ChallengerBootstrapDiagnostics,
     build_stress_recipe_result,
+    build_stress_recipe_result_from_runtime_input,
     run_challenger_bootstrap,
 )
 from probability_engine.contracts import PathStatsSummary, ProbabilityEngineRunResult, RecipeSimulationResult, SuccessEventSpec
 from probability_engine.disclosure_bridge import DisclosureEvidenceSpec, assemble_probability_run_result
 from probability_engine.engine import _observed_weight_adjusted_coverage, run_probability_engine
-from probability_engine.path_generator import DailyEngineRuntimeInput
-from probability_engine.portfolio_policy import CurrentPosition
+from probability_engine.jumps import JumpStateSpec
+from probability_engine.path_generator import DailyEngineRuntimeInput, ProductMarginalSpec, simulate_primary_paths
+from probability_engine.portfolio_policy import ContributionInstruction, CurrentPosition, RebalancingPolicySpec
+from probability_engine.recipes import PRIMARY_RECIPE_V14
+from probability_engine.regime import RegimeStateSpec
+from probability_engine.volatility import FactorDynamicsSpec
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "v14" / "formal_daily_engine_input.json"
@@ -160,6 +165,130 @@ def _make_secondary_result(
     )
 
 
+def _build_benign_positive_drift_runtime_input() -> DailyEngineRuntimeInput:
+    return DailyEngineRuntimeInput(
+        as_of="2026-04-09",
+        path_horizon_days=20,
+        trading_calendar=[
+            "2026-04-10",
+            "2026-04-13",
+            "2026-04-14",
+            "2026-04-15",
+            "2026-04-16",
+            "2026-04-17",
+            "2026-04-20",
+            "2026-04-21",
+            "2026-04-22",
+            "2026-04-23",
+            "2026-04-24",
+            "2026-04-27",
+            "2026-04-28",
+            "2026-04-29",
+            "2026-04-30",
+            "2026-05-04",
+            "2026-05-05",
+            "2026-05-06",
+            "2026-05-07",
+            "2026-05-08",
+        ],
+        products=[
+            ProductMarginalSpec.from_any(
+                {
+                    "product_id": "benign_equity",
+                    "asset_bucket": "equity_cn",
+                    "factor_betas": {"CN_EQ_BROAD": 1.0},
+                    "observed_daily_returns": [0.001] * 40,
+                    "innovation_family": "student_t",
+                    "tail_df": 7.0,
+                    "volatility_process": "product_garch_11",
+                    "garch_params": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "nu": 7.0, "long_run_variance": 0.0},
+                    "idiosyncratic_jump_profile": {"probability_1d": 0.0, "loss_mean": -0.01, "loss_std": 0.0},
+                    "carry_profile": {"carry_drag": 0.0, "tracking_drag": 0.0},
+                    "valuation_profile": {"valuation_drag": 0.0},
+                    "mapping_confidence": "high",
+                    "factor_mapping_source": "observed",
+                    "factor_mapping_evidence": [],
+                    "observed_series_ref": "observed://benign_equity",
+                    "observed_return_series": [0.001] * 40,
+                    "observed_dates": [f"2026-03-{day:02d}" for day in range(1, 29)] + [f"2026-04-{day:02d}" for day in range(1, 13)],
+                }
+            )
+        ],
+        factor_dynamics=FactorDynamicsSpec(
+            factor_names=["CN_EQ_BROAD"],
+            factor_series_ref="observed://factor/cn_eq_broad",
+            innovation_family="student_t",
+            tail_df=7.0,
+            garch_params_by_factor={
+                "CN_EQ_BROAD": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "nu": 7.0, "long_run_variance": 0.0}
+            },
+            dcc_params={"alpha": 0.0, "beta": 0.0},
+            long_run_covariance={"CN_EQ_BROAD": {"CN_EQ_BROAD": 0.0}},
+            covariance_shrinkage=0.0,
+            calibration_window_days=252,
+            expected_return_by_factor={"CN_EQ_BROAD": 0.08},
+            expected_return_basis="market_anchor",
+        ),
+        regime_state=RegimeStateSpec(
+            regime_names=["normal"],
+            transition_matrix=[[1.0]],
+            current_regime="normal",
+            regime_mean_adjustments={"normal": {"mean_shift": 0.0}},
+            regime_vol_adjustments={"normal": {"volatility_multiplier": 1.0}},
+            regime_jump_adjustments={"normal": {"systemic_jump_probability_multiplier": 1.0}},
+        ),
+        jump_state=JumpStateSpec(
+            systemic_jump_probability_1d=0.0,
+            systemic_jump_dispersion=1e-12,
+            systemic_jump_impact_by_factor={"CN_EQ_BROAD": 0.0},
+            idio_jump_profile_by_product={"benign_equity": {"probability_1d": 0.0, "loss_mean": -0.01, "loss_std": 0.0}},
+        ),
+        current_positions=[
+            CurrentPosition(
+                product_id="benign_equity",
+                units=100.0,
+                market_value=100.0,
+                weight=1.0,
+                cost_basis=100.0,
+                tradable=True,
+            )
+        ],
+        contribution_schedule=[],
+        withdrawal_schedule=[],
+        rebalancing_policy=RebalancingPolicySpec(
+            policy_type="none",
+            calendar_frequency=None,
+            threshold_band=None,
+            execution_timing="end_of_day_after_return",
+            transaction_cost_bps=0.0,
+            min_trade_amount=None,
+        ),
+        success_event_spec=SuccessEventSpec(
+            horizon_days=20,
+            horizon_months=1,
+            target_type="goal_amount",
+            target_value=100.30,
+            drawdown_constraint=0.50,
+            benchmark_ref=None,
+            contribution_policy="fixed",
+            withdrawal_policy="none",
+            rebalancing_policy_ref="none",
+            return_basis="nominal",
+            fee_basis="net",
+            success_logic="joint_target_and_drawdown",
+        ),
+        recipes=[PRIMARY_RECIPE_V14],
+        evidence_bundle_ref="benign://runtime",
+        random_seed=17,
+        challenger_regime_labels=["normal"] * 40,
+        observed_regime_labels=("normal",) * 40,
+        observed_current_regime="normal",
+        challenger_block_size=20,
+        challenger_path_count=8,
+        stress_path_count=8,
+    )
+
+
 def test_challenger_bootstrap_advances_regime_and_preserves_portfolio_weights() -> None:
     history_matrix = [
         [0.030] * 19 + [0.020] + [-0.010] * 20,
@@ -257,6 +386,59 @@ def test_challenger_bootstrap_uses_position_scale_for_success_evaluation() -> No
 
     assert diagnostics.result.path_stats.success_count == 1
     assert diagnostics.result.success_probability == 1.0
+
+
+def test_challenger_bootstrap_applies_contributions_without_treating_them_as_return() -> None:
+    diagnostics = run_challenger_bootstrap(
+        history_matrix=[
+            [0.0] * 40,
+        ],
+        regime_labels=[*["risk_off"] * 20, *["normal"] * 20],
+        current_regime="risk_off",
+        block_size=20,
+        path_count=1,
+        horizon_days=20,
+        success_event_spec=SuccessEventSpec(
+            horizon_days=20,
+            horizon_months=1,
+            target_type="goal_amount",
+            target_value=150.0,
+            drawdown_constraint=1.0,
+            benchmark_ref=None,
+            contribution_policy="fixed",
+            withdrawal_policy="none",
+            rebalancing_policy_ref="none",
+            return_basis="nominal",
+            fee_basis="net",
+            success_logic="joint_target_and_drawdown",
+        ),
+        current_positions=[
+            CurrentPosition(product_id="a", units=0.0, market_value=100.0, weight=1.0, cost_basis=None, tradable=True),
+        ],
+        contribution_schedule=[
+            ContributionInstruction(
+                date="2026-04-11",
+                amount=50.0,
+                allocation_mode="target_weights",
+                target_weights={"a": 1.0},
+            )
+        ],
+        withdrawal_schedule=[],
+        rebalancing_policy=RebalancingPolicySpec(
+            policy_type="none",
+            calendar_frequency=None,
+            threshold_band=None,
+            execution_timing="end_of_day_after_return",
+            transaction_cost_bps=0.0,
+            min_trade_amount=None,
+        ),
+        step_dates=["2026-04-11"] + [f"2026-04-{12 + idx:02d}" for idx in range(19)],
+        random_seed=5,
+    )
+
+    assert diagnostics.result.path_stats.terminal_value_mean == pytest.approx(150.0, abs=1e-9)
+    assert diagnostics.result.path_stats.cagr_p50 == pytest.approx(0.0, abs=1e-9)
+    assert diagnostics.result.cagr_range == pytest.approx((0.0, 0.0), abs=1e-9)
 
 
 def test_challenger_bootstrap_rejects_mismatched_initial_value_for_current_positions() -> None:
@@ -390,6 +572,8 @@ def test_stress_recipe_helper_uses_primary_model_with_stress_parameter_table(mon
     stressed_runtime_input = captured["runtime_input"]
     assert isinstance(stressed_runtime_input, DailyEngineRuntimeInput)
     assert stressed_runtime_input.factor_dynamics.tail_df < runtime_input.factor_dynamics.tail_df
+    assert stressed_runtime_input.factor_dynamics.expected_return_by_factor == runtime_input.factor_dynamics.expected_return_by_factor
+    assert stressed_runtime_input.factor_dynamics.expected_return_basis == runtime_input.factor_dynamics.expected_return_basis
     assert stressed_runtime_input.jump_state.systemic_jump_probability_1d > runtime_input.jump_state.systemic_jump_probability_1d
     assert stressed_runtime_input.jump_state.systemic_jump_dispersion > runtime_input.jump_state.systemic_jump_dispersion
     risk_off_index = stressed_runtime_input.regime_state.regime_names.index("risk_off")
@@ -397,6 +581,27 @@ def test_stress_recipe_helper_uses_primary_model_with_stress_parameter_table(mon
         stressed_runtime_input.regime_state.transition_matrix[risk_off_index][risk_off_index]
         > runtime_input.regime_state.transition_matrix[risk_off_index][risk_off_index]
     )
+
+
+def test_stress_overlay_preserves_base_drift_contract_on_benign_runtime_input() -> None:
+    runtime_input = _build_benign_positive_drift_runtime_input()
+
+    primary_result = simulate_primary_paths(runtime_input, PRIMARY_RECIPE_V14)
+    stress_result = build_stress_recipe_result_from_runtime_input(runtime_input, path_count=64)
+
+    assert primary_result.success_probability > 0.0
+    assert stress_result.success_probability <= primary_result.success_probability
+    assert runtime_input.factor_dynamics.expected_return_by_factor["CN_EQ_BROAD"] > 0.0
+    assert stress_result.path_stats.terminal_value_mean > 100.0
+    assert stress_result.path_stats.terminal_value_mean < primary_result.path_stats.terminal_value_mean
+
+
+def test_stress_tail_df_is_monotone_worse_near_low_df_boundary() -> None:
+    stressed_df = challengers_module._stress_tail_df(2.05)
+
+    assert stressed_df is not None
+    assert stressed_df > 2.0
+    assert stressed_df < 2.05
 
 
 def test_probability_engine_stress_recipe_stays_finite_and_downside_bounded_on_long_horizon_balanced_input() -> None:

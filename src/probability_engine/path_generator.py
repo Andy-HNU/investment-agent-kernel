@@ -74,6 +74,10 @@ def _product_residual_cap(
     return float(min(0.15, max(0.01, min(product_return_cap * 0.75, 6.0 * sigma))))
 
 
+def _annual_expected_return_to_daily_drift(expected_return: float) -> float:
+    return float(expected_return) / 252.0
+
+
 def _compound_product_values(
     product_values: np.ndarray,
     product_returns_array: np.ndarray,
@@ -166,10 +170,10 @@ def _coerce_float_series(value: Any) -> tuple[float, ...]:
     return tuple(float(item) for item in series)
 
 
-def _annualized_cagr(initial_value: float, terminal_value: float, horizon_days: int) -> float:
-    if initial_value <= 0.0 or terminal_value <= 0.0 or horizon_days <= 0:
+def _annualized_time_weighted_return(growth_multiplier: float, horizon_days: int) -> float:
+    if growth_multiplier <= 0.0 or horizon_days <= 0:
         return -1.0
-    return float((terminal_value / initial_value) ** (252.0 / horizon_days) - 1.0)
+    return float(growth_multiplier ** (252.0 / horizon_days) - 1.0)
 
 
 def _wilson_interval(success_count: int, total_count: int, z_score: float = 1.96) -> tuple[float, float]:
@@ -387,6 +391,7 @@ class _CompiledRuntimeContext:
     regime_transition_matrix: np.ndarray
     initial_regime_index: int
     mean_shift_by_regime: np.ndarray
+    factor_base_drift_by_day: np.ndarray
     volatility_multiplier_by_regime: np.ndarray
     systemic_jump_probability_multiplier_by_regime: np.ndarray
     systemic_jump_dispersion_multiplier_by_regime: np.ndarray
@@ -581,6 +586,15 @@ def _compiled_runtime_context(runtime_input: DailyEngineRuntimeInput) -> _Compil
         ],
         dtype=float,
     )
+    factor_base_drift_by_day = np.asarray(
+        [
+            _annual_expected_return_to_daily_drift(
+                float(runtime_input.factor_dynamics.expected_return_by_factor.get(factor_name, 0.0))
+            )
+            for factor_name in factor_names
+        ],
+        dtype=float,
+    )
     volatility_multiplier_by_regime = np.asarray(
         [
             float(runtime_input.regime_state.regime_vol_adjustments.get(regime_name, {}).get("volatility_multiplier", 1.0))
@@ -685,6 +699,7 @@ def _compiled_runtime_context(runtime_input: DailyEngineRuntimeInput) -> _Compil
         regime_transition_matrix=regime_transition_matrix,
         initial_regime_index=initial_regime_index,
         mean_shift_by_regime=mean_shift_by_regime,
+        factor_base_drift_by_day=factor_base_drift_by_day,
         volatility_multiplier_by_regime=volatility_multiplier_by_regime,
         systemic_jump_probability_multiplier_by_regime=systemic_jump_probability_multiplier_by_regime,
         systemic_jump_dispersion_multiplier_by_regime=systemic_jump_dispersion_multiplier_by_regime,
@@ -1118,8 +1133,10 @@ def _simulate_paths_batch(
     regime_indices = np.full(path_count, compiled.initial_regime_index, dtype=int)
     previous_step_date = runtime_input.as_of
     value_cap = _portfolio_value_cap(path_product_values.shape[1])
+    cumulative_growth = np.ones(path_count, dtype=float)
 
     for step_date in compiled.step_dates:
+        opening_net_values = np.sum(path_product_values, axis=1) + cash
         transition_rows = compiled.regime_transition_matrix[regime_indices]
         cumulative_transitions = np.cumsum(transition_rows, axis=1)
         next_regime_indices = np.sum(
@@ -1149,7 +1166,7 @@ def _simulate_paths_batch(
             compiled.factor_return_cap[None, :],
         )
         factor_returns = np.clip(
-            factor_residuals + mean_shift[:, None],
+            compiled.factor_base_drift_by_day[None, :] + mean_shift[:, None] + factor_residuals,
             -compiled.factor_return_cap[None, :],
             compiled.factor_return_cap[None, :],
         )
@@ -1238,6 +1255,14 @@ def _simulate_paths_batch(
             product_returns_array,
             value_cap=value_cap,
         )
+        pre_flow_net_values = np.sum(path_product_values, axis=1) + cash
+        daily_growth = np.divide(
+            pre_flow_net_values,
+            opening_net_values,
+            out=np.ones_like(pre_flow_net_values),
+            where=opening_net_values > 0.0,
+        )
+        cumulative_growth = cumulative_growth * np.maximum(daily_growth, 0.0)
         contributions = compiled.contribution_schedule_by_date.get(step_date, [])
         withdrawals = compiled.withdrawal_schedule_by_date.get(step_date, [])
         if contributions:
@@ -1305,7 +1330,7 @@ def _simulate_paths_batch(
     return [
         PathOutcome(
             terminal_value=float(terminal_values[index]),
-            cagr=_annualized_cagr(float(initial_values[index]), float(terminal_values[index]), runtime_input.path_horizon_days),
+            cagr=_annualized_time_weighted_return(float(cumulative_growth[index]), runtime_input.path_horizon_days),
             max_drawdown=float(max_drawdowns[index]),
             success=bool(successes[index]),
         )
@@ -1346,8 +1371,10 @@ def _simulate_single_path(
     regime_index = compiled.initial_regime_index
     previous_step_date = runtime_input.as_of
     value_cap = _portfolio_value_cap(product_values.shape[0])
+    cumulative_growth = 1.0
 
     for step_date in compiled.step_dates:
+        opening_net_value = float(np.sum(product_values) + cash)
         next_regime_index = int(rng.choice(len(compiled.regime_names), p=compiled.regime_transition_matrix[regime_index]))
         volatility_multiplier = float(compiled.volatility_multiplier_by_regime[next_regime_index])
         mean_shift = float(compiled.mean_shift_by_regime[next_regime_index])
@@ -1368,7 +1395,7 @@ def _simulate_single_path(
             compiled.factor_return_cap,
         )
         factor_returns = np.clip(
-            factor_residuals + mean_shift,
+            compiled.factor_base_drift_by_day + mean_shift + factor_residuals,
             -compiled.factor_return_cap,
             compiled.factor_return_cap,
         )
@@ -1442,6 +1469,9 @@ def _simulate_single_path(
             product_returns_array,
             value_cap=value_cap,
         )
+        pre_flow_net_value = float(np.sum(product_values) + cash)
+        if opening_net_value > 0.0:
+            cumulative_growth *= max(pre_flow_net_value / opening_net_value, 0.0)
         contributions = compiled.contribution_schedule_by_date.get(step_date, [])
         withdrawals = compiled.withdrawal_schedule_by_date.get(step_date, [])
         if contributions:
@@ -1506,7 +1536,7 @@ def _simulate_single_path(
         success = success and max_drawdown <= float(compiled.drawdown_constraint)
     return PathOutcome(
         terminal_value=terminal_value,
-        cagr=_annualized_cagr(initial_value, terminal_value, runtime_input.path_horizon_days),
+        cagr=_annualized_time_weighted_return(cumulative_growth, runtime_input.path_horizon_days),
         max_drawdown=max_drawdown,
         success=success,
     )

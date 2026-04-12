@@ -8,7 +8,16 @@ import numpy as np
 
 from probability_engine.contracts import PathStatsSummary, RecipeSimulationResult, SuccessEventSpec
 from probability_engine.path_generator import DailyEngineRuntimeInput, simulate_primary_paths
-from probability_engine.portfolio_policy import CurrentPosition, PortfolioState, initialize_portfolio_state
+from probability_engine.portfolio_policy import (
+    ContributionInstruction,
+    CurrentPosition,
+    PortfolioState,
+    RebalancingPolicySpec,
+    WithdrawalInstruction,
+    apply_daily_cashflows_and_rebalance,
+    initialize_portfolio_state,
+    instructions_for_date,
+)
 from probability_engine.recipes import SimulationRecipe
 from probability_engine.regime import RegimeStateSpec
 from probability_engine.jumps import JumpStateSpec
@@ -19,10 +28,10 @@ def _clamp_probability(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
-def _annualized_cagr(initial_value: float, terminal_value: float, horizon_days: int) -> float:
-    if initial_value <= 0.0 or terminal_value <= 0.0 or horizon_days <= 0:
+def _annualized_time_weighted_return(growth_multiplier: float, horizon_days: int) -> float:
+    if growth_multiplier <= 0.0 or horizon_days <= 0:
         return -1.0
-    return float((terminal_value / initial_value) ** (252.0 / horizon_days) - 1.0)
+    return float(growth_multiplier ** (252.0 / horizon_days) - 1.0)
 
 
 def _wilson_interval(success_count: int, total_count: int, z_score: float = 1.96) -> tuple[float, float]:
@@ -77,15 +86,18 @@ def _simulate_path(
     net_value = float(initial_value)
     peak_value = float(initial_value)
     max_drawdown = 0.0
+    cumulative_growth = 1.0
     for daily_return in sampled_returns.tolist():
-        net_value *= max(0.0, 1.0 + float(daily_return))
+        growth = max(0.0, 1.0 + float(daily_return))
+        cumulative_growth *= growth
+        net_value *= growth
         peak_value = max(peak_value, net_value)
         if peak_value > 0.0:
             max_drawdown = max(max_drawdown, 1.0 - (net_value / peak_value))
     success = net_value >= float(success_event_spec.target_value)
     if success_event_spec.drawdown_constraint is not None:
         success = success and max_drawdown <= float(success_event_spec.drawdown_constraint)
-    cagr = _annualized_cagr(initial_value, net_value, max(len(sampled_returns), 1))
+    cagr = _annualized_time_weighted_return(cumulative_growth, max(len(sampled_returns), 1))
     return net_value, cagr, max_drawdown, success
 
 
@@ -182,25 +194,7 @@ def _portfolio_state_from_positions(
     return state, product_ids, normalized_weights, effective_initial_value
 
 
-def _portfolio_daily_returns(
-    *,
-    block: np.ndarray,
-    portfolio_state: PortfolioState,
-    product_ids: list[str],
-) -> tuple[PortfolioState, list[float]]:
-    daily_returns: list[float] = []
-    for day_index in range(block.shape[1]):
-        product_returns = {product_ids[row_index]: float(block[row_index, day_index]) for row_index in range(block.shape[0])}
-        previous_value = portfolio_state.net_value
-        portfolio_state = portfolio_state.after_returns(product_returns)
-        if previous_value <= 0.0:
-            daily_returns.append(0.0)
-        else:
-            daily_returns.append(float(portfolio_state.net_value / previous_value - 1.0))
-    return portfolio_state, daily_returns
-
-
-def _build_path_returns(
+def _build_product_return_path(
     *,
     matrix: np.ndarray,
     labels: list[str],
@@ -208,15 +202,14 @@ def _build_path_returns(
     block_size: int,
     horizon_days: int,
     rng: np.random.Generator,
-    portfolio_state: PortfolioState,
     product_ids: list[str],
-) -> tuple[list[float], list[int], list[str]]:
+) -> tuple[list[dict[str, float]], list[int], list[str]]:
     selected_block_starts: list[int] = []
     selected_block_regimes: list[str] = []
-    path_returns: list[float] = []
+    path_product_returns: list[dict[str, float]] = []
     regime_cursor = str(current_regime).strip()
 
-    while len(path_returns) < horizon_days:
+    while len(path_product_returns) < horizon_days:
         candidate_starts = _eligible_block_starts(labels, regime_cursor, block_size)
         if not candidate_starts:
             raise ValueError(f"no regime-conditioned challenger blocks are available for regime '{regime_cursor}'")
@@ -224,15 +217,72 @@ def _build_path_returns(
         selected_block_starts.append(start)
         selected_block_regimes.append(regime_cursor)
         block = matrix[:, start : start + block_size]
-        portfolio_state, block_returns = _portfolio_daily_returns(
-            block=block,
-            portfolio_state=portfolio_state,
-            product_ids=product_ids,
-        )
-        path_returns.extend(block_returns)
+        for day_index in range(block.shape[1]):
+            path_product_returns.append(
+                {
+                    product_ids[row_index]: float(block[row_index, day_index])
+                    for row_index in range(block.shape[0])
+                }
+            )
         regime_cursor = labels[start + block_size - 1]
 
-    return path_returns[:horizon_days], selected_block_starts, selected_block_regimes
+    return path_product_returns[:horizon_days], selected_block_starts, selected_block_regimes
+
+
+def _simulate_portfolio_path(
+    sampled_product_returns: list[dict[str, float]],
+    *,
+    initial_state: PortfolioState,
+    success_event_spec: SuccessEventSpec,
+    contribution_schedule: list[ContributionInstruction] | None = None,
+    withdrawal_schedule: list[WithdrawalInstruction] | None = None,
+    rebalancing_policy: RebalancingPolicySpec | None = None,
+    step_dates: list[str] | None = None,
+) -> tuple[float, float, float, bool]:
+    portfolio_state = initial_state
+    peak_value = float(initial_state.net_value)
+    max_drawdown = 0.0
+    cumulative_growth = 1.0
+    previous_date: str | None = None
+    contribution_schedule = contribution_schedule or []
+    withdrawal_schedule = withdrawal_schedule or []
+    policy = rebalancing_policy or RebalancingPolicySpec(
+        policy_type="none",
+        calendar_frequency=None,
+        threshold_band=None,
+        execution_timing="end_of_day_after_return",
+        transaction_cost_bps=0.0,
+        min_trade_amount=None,
+    )
+
+    for day_index, product_returns in enumerate(sampled_product_returns):
+        opening_value = float(portfolio_state.net_value)
+        post_return_state = portfolio_state.after_returns(product_returns)
+        if opening_value > 0.0:
+            cumulative_growth *= max(float(post_return_state.net_value / opening_value), 0.0)
+
+        current_date = step_dates[day_index] if step_dates is not None and day_index < len(step_dates) else None
+        portfolio_state = apply_daily_cashflows_and_rebalance(
+            portfolio_state,
+            product_returns,
+            instructions_for_date(contribution_schedule, current_date) if current_date else [],
+            instructions_for_date(withdrawal_schedule, current_date) if current_date else [],
+            policy,
+            current_date=current_date,
+            previous_date=previous_date,
+        )
+        current_value = float(portfolio_state.net_value)
+        peak_value = max(peak_value, current_value)
+        if peak_value > 0.0:
+            max_drawdown = max(max_drawdown, 1.0 - (current_value / peak_value))
+        previous_date = current_date
+
+    terminal_value = float(portfolio_state.net_value)
+    success = terminal_value >= float(success_event_spec.target_value)
+    if success_event_spec.drawdown_constraint is not None:
+        success = success and max_drawdown <= float(success_event_spec.drawdown_constraint)
+    cagr = _annualized_time_weighted_return(cumulative_growth, max(len(sampled_product_returns), 1))
+    return terminal_value, cagr, max_drawdown, success
 
 
 CHALLENGER_RECIPE_V14 = SimulationRecipe(
@@ -297,7 +347,8 @@ def _scaled_positive(value: float | None, multiplier: float, *, minimum: float =
 def _stress_tail_df(tail_df: float | None) -> float | None:
     if tail_df is None:
         return None
-    return max(2.5, float(tail_df) * float(_STRESS_PARAMETER_TABLE["tail_df_multiplier"]))
+    numeric_tail_df = float(tail_df)
+    return max(2.000001, min(numeric_tail_df * float(_STRESS_PARAMETER_TABLE["tail_df_multiplier"]), numeric_tail_df - 0.01))
 
 
 def _stress_regime_state(regime_state: RegimeStateSpec) -> RegimeStateSpec:
@@ -453,6 +504,10 @@ def run_challenger_bootstrap(
     portfolio_weights: list[float] | None = None,
     current_positions: list[CurrentPosition | dict[str, Any]] | None = None,
     initial_portfolio_value: float | None = None,
+    contribution_schedule: list[ContributionInstruction | dict[str, Any]] | None = None,
+    withdrawal_schedule: list[WithdrawalInstruction | dict[str, Any]] | None = None,
+    rebalancing_policy: RebalancingPolicySpec | dict[str, Any] | None = None,
+    step_dates: list[str] | None = None,
     random_seed: int = 17,
     recipe: SimulationRecipe | None = None,
 ) -> ChallengerBootstrapDiagnostics:
@@ -485,28 +540,48 @@ def run_challenger_bootstrap(
         raise ValueError("no regime-conditioned challenger blocks are available")
 
     rng = np.random.default_rng(int(random_seed))
+    normalized_contributions = [
+        item if isinstance(item, ContributionInstruction) else ContributionInstruction.from_any(item)
+        for item in list(contribution_schedule or [])
+    ]
+    normalized_withdrawals = [
+        item if isinstance(item, WithdrawalInstruction) else WithdrawalInstruction.from_any(item)
+        for item in list(withdrawal_schedule or [])
+    ]
+    normalized_policy = (
+        rebalancing_policy
+        if isinstance(rebalancing_policy, RebalancingPolicySpec)
+        else RebalancingPolicySpec.from_any(rebalancing_policy or {})
+    )
+    normalized_step_dates = None if step_dates is None else [str(item).strip() for item in list(step_dates) if str(item).strip()]
+    if (normalized_contributions or normalized_withdrawals) and normalized_step_dates is None:
+        raise ValueError("step_dates are required when challenger cashflow schedules are provided")
+    if normalized_step_dates is not None and len(normalized_step_dates) < int(horizon_days):
+        raise ValueError("step_dates must cover the full challenger horizon")
     path_results: list[tuple[float, float, float, bool]] = []
     selected_block_starts_by_path: list[list[int]] = []
     selected_block_regimes_by_path: list[list[str]] = []
     for path_index in range(int(path_count)):
-        portfolio_state = initial_state
-        path_returns, selected_block_starts, selected_block_regimes = _build_path_returns(
+        path_product_returns, selected_block_starts, selected_block_regimes = _build_product_return_path(
             matrix=matrix,
             labels=labels,
             current_regime=current_regime,
             block_size=int(block_size),
             horizon_days=int(horizon_days),
             rng=rng,
-            portfolio_state=portfolio_state,
             product_ids=product_ids,
         )
         selected_block_starts_by_path.append(selected_block_starts)
         selected_block_regimes_by_path.append(selected_block_regimes)
         path_results.append(
-            _simulate_path(
-                np.asarray(path_returns, dtype=float),
-                initial_value=effective_initial_value,
+            _simulate_portfolio_path(
+                path_product_returns,
+                initial_state=initial_state,
                 success_event_spec=success_event_spec,
+                contribution_schedule=normalized_contributions,
+                withdrawal_schedule=normalized_withdrawals,
+                rebalancing_policy=normalized_policy,
+                step_dates=normalized_step_dates,
             )
         )
 

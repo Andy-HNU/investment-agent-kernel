@@ -285,6 +285,161 @@ def _factor_volatility(market_assumptions: MarketAssumptions, factor_id: str) ->
     return float(market_assumptions.volatility.get(bucket, _default_factor_volatility(factor_id)))
 
 
+def _factor_expected_return_bucket(factor_id: str) -> str:
+    factor = FIXED_FACTOR_DICTIONARY[factor_id]
+    asset_class = str(factor.asset_class).strip().lower()
+    region = str(factor.region).strip().upper()
+
+    if asset_class in {"equity", "stock"}:
+        if region == "US":
+            return "equity_us"
+        if region == "HK":
+            return "equity_hk"
+        return "equity_cn"
+    if asset_class in {"bond", "fixed_income", "rates"}:
+        return "bond_cn"
+    if asset_class in {"credit"}:
+        return "bond_cn"
+    if asset_class in {"commodity", "gold"}:
+        return "gold"
+    if asset_class in {"fx", "currency"}:
+        return "fx"
+    return "equity_cn"
+
+
+def _factor_expected_return_style_multiplier(factor_id: str) -> float:
+    style = str(FIXED_FACTOR_DICTIONARY[factor_id].style).strip().lower()
+    if style == "growth":
+        return 1.02
+    if style == "value":
+        return 0.98
+    if style == "broad":
+        return 1.0
+    return 1.0
+
+
+def _factor_expected_return_history_weight(sample_count: int, calibration_quality: str) -> float:
+    calibration_quality = str(calibration_quality).strip().lower()
+    if sample_count < 6:
+        return 0.0
+    if calibration_quality == "degraded":
+        return 0.0
+    if calibration_quality == "full":
+        base_weight = 0.65
+    elif calibration_quality == "partial":
+        base_weight = 0.45
+    else:
+        base_weight = 0.35
+    if sample_count < 12:
+        base_weight *= 0.90
+    elif sample_count < 24:
+        base_weight *= 0.95
+    return max(0.0, min(0.80, base_weight))
+
+
+def _clamp_expected_return(value: float) -> float:
+    # Keep factor drift bounded so extreme history or inputs cannot produce pathological annual drifts.
+    return float(max(min(float(value), 0.30), -0.30))
+
+
+def _factor_volatility_history_weight(sample_count: int, calibration_quality: str) -> float:
+    calibration_quality = str(calibration_quality).strip().lower()
+    if sample_count < 6:
+        return 0.0
+    if calibration_quality == "degraded":
+        return 0.0
+    if calibration_quality == "full":
+        base_weight = 0.70
+    elif calibration_quality == "partial":
+        base_weight = 0.50
+    else:
+        base_weight = 0.35
+    if sample_count < 12:
+        base_weight *= 0.90
+    elif sample_count < 24:
+        base_weight *= 0.95
+    return max(0.0, min(0.85, base_weight))
+
+
+def _build_factor_volatility_map(
+    *,
+    factor_names: list[str],
+    market_assumptions: MarketAssumptions,
+    historical_dataset: Any | None,
+    calibration_quality: str,
+) -> dict[str, float]:
+    factor_buckets = {factor_id: _factor_expected_return_bucket(factor_id) for factor_id in factor_names}
+    bucket_names = sorted(set(factor_buckets.values()))
+    observed_volatility: dict[str, float] = {}
+    sample_count = 0
+    if historical_dataset is not None:
+        aligned_series, sample_count = _aligned_historical_series(historical_dataset, bucket_names)
+        if aligned_series:
+            _, observed_volatility, _ = summarize_historical_dataset(historical_dataset, buckets=bucket_names)
+
+    history_weight = _factor_volatility_history_weight(sample_count, calibration_quality)
+    factor_volatility: dict[str, float] = {}
+    for factor_id, bucket in factor_buckets.items():
+        anchor_vol = _factor_volatility(market_assumptions, factor_id)
+        observed_vol = float(observed_volatility.get(bucket, anchor_vol) or anchor_vol)
+        blended_vol = anchor_vol + history_weight * (observed_vol - anchor_vol)
+        factor_volatility[factor_id] = float(max(blended_vol, 0.02))
+    return factor_volatility
+
+
+def _factor_expected_return_anchor_map(
+    factor_names: list[str],
+    market_expected_returns: dict[str, float],
+) -> dict[str, float]:
+    # Use raw market expected returns when they are explicitly provided in the bundle.
+    # This avoids reusing market_assumptions.expected_returns when those values were already
+    # derived from the same attached historical dataset.
+    anchors: dict[str, float] = {}
+    for factor_id in factor_names:
+        bucket = _factor_expected_return_bucket(factor_id)
+        anchors[factor_id] = float(
+            market_expected_returns.get(bucket, _default_expected_return(bucket))
+        )
+    return anchors
+
+
+def _build_factor_expected_return_map(
+    *,
+    factor_names: list[str],
+    market_expected_returns: dict[str, float],
+    historical_dataset: Any | None,
+    calibration_quality: str,
+) -> tuple[dict[str, float], str]:
+    factor_buckets = {factor_id: _factor_expected_return_bucket(factor_id) for factor_id in factor_names}
+    bucket_names = sorted(set(factor_buckets.values()))
+    historical_expected_returns: dict[str, float] = {}
+    sample_count = 0
+    if historical_dataset is not None:
+        aligned_series, sample_count = _aligned_historical_series(historical_dataset, bucket_names)
+        if aligned_series:
+            historical_expected_returns, _, _ = summarize_historical_dataset(historical_dataset, buckets=bucket_names)
+
+    history_weight = _factor_expected_return_history_weight(sample_count, calibration_quality)
+    if history_weight <= 0.0 or not historical_expected_returns:
+        basis = "market_anchor"
+        anchor_map = _factor_expected_return_anchor_map(factor_names, market_expected_returns)
+        return {
+            factor_id: _clamp_expected_return(anchor_map[factor_id] * _factor_expected_return_style_multiplier(factor_id))
+            for factor_id in factor_names
+        }, basis
+
+    basis = "observed_plus_market_shrinkage"
+    anchor_map = _factor_expected_return_anchor_map(factor_names, market_expected_returns)
+    expected_returns: dict[str, float] = {}
+    for factor_id, bucket in factor_buckets.items():
+        market_anchor = float(anchor_map[factor_id])
+        observed_return = float(historical_expected_returns.get(bucket, market_anchor))
+        blended_return = market_anchor + history_weight * (observed_return - market_anchor)
+        blended_return *= _factor_expected_return_style_multiplier(factor_id)
+        expected_returns[factor_id] = _clamp_expected_return(blended_return)
+    return expected_returns, basis
+
+
 def _factor_correlation(factor_a: str, factor_b: str) -> float:
     if factor_a == factor_b:
         return 1.0
@@ -346,6 +501,7 @@ def _build_factor_dynamics_spec(
     bundle_id: str,
     distribution_input: DistributionInput | None,
     market_assumptions: MarketAssumptions,
+    market_expected_returns: dict[str, float],
     historical_dataset: Any | None,
     created_at: Any,
     calibration_quality: str,
@@ -356,11 +512,17 @@ def _build_factor_dynamics_spec(
         historical_dataset=historical_dataset,
         distribution_input=distribution_input,
     )
+    factor_volatility = _build_factor_volatility_map(
+        factor_names=factor_names,
+        market_assumptions=market_assumptions,
+        historical_dataset=historical_dataset,
+        calibration_quality=calibration_quality,
+    )
 
     garch_params_by_factor: dict[str, dict[str, float]] = {}
     long_run_covariance: dict[str, dict[str, float]] = {}
     for factor in factor_names:
-        annualized_vol = _factor_volatility(market_assumptions, factor)
+        annualized_vol = float(factor_volatility.get(factor, _factor_volatility(market_assumptions, factor)))
         daily_variance = float(max((annualized_vol ** 2) / 252.0, 1e-6))
         garch_params_by_factor[factor] = {
             "omega": float(daily_variance * 0.06),
@@ -371,7 +533,7 @@ def _build_factor_dynamics_spec(
         }
         long_run_covariance[factor] = {}
         for peer in factor_names:
-            peer_vol = _factor_volatility(market_assumptions, peer)
+            peer_vol = float(factor_volatility.get(peer, _factor_volatility(market_assumptions, peer)))
             if factor == peer:
                 corr = 1.0
             else:
@@ -384,6 +546,13 @@ def _build_factor_dynamics_spec(
         covariance_shrinkage = 0.20
     else:
         covariance_shrinkage = 0.12
+
+    expected_return_by_factor, expected_return_basis = _build_factor_expected_return_map(
+        factor_names=factor_names,
+        market_expected_returns=market_expected_returns,
+        historical_dataset=historical_dataset,
+        calibration_quality=calibration_quality,
+    )
 
     return FactorDynamicsSpec(
         factor_names=factor_names,
@@ -398,15 +567,69 @@ def _build_factor_dynamics_spec(
         long_run_covariance=long_run_covariance,
         covariance_shrinkage=covariance_shrinkage,
         calibration_window_days=calibration_window_days,
+        expected_return_by_factor=expected_return_by_factor,
+        expected_return_basis=expected_return_basis,
     )
 
 
 def _build_regime_state_spec(
     *,
     market_state: MarketState,
+    factor_dynamics: FactorDynamicsSpec,
     calibration_quality: str,
     historical_dataset: Any | None,
 ) -> RegimeStateSpec:
+    def _normalized_regime_name(value: str) -> str:
+        label = str(value or "").strip().lower()
+        if label in {"normal", "expansion"}:
+            return "normal"
+        if label in {"risk_off", "drawdown"}:
+            return "risk_off"
+        return "stress"
+
+    def _empirical_transition_matrix(regimes: list[str]) -> list[list[float]]:
+        regime_names = ["normal", "risk_off", "stress"]
+        regime_index = {name: idx for idx, name in enumerate(regime_names)}
+        counts = np.ones((3, 3), dtype=float)
+        for current_regime, next_regime in zip(regimes, regimes[1:]):
+            counts[regime_index[current_regime], regime_index[next_regime]] += 1.0
+        row_sums = counts.sum(axis=1, keepdims=True)
+        return (counts / np.maximum(row_sums, 1e-12)).tolist()
+
+    def _empirical_mean_adjustments(
+        regimes: list[str],
+        portfolio_returns: list[float],
+    ) -> dict[str, dict[str, float]]:
+        regime_names = ["normal", "risk_off", "stress"]
+        annual_expected_returns = list(dict(factor_dynamics.expected_return_by_factor or {}).values())
+        base_daily_drift = (
+            max(sum(float(value) for value in annual_expected_returns) / len(annual_expected_returns), 0.0) / 252.0
+            if annual_expected_returns
+            else 0.08 / 252.0
+        )
+        grouped: dict[str, list[float]] = {name: [] for name in regime_names}
+        for regime_name, portfolio_return in zip(regimes, portfolio_returns, strict=True):
+            grouped[regime_name].append(float(portfolio_return))
+
+        adjustments: dict[str, dict[str, float]] = {}
+        fallback_by_regime = {
+            "normal": 0.0,
+            "risk_off": -max(base_daily_drift * 0.35, 0.00005),
+            "stress": -max(base_daily_drift * 0.70, 0.00010),
+        }
+        for regime_name in regime_names:
+            values = grouped.get(regime_name) or []
+            if values:
+                empirical_mean = sum(values) / len(values)
+                mean_shift = empirical_mean - base_daily_drift
+                floor = -max(base_daily_drift * 1.50, 0.00035)
+                ceiling = max(base_daily_drift * 0.50, 0.00015)
+                mean_shift = float(max(min(mean_shift, ceiling), floor))
+            else:
+                mean_shift = float(fallback_by_regime[regime_name])
+            adjustments[regime_name] = {"mean_shift": mean_shift}
+        return adjustments
+
     current_regime = _current_regime_name(market_state)
     transition_matrix = [
         [0.86, 0.11, 0.03],
@@ -419,18 +642,25 @@ def _build_regime_state_spec(
             [0.15, 0.68, 0.17],
             [0.06, 0.24, 0.70],
         ]
-    if historical_dataset is not None and len(_portfolio_return_series_from_dataset(historical_dataset)) >= 60:
-        transition_matrix[0] = [0.88, 0.09, 0.03]
+    regime_mean_adjustments = {
+        "normal": {"mean_shift": 0.0},
+        "risk_off": {"mean_shift": -0.0005},
+        "stress": {"mean_shift": -0.0012},
+    }
+    if historical_dataset is not None:
+        portfolio_returns = _portfolio_return_series_from_dataset(historical_dataset)
+        empirical_regimes = [_normalized_regime_name(value) for value in _derive_regime_series(historical_dataset)]
+        if len(portfolio_returns) >= 60 and len(empirical_regimes) == len(portfolio_returns):
+            transition_matrix = _empirical_transition_matrix(empirical_regimes)
+            regime_mean_adjustments = _empirical_mean_adjustments(empirical_regimes, portfolio_returns)
+        elif len(portfolio_returns) >= 60:
+            transition_matrix[0] = [0.88, 0.09, 0.03]
 
     return RegimeStateSpec(
         regime_names=["normal", "risk_off", "stress"],
         current_regime=current_regime,
         transition_matrix=transition_matrix,
-        regime_mean_adjustments={
-            "normal": {"mean_shift": 0.0},
-            "risk_off": {"mean_shift": -0.0005},
-            "stress": {"mean_shift": -0.0012},
-        },
+        regime_mean_adjustments=regime_mean_adjustments,
         regime_vol_adjustments={
             "normal": {"volatility_multiplier": 1.0},
             "risk_off": {"volatility_multiplier": 1.15},
@@ -465,12 +695,15 @@ def _build_jump_state_spec(
 ) -> JumpStateSpec:
     diagonal_covariances = [float(factor_dynamics.long_run_covariance.get(factor, {}).get(factor, 0.0)) for factor in factor_dynamics.factor_names]
     avg_factor_variance = sum(max(value, 0.0) for value in diagonal_covariances) / len(diagonal_covariances) if diagonal_covariances else 0.0004
-    systemic_jump_probability_1d = 0.012
+    systemic_jump_probability_1d = 0.0005
     if historical_dataset is not None:
         portfolio_returns = _portfolio_return_series_from_dataset(historical_dataset)
-        tail_hits = [abs(value) for value in portfolio_returns if value < -0.02]
+        tail_hits = [abs(value) for value in portfolio_returns if value < -0.03]
         if portfolio_returns:
-            systemic_jump_probability_1d = min(max(systemic_jump_probability_1d, len(tail_hits) / len(portfolio_returns) * 0.5 + 0.008), 0.08)
+            systemic_jump_probability_1d = min(
+                max(systemic_jump_probability_1d, len(tail_hits) / len(portfolio_returns) * 0.20 + 0.0005),
+                0.012,
+            )
     systemic_jump_dispersion = float(max(0.01, min(0.08, 0.5 * np.sqrt(max(avg_factor_variance, 1e-8)))))
     systemic_jump_impact_by_factor = {
         factor: float(-0.35 * np.sqrt(max(factor_dynamics.long_run_covariance.get(factor, {}).get(factor, 0.0), 1e-8)))
@@ -506,16 +739,19 @@ def _build_probability_engine_state_artifacts(
 ) -> tuple[FactorDynamicsSpec, RegimeStateSpec, JumpStateSpec]:
     _ = prior_calibration
     bundle_factor_dynamics, bundle_regime_state, bundle_jump_state = _bundle_v14_state_artifacts(bundle_data)
+    market_expected_returns = dict(_obj(bundle_data.get("market", {})).get("expected_returns", {}) or {})
     factor_dynamics = bundle_factor_dynamics or _build_factor_dynamics_spec(
         bundle_id=str(bundle_data.get("bundle_id", "")),
         distribution_input=distribution_input,
         market_assumptions=market_assumptions,
+        market_expected_returns=market_expected_returns,
         historical_dataset=historical_dataset,
         created_at=created_at,
         calibration_quality=calibration_quality,
     )
     regime_state = bundle_regime_state or _build_regime_state_spec(
         market_state=market_state,
+        factor_dynamics=factor_dynamics,
         calibration_quality=calibration_quality,
         historical_dataset=historical_dataset,
     )

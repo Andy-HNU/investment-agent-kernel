@@ -175,7 +175,7 @@ def test_bridge_preserves_probability_explanation_payload(tmp_path, monkeypatch)
     assert probability_payload["gap_total"] is not None
 
 
-def test_bridge_surfaces_bounded_disagreement_for_helper_formal_snapshot(tmp_path, monkeypatch):
+def test_bridge_surfaces_low_confidence_when_helper_formal_snapshot_disagrees_with_live_models(tmp_path, monkeypatch):
     from integration.openclaw.bridge import handle_task
     from shared.onboarding import UserOnboardingProfile
     from tests.support.formal_snapshot_helpers import write_formal_snapshot_source
@@ -216,9 +216,12 @@ def test_bridge_surfaces_bounded_disagreement_for_helper_formal_snapshot(tmp_pat
     assert probability_result["resolved_result_category"] == "formal_strict_result"
     assert probability_output["challenger_results"], "expected live challenger_results to be populated"
     assert probability_output["stress_results"], "expected live stress_results to be populated"
-    assert disagreement["gap_total"] < 0.05
-    assert disclosure_payload["gap_total"] < 0.05
-    assert disclosure_payload["confidence_level"] in {"medium", "high"}
+    # The helper snapshot is deliberately synthetic: once live primary/challenger/stress
+    # all run against it, the bridge should surface the disagreement rather than hide it.
+    assert disagreement["gap_total"] is not None
+    assert disagreement["gap_total"] >= 0.05
+    assert disclosure_payload["gap_total"] == disagreement["gap_total"]
+    assert disclosure_payload["confidence_level"] == "low"
 
 
 def test_bridge_surfaces_live_probability_disclosure_gap_fields(tmp_path, monkeypatch):

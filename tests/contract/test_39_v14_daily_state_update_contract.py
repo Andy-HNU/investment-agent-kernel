@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from datetime import datetime, timezone
 import json
@@ -19,7 +20,7 @@ from probability_engine.jumps import (
 )
 from probability_engine.recipes import SimulationRecipe
 from probability_engine.regime import load_regime_state_snapshot, sample_next_regime
-from probability_engine.volatility import update_garch_state
+from probability_engine.volatility import FactorDynamicsSpec, update_garch_state
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "v14"
@@ -61,6 +62,141 @@ def test_dcc_update_returns_next_correlation_only_for_next_step() -> None:
     assert next_state.q_matrix[1][1] == pytest.approx(expected_q_next[1][1])
     assert provider.current_correlation(next_state)[0][1] != pytest.approx(before_update[0][1])
     assert provider.current_correlation(state)[0][1] == pytest.approx(before_update[0][1])
+
+
+@pytest.mark.contract
+def test_factor_dynamics_expected_return_fields_round_trip() -> None:
+    spec = FactorDynamicsSpec(
+        factor_names=["CN_EQ_BROAD"],
+        factor_series_ref="observed://factor",
+        innovation_family="student_t",
+        tail_df=7.0,
+        garch_params_by_factor={
+            "CN_EQ_BROAD": {
+                "omega": 1e-6,
+                "alpha": 0.07,
+                "beta": 0.90,
+                "nu": 7.0,
+                "long_run_variance": 1e-4,
+            }
+        },
+        dcc_params={"alpha": 0.04, "beta": 0.93},
+        long_run_covariance={"CN_EQ_BROAD": {"CN_EQ_BROAD": 1e-4}},
+        covariance_shrinkage=0.25,
+        calibration_window_days=252,
+        expected_return_by_factor={"CN_EQ_BROAD": 0.08},
+        expected_return_basis="market_assumption_fallback",
+    )
+
+    rehydrated = FactorDynamicsSpec.from_any(spec.to_dict())
+
+    assert rehydrated is not None
+    assert rehydrated.expected_return_by_factor["CN_EQ_BROAD"] == pytest.approx(0.08)
+    assert rehydrated.expected_return_basis == "market_assumption_fallback"
+
+
+@pytest.mark.contract
+def test_factor_dynamics_expected_return_basis_required_when_expected_return_map_non_empty() -> None:
+    with pytest.raises(ValueError, match="expected_return_basis is required"):
+        FactorDynamicsSpec(
+            factor_names=["CN_EQ_BROAD"],
+            factor_series_ref="observed://factor",
+            innovation_family="student_t",
+            tail_df=7.0,
+            garch_params_by_factor={
+                "CN_EQ_BROAD": {
+                    "omega": 1e-6,
+                    "alpha": 0.07,
+                    "beta": 0.90,
+                    "nu": 7.0,
+                    "long_run_variance": 1e-4,
+                }
+            },
+            dcc_params={"alpha": 0.04, "beta": 0.93},
+            long_run_covariance={"CN_EQ_BROAD": {"CN_EQ_BROAD": 1e-4}},
+            covariance_shrinkage=0.25,
+            calibration_window_days=252,
+            expected_return_by_factor={"CN_EQ_BROAD": 0.08},
+            expected_return_basis="",
+        )
+
+
+@pytest.mark.contract
+def test_factor_dynamics_expected_return_basis_rejects_null() -> None:
+    with pytest.raises(ValueError, match="expected_return_basis must not be null"):
+        FactorDynamicsSpec(
+            factor_names=["CN_EQ_BROAD"],
+            factor_series_ref="observed://factor",
+            innovation_family="student_t",
+            tail_df=7.0,
+            garch_params_by_factor={
+                "CN_EQ_BROAD": {
+                    "omega": 1e-6,
+                    "alpha": 0.07,
+                    "beta": 0.90,
+                    "nu": 7.0,
+                    "long_run_variance": 1e-4,
+                }
+            },
+            dcc_params={"alpha": 0.04, "beta": 0.93},
+            long_run_covariance={"CN_EQ_BROAD": {"CN_EQ_BROAD": 1e-4}},
+            covariance_shrinkage=0.25,
+            calibration_window_days=252,
+            expected_return_by_factor={"CN_EQ_BROAD": 0.08},
+            expected_return_basis=None,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.contract
+def test_factor_dynamics_expected_return_legacy_path_remains_valid() -> None:
+    spec = FactorDynamicsSpec(
+        factor_names=["CN_EQ_BROAD"],
+        factor_series_ref="observed://factor",
+        innovation_family="student_t",
+        tail_df=7.0,
+        garch_params_by_factor={
+            "CN_EQ_BROAD": {
+                "omega": 1e-6,
+                "alpha": 0.07,
+                "beta": 0.90,
+                "nu": 7.0,
+                "long_run_variance": 1e-4,
+            }
+        },
+        dcc_params={"alpha": 0.04, "beta": 0.93},
+        long_run_covariance={"CN_EQ_BROAD": {"CN_EQ_BROAD": 1e-4}},
+        covariance_shrinkage=0.25,
+        calibration_window_days=252,
+    )
+
+    assert spec.expected_return_by_factor == {}
+    assert spec.expected_return_basis == ""
+
+
+@pytest.mark.contract
+def test_factor_dynamics_expected_return_keys_must_match_factor_names() -> None:
+    with pytest.raises(ValueError, match="subset of factor_names"):
+        FactorDynamicsSpec(
+            factor_names=["CN_EQ_BROAD"],
+            factor_series_ref="observed://factor",
+            innovation_family="student_t",
+            tail_df=7.0,
+            garch_params_by_factor={
+                "CN_EQ_BROAD": {
+                    "omega": 1e-6,
+                    "alpha": 0.07,
+                    "beta": 0.90,
+                    "nu": 7.0,
+                    "long_run_variance": 1e-4,
+                }
+            },
+            dcc_params={"alpha": 0.04, "beta": 0.93},
+            long_run_covariance={"CN_EQ_BROAD": {"CN_EQ_BROAD": 1e-4}},
+            covariance_shrinkage=0.25,
+            calibration_window_days=252,
+            expected_return_by_factor={"NOT_A_FACTOR": 0.08},
+            expected_return_basis="market_assumption_fallback",
+        )
 
 
 @pytest.mark.contract
@@ -148,9 +284,137 @@ def test_run_calibration_exposes_typed_v14_state_artifacts() -> None:
     assert tuple(result.factor_dynamics.factor_names) == tuple(FIXED_FACTOR_DICTIONARY.keys())
     assert result.regime_state.current_regime in {"normal", "risk_off", "stress"}
     assert result.jump_state.systemic_jump_probability_1d > 0.0
+    assert result.jump_state.systemic_jump_probability_1d < 0.005
     assert isinstance(result.jump_state.idio_jump_profile_by_product, dict)
     assert all(str(key).strip() for key in result.jump_state.idio_jump_profile_by_product)
     assert set(result.jump_state.idio_jump_profile_by_product).isdisjoint(FIXED_FACTOR_DICTIONARY)
+
+
+@pytest.mark.contract
+def test_factor_drift_emits_expected_returns_from_benign_history() -> None:
+    result = run_calibration(
+        {
+            "bundle_id": "bundle_v14_benign_history",
+            "created_at": datetime(2026, 4, 10, tzinfo=timezone.utc),
+            "account_profile_id": "acct_v14",
+            "bundle_quality": "full",
+            "market": {
+                "expected_returns": {
+                    "equity_cn": 0.18,
+                    "equity_us": 0.16,
+                    "bond_cn": 0.04,
+                    "gold": 0.12,
+                    "fx": 0.10,
+                },
+                "raw_volatility": {"equity_cn": 0.18, "equity_us": 0.16, "bond_cn": 0.04, "gold": 0.12, "fx": 0.10},
+                "liquidity_scores": {"equity_cn": 0.9, "equity_us": 0.9, "bond_cn": 0.9, "gold": 0.9, "fx": 0.9},
+                "valuation_z_scores": {"equity_cn": 0.2, "equity_us": 0.1, "bond_cn": 0.0, "gold": -0.1, "fx": 0.0},
+                "historical_dataset": {
+                    "dataset_id": "benign_history",
+                    "version_id": "benign_history_v1",
+                    "as_of": "2026-04-10T00:00:00Z",
+                    "source_name": "benign_history",
+                    "source_ref": "historical://benign_history",
+                    "lookback_months": 12,
+                    "frequency": "monthly",
+                    "coverage_status": "verified",
+                    "return_series": {
+                        "equity_cn": [0.01] * 24,
+                        "equity_us": [0.008] * 24,
+                        "bond_cn": [0.002] * 24,
+                        "gold": [0.001] * 24,
+                        "fx": [0.0005] * 24,
+                    },
+                    "audit_window": {
+                        "start_date": "2025-10-01",
+                        "end_date": "2026-04-10",
+                        "trading_days": 504,
+                        "observed_days": 504,
+                        "inferred_days": 0,
+                    },
+                },
+            },
+            "account": {
+                "weights": {"equity_cn": 0.5, "equity_us": 0.5},
+                "total_value": 100000.0,
+                "available_cash": 5000.0,
+                "remaining_horizon_months": 12,
+            },
+            "goal": {
+                "goal_amount": 120000.0,
+                "horizon_months": 12,
+                "goal_description": "v14 benign history contract",
+                "success_prob_threshold": 0.6,
+            },
+            "constraint": {
+                "ips_bucket_boundaries": {"equity_cn": (0.0, 1.0), "equity_us": (0.0, 1.0)},
+                "satellite_cap": 0.15,
+                "theme_caps": {},
+                "qdii_cap": 0.2,
+                "liquidity_reserve_min": 0.05,
+                "max_drawdown_tolerance": 0.2,
+                "bucket_category": {"equity_cn": "core", "equity_us": "core"},
+                "bucket_to_theme": {"equity_cn": None, "equity_us": None},
+            },
+            "behavior": None,
+            "remaining_horizon_months": 12,
+        },
+        prior_calibration=None,
+    )
+
+    assert result.factor_dynamics is not None
+    assert result.factor_dynamics.expected_return_basis == "observed_plus_market_shrinkage"
+    assert result.factor_dynamics.expected_return_by_factor["CN_EQ_BROAD"] == pytest.approx(0.153)
+    assert result.factor_dynamics.expected_return_by_factor["CN_EQ_BROAD"] != pytest.approx(0.18)
+    assert result.factor_dynamics.expected_return_by_factor["CN_EQ_BROAD"] != pytest.approx(0.12)
+    assert result.factor_dynamics.expected_return_by_factor["US_EQ_BROAD"] == pytest.approx(0.1312)
+    assert set(result.factor_dynamics.expected_return_by_factor) == set(FIXED_FACTOR_DICTIONARY)
+
+
+@pytest.mark.contract
+def test_factor_drift_uses_market_anchor_without_history_and_clamps_expected_returns() -> None:
+    result = run_calibration(
+        {
+            "bundle_id": "bundle_v14_no_history",
+            "created_at": datetime(2026, 4, 11, tzinfo=timezone.utc),
+            "account_profile_id": "acct_v14",
+            "bundle_quality": "full",
+            "market": {
+                "expected_returns": {"equity_cn": 9.0},
+                "raw_volatility": {"equity_cn": 0.18},
+                "liquidity_scores": {"equity_cn": 0.9},
+                "valuation_z_scores": {"equity_cn": 0.2},
+            },
+            "account": {
+                "weights": {"equity_cn": 1.0},
+                "total_value": 100000.0,
+                "available_cash": 5000.0,
+                "remaining_horizon_months": 12,
+            },
+            "goal": {
+                "goal_amount": 120000.0,
+                "horizon_months": 12,
+                "goal_description": "v14 zero history contract",
+                "success_prob_threshold": 0.6,
+            },
+            "constraint": {
+                "ips_bucket_boundaries": {"equity_cn": (0.0, 1.0)},
+                "satellite_cap": 0.15,
+                "theme_caps": {},
+                "qdii_cap": 0.2,
+                "liquidity_reserve_min": 0.05,
+                "max_drawdown_tolerance": 0.2,
+                "bucket_category": {"equity_cn": "core"},
+                "bucket_to_theme": {"equity_cn": None},
+            },
+            "behavior": None,
+            "remaining_horizon_months": 12,
+        },
+        prior_calibration=None,
+    )
+
+    assert result.factor_dynamics.expected_return_basis == "market_anchor"
+    assert result.factor_dynamics.expected_return_by_factor["CN_EQ_BROAD"] == pytest.approx(0.30)
 
 
 @pytest.mark.contract
@@ -272,6 +536,242 @@ def test_primary_path_does_not_regime_adjust_fallback_product_jump_profiles() ->
 
 
 @pytest.mark.contract
+def test_primary_path_annual_return_excludes_external_contributions() -> None:
+    runtime_input = DailyEngineRuntimeInput.from_any(
+        {
+            "as_of": "2026-04-10",
+            "path_horizon_days": 2,
+            "trading_calendar": ["2026-04-13", "2026-04-14"],
+            "products": [
+                {
+                    "product_id": "steady_product",
+                    "asset_bucket": "cash_liquidity",
+                    "factor_betas": {"CN_EQ_BROAD": 0.0},
+                    "innovation_family": "gaussian",
+                    "tail_df": None,
+                    "volatility_process": "garch_t",
+                    "garch_params": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "long_run_variance": 0.0},
+                    "idiosyncratic_jump_profile": {"probability_1d": 0.0, "loss_mean": 0.0, "loss_std": 0.0},
+                    "carry_profile": {},
+                    "valuation_profile": {},
+                    "mapping_confidence": "high",
+                    "factor_mapping_source": "prior",
+                    "factor_mapping_evidence": [],
+                    "observed_series_ref": "obs://steady_product",
+                }
+            ],
+            "factor_dynamics": {
+                "factor_names": ["CN_EQ_BROAD"],
+                "factor_series_ref": "factor://cn_eq_broad",
+                "innovation_family": "gaussian",
+                "tail_df": None,
+                "garch_params_by_factor": {
+                    "CN_EQ_BROAD": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "long_run_variance": 0.0}
+                },
+                "dcc_params": {"alpha": 0.04, "beta": 0.93},
+                "long_run_covariance": {"CN_EQ_BROAD": {"CN_EQ_BROAD": 1.0}},
+                "covariance_shrinkage": 0.2,
+                "calibration_window_days": 252,
+            },
+            "regime_state": {
+                "regime_names": ["normal"],
+                "current_regime": "normal",
+                "transition_matrix": [[1.0]],
+                "regime_mean_adjustments": {"normal": {}},
+                "regime_vol_adjustments": {"normal": {}},
+                "regime_jump_adjustments": {"normal": {}},
+            },
+            "jump_state": {
+                "systemic_jump_probability_1d": 0.0,
+                "systemic_jump_impact_by_factor": {"CN_EQ_BROAD": 0.0},
+                "systemic_jump_dispersion": 1e-12,
+                "idio_jump_profile_by_product": {},
+            },
+            "current_positions": [
+                {
+                    "product_id": "steady_product",
+                    "units": 0.0,
+                    "market_value": 100.0,
+                    "weight": 1.0,
+                    "cost_basis": None,
+                    "tradable": True,
+                }
+            ],
+            "contribution_schedule": [
+                {
+                    "date": "2026-04-13",
+                    "amount": 50.0,
+                    "allocation_mode": "target_weights",
+                    "target_weights": {"steady_product": 1.0},
+                }
+            ],
+            "withdrawal_schedule": [],
+            "rebalancing_policy": {
+                "policy_type": "none",
+                "calendar_frequency": None,
+                "threshold_band": None,
+                "execution_timing": "end_of_day_after_return",
+                "transaction_cost_bps": 0.0,
+                "min_trade_amount": None,
+            },
+            "success_event_spec": {
+                "horizon_days": 2,
+                "horizon_months": 1,
+                "target_type": "goal_amount",
+                "target_value": 150.0,
+                "drawdown_constraint": 1.0,
+                "benchmark_ref": None,
+                "contribution_policy": "fixed",
+                "withdrawal_policy": "none",
+                "rebalancing_policy_ref": "none",
+                "return_basis": "nominal",
+                "fee_basis": "net",
+                "success_logic": "joint_target_and_drawdown",
+            },
+            "recipes": [],
+            "evidence_bundle_ref": "evidence://contribution_neutral_return",
+            "random_seed": 11,
+        }
+    )
+    recipe = SimulationRecipe(
+        recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+        role="primary",
+        innovation_layer="gaussian",
+        volatility_layer="factor_and_product_garch",
+        dependency_layer="factor_level_dcc",
+        jump_layer="systemic_plus_idio",
+        regime_layer="markov_regime",
+        estimation_basis="daily_product_formal",
+        dependency_scope="factor",
+        path_count=1,
+    )
+
+    result = simulate_primary_paths(runtime_input, recipe)
+
+    assert result.path_stats.terminal_value_mean == pytest.approx(150.0, abs=1e-3)
+    assert result.path_stats.cagr_p50 == pytest.approx(0.0, abs=1e-3)
+    assert result.cagr_range == pytest.approx((0.0, 0.0), abs=1e-3)
+
+
+@pytest.mark.contract
+def test_primary_positive_drift_lifts_terminal_value_without_shocks() -> None:
+    positive_payload = {
+        "as_of": "2026-04-10",
+        "path_horizon_days": 1,
+        "trading_calendar": ["2026-04-13"],
+        "products": [
+            {
+                "product_id": "drift_sensitive_product",
+                "asset_bucket": "equity_cn",
+                "factor_betas": {"CN_EQ_BROAD": 1.0},
+                "innovation_family": "gaussian",
+                "tail_df": None,
+                "volatility_process": "garch_t",
+                "garch_params": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "long_run_variance": 0.0},
+                "idiosyncratic_jump_profile": {"probability_1d": 0.0, "loss_mean": 0.0, "loss_std": 0.0},
+                "carry_profile": {},
+                "valuation_profile": {},
+                "mapping_confidence": "high",
+                "factor_mapping_source": "prior",
+                "factor_mapping_evidence": [],
+                "observed_series_ref": "obs://drift_sensitive_product",
+            }
+        ],
+        "factor_dynamics": {
+            "factor_names": ["CN_EQ_BROAD"],
+            "factor_series_ref": "factor://cn_eq_broad",
+            "innovation_family": "gaussian",
+            "tail_df": None,
+            "garch_params_by_factor": {
+                "CN_EQ_BROAD": {"omega": 0.0, "alpha": 0.0, "beta": 0.0, "long_run_variance": 0.0}
+            },
+            "dcc_params": {"alpha": 0.04, "beta": 0.93},
+            "long_run_covariance": {"CN_EQ_BROAD": {"CN_EQ_BROAD": 0.0}},
+            "covariance_shrinkage": 0.2,
+            "calibration_window_days": 252,
+            "expected_return_by_factor": {"CN_EQ_BROAD": 0.10},
+            "expected_return_basis": "market_anchor",
+        },
+        "regime_state": {
+            "regime_names": ["normal"],
+            "current_regime": "normal",
+            "transition_matrix": [[1.0]],
+            "regime_mean_adjustments": {"normal": {}},
+            "regime_vol_adjustments": {"normal": {}},
+            "regime_jump_adjustments": {"normal": {}},
+        },
+        "jump_state": {
+            "systemic_jump_probability_1d": 0.0,
+            "systemic_jump_impact_by_factor": {"CN_EQ_BROAD": 0.0},
+            "systemic_jump_dispersion": 1e-12,
+            "idio_jump_profile_by_product": {},
+        },
+        "current_positions": [
+            {
+                "product_id": "drift_sensitive_product",
+                "units": 0.0,
+                "market_value": 100.0,
+                "weight": 1.0,
+                "cost_basis": None,
+                "tradable": True,
+            }
+        ],
+        "contribution_schedule": [],
+        "withdrawal_schedule": [],
+        "rebalancing_policy": {
+            "policy_type": "none",
+            "calendar_frequency": None,
+            "threshold_band": None,
+            "execution_timing": "end_of_day_after_return",
+            "transaction_cost_bps": 0.0,
+            "min_trade_amount": None,
+        },
+        "success_event_spec": {
+            "horizon_days": 1,
+            "horizon_months": 1,
+            "target_type": "goal_amount",
+            "target_value": 100.0,
+            "drawdown_constraint": 1.0,
+            "benchmark_ref": None,
+            "contribution_policy": "none",
+            "withdrawal_policy": "none",
+            "rebalancing_policy_ref": "none",
+            "return_basis": "nominal",
+            "fee_basis": "net",
+            "success_logic": "joint_target_and_drawdown",
+        },
+        "recipes": [],
+        "evidence_bundle_ref": "evidence://primary_positive_drift",
+        "random_seed": 7,
+    }
+    zero_payload = deepcopy(positive_payload)
+    zero_payload["factor_dynamics"]["expected_return_by_factor"]["CN_EQ_BROAD"] = 0.0
+
+    positive_runtime_input = DailyEngineRuntimeInput.from_any(positive_payload)
+    zero_runtime_input = DailyEngineRuntimeInput.from_any(zero_payload)
+    recipe = SimulationRecipe(
+        recipe_name="primary_daily_factor_garch_dcc_jump_regime_v1",
+        role="primary",
+        innovation_layer="gaussian",
+        volatility_layer="factor_and_product_garch",
+        dependency_layer="factor_level_dcc",
+        jump_layer="systemic_plus_idio",
+        regime_layer="markov_regime",
+        estimation_basis="daily_product_formal",
+        dependency_scope="factor",
+        path_count=3,
+    )
+
+    positive_result = simulate_primary_paths(positive_runtime_input, recipe)
+    zero_result = simulate_primary_paths(zero_runtime_input, recipe)
+
+    assert positive_result.path_stats.path_count == 3
+    assert positive_result.path_stats.terminal_value_mean > zero_result.path_stats.terminal_value_mean
+    assert positive_result.path_stats.terminal_value_mean > 100.0
+    assert positive_result.path_stats.terminal_value_p50 == pytest.approx(positive_result.path_stats.terminal_value_mean, abs=1e-3)
+
+
+@pytest.mark.contract
 def test_run_calibration_prefers_explicit_bundle_v14_artifacts_over_prior_calibration() -> None:
     result = run_calibration(
         {
@@ -389,7 +889,7 @@ def test_run_calibration_prefers_explicit_bundle_v14_artifacts_over_prior_calibr
 def test_run_calibration_uses_zero_calibration_window_days_without_history() -> None:
     result = run_calibration(
         {
-            "bundle_id": "bundle_v14_no_history",
+            "bundle_id": "bundle_v14_no_history_window",
             "created_at": datetime(2026, 4, 11, tzinfo=timezone.utc),
             "account_profile_id": "acct_v14",
             "bundle_quality": "full",

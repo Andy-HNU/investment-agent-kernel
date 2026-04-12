@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any
 
 
@@ -31,6 +31,8 @@ class FactorDynamicsSpec:
     long_run_covariance: dict[str, dict[str, float]]
     covariance_shrinkage: float
     calibration_window_days: int
+    expected_return_by_factor: dict[str, float] = field(default_factory=dict)
+    expected_return_basis: str = ""
 
     def __post_init__(self) -> None:
         self.factor_names = [str(item).strip() for item in list(self.factor_names or []) if str(item).strip()]
@@ -62,6 +64,18 @@ class FactorDynamicsSpec:
         self.calibration_window_days = int(self.calibration_window_days)
         if self.calibration_window_days < 0:
             raise ValueError("calibration_window_days must be >= 0")
+        self.expected_return_by_factor = {
+            str(factor): float(value)
+            for factor, value in dict(self.expected_return_by_factor or {}).items()
+        }
+        invalid_expected_return_factors = sorted(set(self.expected_return_by_factor) - set(self.factor_names))
+        if invalid_expected_return_factors:
+            raise ValueError("expected_return_by_factor keys must be a subset of factor_names")
+        if self.expected_return_basis is None:
+            raise ValueError("expected_return_basis must not be null")
+        self.expected_return_basis = str(self.expected_return_basis).strip()
+        if self.expected_return_by_factor and not self.expected_return_basis:
+            raise ValueError("expected_return_basis is required when expected_return_by_factor is provided")
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))
