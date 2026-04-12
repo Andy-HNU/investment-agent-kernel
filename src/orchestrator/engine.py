@@ -22,6 +22,7 @@ from goal_solver.types import (
 )
 from probability_engine.engine import run_probability_engine
 from product_mapping import build_candidate_product_context, build_execution_plan, load_builtin_catalog
+from product_mapping.engine import _build_product_simulation_input
 from product_mapping.types import ExecutionPlan, ExecutionPlanItem, ProductCandidate
 from product_mapping.runtime_inputs import enrich_market_raw_with_runtime_product_inputs
 from runtime_optimizer.engine import run_runtime_optimizer
@@ -3308,12 +3309,17 @@ def _user_portfolio_requested_structure(user_portfolio: Any) -> dict[str, Any]:
     }
 
 
-def _user_portfolio_catalog() -> dict[str, ProductCandidate]:
-    return {
+def _user_portfolio_catalog(envelope: dict[str, Any] | None = None) -> dict[str, ProductCandidate]:
+    catalog = {
         str(candidate.product_id): candidate
         for candidate in load_builtin_catalog()
         if str(candidate.product_id).strip()
     }
+    runtime_candidates = _extract_execution_plan_runtime_candidates(envelope or {}) or []
+    for candidate in runtime_candidates:
+        if str(candidate.product_id).strip():
+            catalog[str(candidate.product_id)] = candidate
+    return catalog
 
 
 def _placeholder_user_portfolio_candidate(
@@ -3351,13 +3357,14 @@ def _build_execution_plan_from_user_portfolio(
     source_run_id: str,
     source_allocation_id: str,
     user_portfolio: Any,
+    candidate_catalog: dict[str, ProductCandidate] | None = None,
     account_total_value: float | None = None,
     current_weights: dict[str, float] | None = None,
     formal_path_required: bool = False,
     execution_policy: ExecutionPolicy | str | None = None,
 ) -> ExecutionPlan:
     entries = _user_portfolio_entries(user_portfolio)
-    catalog = _user_portfolio_catalog()
+    catalog = dict(candidate_catalog or _user_portfolio_catalog())
     current_weights = dict(current_weights or {})
     items: list[ExecutionPlanItem] = []
     unknown_items: list[dict[str, Any]] = []
@@ -3414,7 +3421,7 @@ def _build_execution_plan_from_user_portfolio(
             product_state = "recognized"
             resolution_state = "resolved_formal_ready"
             primary_product = catalog[resolved_product_id]
-            alternate_product_ids = [selected_proxy] if selected_proxy else []
+            alternate_product_ids = [product_id] if product_id != primary_product.product_id else []
         else:
             product_state = "unrecognized_product"
             resolution_state = "unrecognized_requires_user_action"
@@ -3426,11 +3433,12 @@ def _build_execution_plan_from_user_portfolio(
             alternate_product_ids = []
         state_seen.append(resolution_state)
         strict_formal_blocked = strict_formal_blocked or resolution_state == "unrecognized_requires_user_action"
+        resolved_primary_product_id = primary_product.product_id
         item = ExecutionPlanItem(
             asset_bucket=str(raw_item.get("asset_bucket") or primary_product.asset_bucket),
             target_weight=0.0 if requested_weight is None else round(float(requested_weight), 4),
-            current_weight=current_weights.get(product_id),
-            current_amount=None if account_total_value is None or current_weights.get(product_id) is None else round(float(account_total_value) * float(current_weights.get(product_id) or 0.0), 2),
+            current_weight=current_weights.get(resolved_primary_product_id),
+            current_amount=None if account_total_value is None or current_weights.get(resolved_primary_product_id) is None else round(float(account_total_value) * float(current_weights.get(resolved_primary_product_id) or 0.0), 2),
             target_amount=None if account_total_value is None or requested_weight is None else round(float(account_total_value) * float(requested_weight), 2),
             trade_direction=None,
             trade_amount=None,
@@ -3440,8 +3448,8 @@ def _build_execution_plan_from_user_portfolio(
             estimated_slippage=None,
             violates_minimum_trade=False,
             trigger_conditions=[],
-            primary_product_id=product_id,
-            alternate_product_ids=[str(item) for item in alternate_product_ids if str(item).strip() and str(item) != product_id],
+            primary_product_id=resolved_primary_product_id,
+            alternate_product_ids=[str(item) for item in alternate_product_ids if str(item).strip() and str(item) != resolved_primary_product_id],
             rationale=[
                 "用户显式输入的组合结构保持原样评估。",
                 "该执行项未经过系统推荐结构重写。",
@@ -3579,22 +3587,140 @@ def _build_user_portfolio_goal_solver_output(
     }
 
 
+def _build_user_portfolio_probability_engine_evaluation(
+    *,
+    run_id: str,
+    envelope: dict[str, Any],
+    calibration_result: Any,
+    execution_plan: ExecutionPlan,
+    formal_path_required: bool,
+    execution_policy: ExecutionPolicy,
+) -> tuple[dict[str, Any] | None, Any | None]:
+    historical_dataset = _extract_market_historical_dataset(envelope, None)
+    if historical_dataset is None:
+        historical_dataset = _extract_market_historical_dataset(envelope, _as_dict(envelope.get("snapshot_bundle")))
+    history_window = AuditWindow.from_any(_as_dict(historical_dataset).get("audit_window"))
+    product_simulation_input = _build_product_simulation_input(
+        execution_plan.items,
+        historical_dataset=historical_dataset,
+        history_window=history_window,
+        formal_path_required=formal_path_required,
+        execution_policy=execution_policy,
+    )
+    if product_simulation_input is None:
+        return None, None
+
+    goal_solver_input = _as_dict(envelope.get("goal_solver_input"))
+    execution_allocation_name = _first_text(
+        _as_dict(goal_solver_input).get("allocation_name"),
+        execution_plan.source_allocation_id,
+        "user_portfolio",
+    ) or "user_portfolio"
+    weights = {
+        str(item.primary_product_id): float(item.target_weight or 0.0)
+        for item in execution_plan.items
+        if str(item.primary_product_id).strip()
+    }
+    if not weights:
+        return None, None
+
+    goal = _as_dict(goal_solver_input.get("goal"))
+    constraints = _as_dict(goal_solver_input.get("constraints"))
+    cashflow_plan = _as_dict(goal_solver_input.get("cashflow_plan"))
+    solver_params = _as_dict(goal_solver_input.get("solver_params"))
+    candidate_product_contexts = {
+        execution_allocation_name: {
+            "product_simulation_input": product_simulation_input,
+        }
+    }
+    synthetic_goal_solver_input = {
+        "goal": goal,
+        "constraints": constraints,
+        "cashflow_plan": cashflow_plan,
+        "solver_params": solver_params,
+        "candidate_product_contexts": candidate_product_contexts,
+    }
+    target_value = float(goal.get("goal_amount") or _as_dict(goal_solver_input.get("current_portfolio_value")) or 0.0)
+    synthetic_goal_solver_output = {
+        "recommended_allocation_name": execution_allocation_name,
+        "recommended_allocation": {
+            "name": execution_allocation_name,
+            "weights": weights,
+        },
+        "recommended_result": {
+            "allocation_name": execution_allocation_name,
+            "target_value": target_value,
+            "success_probability": None,
+            "expected_terminal_value": None,
+            "expected_annual_return": None,
+            "risk_summary": {},
+        },
+        "all_results": [
+            {
+                "allocation_name": execution_allocation_name,
+                "implied_required_annual_return": None,
+                "target_value": target_value,
+            }
+        ],
+        "frontier_analysis": {
+            "recommended": {
+                "allocation_name": execution_allocation_name,
+                "weights": weights,
+                "implied_required_annual_return": None,
+            }
+        },
+    }
+    probability_engine_input, _ = _build_probability_engine_run_input(
+        run_id=run_id,
+        envelope=envelope,
+        calibration_result=calibration_result,
+        goal_solver_input=synthetic_goal_solver_input,
+        goal_solver_output=synthetic_goal_solver_output,
+        allocation_name=execution_allocation_name,
+    )
+    if probability_engine_input is None:
+        return None, {
+            "run_outcome_status": "degraded",
+            "resolved_result_category": "formal_estimated_result",
+            "output": {
+                "probability_disclosure_payload": {
+                    "disclosure_level": "diagnostic_only",
+                    "confidence_level": "low",
+                },
+                "primary_result": {
+                    "success_probability": None,
+                    "path_stats": {},
+                },
+            },
+            "failure_artifact": _as_dict(product_simulation_input.get("failure_artifact")),
+        }
+    try:
+        return probability_engine_input, run_probability_engine(probability_engine_input)
+    except Exception:
+        return probability_engine_input, {
+            "run_outcome_status": "degraded",
+            "resolved_result_category": "formal_estimated_result",
+            "output": {
+                "probability_disclosure_payload": {
+                    "disclosure_level": "diagnostic_only",
+                    "confidence_level": "low",
+                },
+                "primary_result": {
+                    "success_probability": None,
+                    "path_stats": {},
+                },
+            },
+            "failure_artifact": _as_dict(product_simulation_input.get("failure_artifact")),
+        }
+
+
 def _build_user_portfolio_evaluation(envelope: dict[str, Any]) -> PortfolioEvaluationSummary | None:
     user_portfolio = envelope.get("user_portfolio")
     if user_portfolio is None:
         return None
 
-    recognized_ids = {
-        str(candidate.product_id)
-        for candidate in load_builtin_catalog()
-        if str(candidate.product_id).strip()
-    }
-    runtime_candidates = _extract_execution_plan_runtime_candidates(envelope) or []
-    recognized_ids.update(
-        str(candidate.product_id)
-        for candidate in runtime_candidates
-        if str(candidate.product_id).strip()
-    )
+    candidate_catalog = _user_portfolio_catalog(envelope)
+    recognized_ids = set(candidate_catalog)
 
     requested_entries = _user_portfolio_entries(user_portfolio)
     evaluation_items: list[UserPortfolioResolutionItem] = []
@@ -3847,6 +3973,7 @@ def _maybe_build_execution_plan(
         return None
     user_portfolio = envelope.get("user_portfolio")
     if user_portfolio is not None:
+        candidate_catalog = _user_portfolio_catalog(envelope)
         goal_solver_input_dict = _as_dict(envelope.get("goal_solver_input"))
         account_context = _extract_execution_plan_account_context(envelope)
         return _build_execution_plan_from_user_portfolio(
@@ -3857,6 +3984,7 @@ def _maybe_build_execution_plan(
             )
             or "user_portfolio",
             user_portfolio=user_portfolio,
+            candidate_catalog=candidate_catalog,
             account_total_value=account_context[0],
             current_weights=account_context[1],
             formal_path_required=formal_path_required,
@@ -4401,6 +4529,19 @@ def run_orchestrator(
             execution_plan=execution_plan,
             portfolio_evaluation=portfolio_evaluation,
         )
+    if (
+        portfolio_evaluation is not None
+        and probability_engine_result is None
+        and execution_plan is not None
+    ):
+        probability_engine_input, probability_engine_result = _build_user_portfolio_probability_engine_evaluation(
+            run_id=run_id,
+            envelope=envelope,
+            calibration_result=calibration_data,
+            execution_plan=execution_plan,
+            formal_path_required=formal_path_required,
+            execution_policy=execution_policy,
+        )
     if execution_plan is not None:
         execution_plan_preflight = _as_dict(_as_dict(execution_plan).get("formal_path_preflight"))
         if _text(execution_plan_preflight.get("run_outcome_status")) == "blocked":
@@ -4415,6 +4556,28 @@ def run_orchestrator(
             ]:
                 if reason not in degraded_notes:
                     degraded_notes.append(str(reason))
+    if (
+        portfolio_evaluation is not None
+        and probability_engine_result is None
+        and not portfolio_evaluation_payload["unknown_product_resolution"]["strict_formal_blocked"]
+    ):
+        probability_engine_result = {
+            "run_outcome_status": "degraded",
+            "resolved_result_category": "formal_estimated_result",
+            "output": {
+                "probability_disclosure_payload": {
+                    "disclosure_level": "diagnostic_only",
+                    "confidence_level": "low",
+                },
+                "primary_result": {
+                    "success_probability": None,
+                    "path_stats": {},
+                },
+            },
+            "failure_artifact": None
+            if execution_plan is None
+            else _as_dict(_as_dict(execution_plan).get("failure_artifact")),
+        }
     blocking_reasons = _unique_items(blocking_reasons)
     degraded_notes = _unique_items(degraded_notes)
     status = _status_from_flags(

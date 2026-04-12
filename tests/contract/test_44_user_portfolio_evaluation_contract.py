@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
 from frontdesk.service import run_frontdesk_onboarding
+from orchestrator.engine import run_orchestrator
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 
 
@@ -122,7 +124,7 @@ def test_user_selected_proxy_can_proceed_without_strict_block(monkeypatch, tmp_p
     assert result["unknown_product_resolution"]["state"] == "user_selected_proxy"
     assert result["unknown_product_resolution"]["strict_formal_blocked"] is False
     assert result["unknown_product_resolution"]["items"][0]["resolution_state"] == "user_selected_proxy"
-    assert result["pending_execution_plan"]["items"][0]["primary_product_id"] == "mystery_fund_proxy"
+    assert result["pending_execution_plan"]["items"][0]["primary_product_id"] == "cn_cash_money_fund"
     assert result["pending_execution_plan"]["items"][0]["target_weight"] == 0.30
     assert result["run_outcome_status"] in {"completed", "degraded"}
 
@@ -153,6 +155,66 @@ def test_estimated_non_formal_allowed_continues_in_degraded_mode(monkeypatch, tm
     assert result["pending_execution_plan"]["items"][0]["primary_product_id"] == "mystery_fund_estimate"
     assert result["pending_execution_plan"]["items"][0]["target_weight"] == 0.20
     assert result["run_outcome_status"] == "degraded"
+
+
+@pytest.mark.contract
+def test_runtime_only_candidate_is_resolved_consistently_across_evaluation_and_plan(monkeypatch, tmp_path):
+    from product_mapping import load_builtin_catalog
+
+    builtin_candidate = next(item for item in load_builtin_catalog() if item.product_id == "cn_equity_csi300_etf")
+    runtime_candidate = replace(
+        builtin_candidate,
+        product_id="runtime_equity_proxy",
+        product_name="Runtime Equity Proxy",
+    )
+    user_portfolio = [
+        {"product_id": "runtime_equity_proxy", "target_weight": 0.60},
+        {"product_id": "cn_gold_etf", "target_weight": 0.40},
+    ]
+    profile = _profile(account_profile_id="user_portfolio_runtime_only")
+
+    def _fake_build_user_onboarding_inputs(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return _profile_bundle_with_user_portfolio(profile, user_portfolio=user_portfolio, as_of=kwargs.get("as_of") or "2026-04-07T00:00:00Z")
+
+    monkeypatch.setattr("frontdesk.service.build_user_onboarding_inputs", _fake_build_user_onboarding_inputs)
+    monkeypatch.setattr(
+        "orchestrator.engine._extract_execution_plan_runtime_candidates",
+        lambda envelope: [runtime_candidate],
+    )
+
+    result = run_frontdesk_onboarding(profile, db_path=tmp_path / "frontdesk_runtime_only.sqlite")
+
+    assert result["unknown_product_resolution"]["state"] == "recognized"
+    assert [item["primary_product_id"] for item in result["pending_execution_plan"]["items"]] == [
+        "runtime_equity_proxy",
+        "cn_gold_etf",
+    ]
+
+
+@pytest.mark.contract
+def test_user_portfolio_probability_engine_result_is_populated_for_evaluation_mode(monkeypatch):
+    user_portfolio = [
+        {"product_id": "cn_equity_dividend_etf", "target_weight": 0.25},
+        {"product_id": "cn_equity_csi300_etf", "target_weight": 0.25},
+        {"product_id": "cn_gold_etf", "target_weight": 0.10},
+        {"product_id": "cn_cash_money_fund", "target_weight": 0.40},
+    ]
+    profile = _profile(account_profile_id="user_portfolio_probability")
+
+    def _fake_build_user_onboarding_inputs(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return _profile_bundle_with_user_portfolio(profile, user_portfolio=user_portfolio, as_of=kwargs.get("as_of") or "2026-04-07T00:00:00Z")
+
+    monkeypatch.setattr("frontdesk.service.build_user_onboarding_inputs", _fake_build_user_onboarding_inputs)
+
+    bundle = _profile_bundle_with_user_portfolio(profile, user_portfolio=user_portfolio)
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "user_portfolio_probability"},
+        raw_inputs=bundle.raw_inputs,
+    ).to_dict()
+
+    assert result["evaluation_mode"] == "user_specified_portfolio"
+    assert result["probability_engine_result"] is not None
+    assert result["probability_engine_result"]["run_outcome_status"] in {"success", "degraded"}
 
 
 @pytest.mark.contract
