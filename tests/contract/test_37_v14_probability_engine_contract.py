@@ -411,8 +411,6 @@ def test_probability_engine_output_from_any_rejects_null_scenario_comparison_ent
                 "evidence_refs": ["evidence://primary"],
             }
         )
-
-
 def test_probability_engine_output_rehydrates_market_pressure_and_scenario_comparison() -> None:
     output = ProbabilityEngineOutput.from_any(
         {
