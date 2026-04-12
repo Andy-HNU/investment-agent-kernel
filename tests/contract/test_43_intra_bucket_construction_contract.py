@@ -118,37 +118,49 @@ def test_resolve_bucket_count_uses_auto_policy_branch() -> None:
         risk_preference="moderate",
         max_drawdown_tolerance=0.20,
         current_market_pressure_score=10.0,
+        required_return_gap=0.0,
     )
 
     assert resolution.source == "auto_policy"
     assert resolution.resolved_count == 1
 
 
-def test_resolve_bucket_count_responds_to_real_goal_context_inputs() -> None:
-    low_context = resolve_bucket_count(
-        bucket="equity_cn",
-        bucket_weight=0.40,
-        goal_horizon_months=12,
-        horizon_months=None,
-        risk_preference="conservative",
-        max_drawdown_tolerance=0.10,
-        current_market_pressure_score=5.0,
-        implied_required_annual_return=0.03,
-    )
-    high_context = resolve_bucket_count(
-        bucket="equity_cn",
-        bucket_weight=0.40,
-        goal_horizon_months=36,
-        horizon_months=None,
-        risk_preference="aggressive",
-        max_drawdown_tolerance=0.35,
-        current_market_pressure_score=40.0,
-        implied_required_annual_return=0.10,
+@pytest.mark.parametrize(
+    ("bucket", "bucket_weight", "goal_horizon_months", "risk_preference", "max_drawdown_tolerance", "current_market_pressure_score", "required_return_gap", "expected"),
+    [
+        ("equity_cn", 0.40, 12, "moderate", 0.20, 30.0, 0.00, 1),
+        ("equity_cn", 0.40, 18, "moderate", 0.20, 10.0, 0.00, 2),
+        ("equity_cn", 0.40, 24, "moderate", 0.20, 30.0, 0.00, 2),
+        ("satellite", 0.15, 36, "moderate", 0.20, 10.0, 0.00, 2),
+        ("satellite", 0.20, 36, "moderate", 0.20, 10.0, 0.00, 3),
+        ("satellite", 0.30, 36, "moderate", 0.20, 10.0, 0.00, 4),
+        ("bond_cn", 0.19, 36, "moderate", 0.20, 10.0, 0.00, 1),
+        ("bond_cn", 0.20, 24, "moderate", 0.20, 10.0, 0.00, 2),
+    ],
+)
+def test_resolve_bucket_count_matches_spec_auto_policy_rules(
+    bucket: str,
+    bucket_weight: float,
+    goal_horizon_months: int,
+    risk_preference: str,
+    max_drawdown_tolerance: float,
+    current_market_pressure_score: float,
+    required_return_gap: float,
+    expected: int,
+) -> None:
+    resolution = resolve_bucket_count(
+        bucket=bucket,
+        bucket_weight=bucket_weight,
+        goal_horizon_months=goal_horizon_months,
+        horizon_months=goal_horizon_months,
+        risk_preference=risk_preference,
+        max_drawdown_tolerance=max_drawdown_tolerance,
+        current_market_pressure_score=current_market_pressure_score,
+        required_return_gap=required_return_gap,
     )
 
-    assert low_context.resolved_count < high_context.resolved_count
-    assert low_context.resolved_count == 1
-    assert high_context.resolved_count >= 2
+    assert resolution.source == "auto_policy"
+    assert resolution.resolved_count == expected
 
 
 def test_equity_bucket_can_return_two_products_when_requested() -> None:
@@ -178,6 +190,8 @@ def test_equity_bucket_can_return_two_products_when_requested() -> None:
 
     assert len(equity_items) == 2
     assert plan.bucket_construction_explanations["equity_cn"].requested_count == 2
+    assert "equity_cn" in plan.bucket_construction_suggestions
+    assert plan.bucket_construction_suggestions["equity_cn"]["member_product_ids"]
 
 
 def test_satellite_bucket_can_build_requested_five_member_structure_or_flag_unmet_reason() -> None:
@@ -233,6 +247,7 @@ def test_gold_bucket_stays_single_product_even_when_requested_more() -> None:
 
     assert len(gold_items) == 1
     assert plan.bucket_construction_explanations["gold"].actual_count == 1
+    assert plan.bucket_construction_suggestions == {}
 
 
 def test_cash_liquidity_bucket_stays_single_product_even_when_requested_more() -> None:
@@ -259,6 +274,7 @@ def test_cash_liquidity_bucket_stays_single_product_even_when_requested_more() -
 
     assert len(cash_items) == 1
     assert plan.bucket_construction_explanations["cash_liquidity"].actual_count == 1
+    assert plan.bucket_construction_suggestions == {}
 
 
 def test_bond_cn_auto_policy_caps_to_two_products() -> None:
@@ -270,7 +286,7 @@ def test_bond_cn_auto_policy_caps_to_two_products() -> None:
         risk_preference="moderate",
         max_drawdown_tolerance=0.20,
         current_market_pressure_score=30.0,
-        implied_required_annual_return=0.09,
+        required_return_gap=0.03,
     )
 
     assert resolution.source == "auto_policy"
@@ -281,15 +297,12 @@ def test_explicit_satellite_request_is_not_collapsed_by_minimum_position_rules()
     plan = build_execution_plan(
         source_run_id="test",
         source_allocation_id="alloc",
-        bucket_targets={
-            "satellite": 0.04,
-            "cash_liquidity": 0.96,
-        },
+        bucket_targets={"satellite": 0.03, "cash_liquidity": 0.97},
         bucket_count_preferences=[
             BucketCardinalityPreference(
                 bucket="satellite",
                 mode="target_count",
-                target_count=3,
+                target_count=2,
                 min_count=None,
                 max_count=None,
                 source="user_requested",
@@ -300,20 +313,20 @@ def test_explicit_satellite_request_is_not_collapsed_by_minimum_position_rules()
     satellite_items = [item for item in plan.items if item.asset_bucket == "satellite"]
     explanation = plan.bucket_construction_explanations["satellite"]
 
-    assert len(satellite_items) == 3
-    assert explanation.actual_count == 3
-    assert explanation.unmet_reason is None
-    assert any("minimum_position_guidance" in reason for reason in explanation.why_split)
+    assert len(satellite_items) == 2
+    assert explanation.actual_count == 2
+    assert explanation.count_satisfied is False
+    assert explanation.unmet_reason is not None
+    assert "minimum_weight_breach" in explanation.diagnostic_codes
+    assert any("minimum_weight_breach" in reason for reason in explanation.why_split)
+    assert plan.bucket_construction_suggestions["satellite"]["member_product_ids"]
 
 
 def test_explicit_bond_request_is_not_collapsed_by_minimum_position_rules() -> None:
     plan = build_execution_plan(
         source_run_id="test",
         source_allocation_id="alloc",
-        bucket_targets={
-            "bond_cn": 0.10,
-            "cash_liquidity": 0.90,
-        },
+        bucket_targets={"bond_cn": 0.09, "cash_liquidity": 0.91},
         bucket_count_preferences=[
             BucketCardinalityPreference(
                 bucket="bond_cn",
@@ -331,4 +344,7 @@ def test_explicit_bond_request_is_not_collapsed_by_minimum_position_rules() -> N
 
     assert len(bond_items) == 2
     assert explanation.actual_count == 2
-    assert explanation.unmet_reason is None
+    assert explanation.count_satisfied is False
+    assert explanation.unmet_reason is not None
+    assert "minimum_weight_breach" in explanation.diagnostic_codes
+    assert plan.bucket_construction_suggestions["bond_cn"]["member_product_ids"]

@@ -123,44 +123,48 @@ def _auto_resolve_count(
     risk_preference: str,
     max_drawdown_tolerance: float,
     current_market_pressure_score: float | None,
+    required_return_gap: float | None,
     implied_required_annual_return: float | None,
 ) -> int:
     bucket = str(bucket).strip()
     effective_horizon_months = int(goal_horizon_months if goal_horizon_months is not None else horizon_months or 0)
     risk_preference = str(risk_preference).strip().lower()
     pressure_score = float(current_market_pressure_score or 0.0)
-    required_return = float(implied_required_annual_return or 0.0)
+    effective_required_return_gap = (
+        float(required_return_gap)
+        if required_return_gap is not None
+        else float(implied_required_annual_return or 0.0)
+    )
     if bucket in {"gold", "cash_liquidity"}:
         return 1
     if effective_horizon_months < 12:
         return 1
     if bucket == "bond_cn":
-        if effective_horizon_months >= 24 and (
-            bucket_weight >= 0.20 or required_return >= 0.08 or risk_preference in {"moderate", "aggressive", "中等", "进取"}
-        ):
+        if effective_horizon_months >= 24 and bucket_weight >= 0.20:
             return 2
         return 1
     if bucket == "satellite":
-        if effective_horizon_months >= 18 and bucket_weight >= 0.28:
+        if bucket_weight < 0.08:
+            return 1
+        if effective_horizon_months < 18:
+            return 2
+        if 0.12 <= bucket_weight < 0.18:
+            return 2
+        if 0.18 <= bucket_weight < 0.28:
+            return 3
+        if bucket_weight >= 0.28:
             return 4
-        if effective_horizon_months >= 18 and (bucket_weight >= 0.18 or pressure_score >= 25.0 or required_return >= 0.08):
-            return 3
-        if bucket_weight >= 0.12 and effective_horizon_months >= 12:
-            return 2
-        return 1
+        return 2
     if bucket == "equity_cn":
-        if effective_horizon_months >= 36 and bucket_weight >= 0.30 and required_return >= 0.09:
-            return 3
-        if effective_horizon_months >= 24 and (
-            pressure_score >= 25.0
-            or max_drawdown_tolerance <= 0.20
-            or risk_preference in {"moderate", "aggressive", "中等", "进取"}
-            or required_return >= 0.08
-        ):
+        if effective_horizon_months < 18:
+            return 1
+        if effective_horizon_months < 24:
             return 2
-        if effective_horizon_months >= 18 and required_return >= 0.06:
+        if risk_preference == "aggressive" and effective_required_return_gap > 0.02:
+            return 1
+        if pressure_score >= 25.0 or max_drawdown_tolerance <= 0.20 or risk_preference in {"moderate", "aggressive", "中等", "进取"}:
             return 2
-        return 1
+        return 2
     return 1
 
 
@@ -210,6 +214,7 @@ def resolve_bucket_count(
     risk_preference: str,
     max_drawdown_tolerance: float,
     current_market_pressure_score: float | None = None,
+    required_return_gap: float | None = None,
     implied_required_annual_return: float | None = None,
     explicit_request: BucketCardinalityPreference | None = None,
     persisted_preference: BucketCardinalityPreference | None = None,
@@ -227,6 +232,7 @@ def resolve_bucket_count(
                 risk_preference=risk_preference,
                 max_drawdown_tolerance=max_drawdown_tolerance,
                 current_market_pressure_score=current_market_pressure_score,
+                required_return_gap=required_return_gap,
                 implied_required_annual_return=implied_required_annual_return,
             )
         return BucketCountResolution(
@@ -249,6 +255,7 @@ def resolve_bucket_count(
                 risk_preference=risk_preference,
                 max_drawdown_tolerance=max_drawdown_tolerance,
                 current_market_pressure_score=current_market_pressure_score,
+                required_return_gap=required_return_gap,
                 implied_required_annual_return=implied_required_annual_return,
             )
         return BucketCountResolution(
@@ -269,6 +276,7 @@ def resolve_bucket_count(
         risk_preference=risk_preference,
         max_drawdown_tolerance=max_drawdown_tolerance,
         current_market_pressure_score=current_market_pressure_score,
+        required_return_gap=required_return_gap,
         implied_required_annual_return=implied_required_annual_return,
     )
     return BucketCountResolution(

@@ -1754,6 +1754,7 @@ def build_execution_plan(
     risk_preference: str | None = None,
     max_drawdown_tolerance: float | None = None,
     current_market_pressure_score: float | None = None,
+    required_return_gap: float | None = None,
     implied_required_annual_return: float | None = None,
     restrictions: list[str] | None = None,
     plan_version: int = 1,
@@ -1897,11 +1898,17 @@ def build_execution_plan(
 
     items: list[ExecutionPlanItem] = []
     bucket_explanations: dict[str, Any] = {}
+    bucket_suggestions: dict[str, dict[str, Any]] = {}
     bucket_count_preference_lookup = {
         str(preference.bucket).strip(): preference for preference in list(bucket_count_preferences or [])
     }
     effective_risk_preference = str(risk_preference or "moderate")
     effective_max_drawdown_tolerance = 0.20 if max_drawdown_tolerance is None else float(max_drawdown_tolerance)
+    effective_required_return_gap = (
+        float(required_return_gap)
+        if required_return_gap is not None
+        else (float(implied_required_annual_return) if implied_required_annual_return is not None else None)
+    )
     for bucket, target_weight in adjusted_targets.items():
         if target_weight <= 0:
             continue
@@ -1926,6 +1933,7 @@ def build_execution_plan(
             risk_preference=effective_risk_preference,
             max_drawdown_tolerance=effective_max_drawdown_tolerance,
             current_market_pressure_score=current_market_pressure_score,
+            required_return_gap=effective_required_return_gap,
             implied_required_annual_return=implied_required_annual_return,
             explicit_request=bucket_count_preference_lookup.get(bucket),
         )
@@ -1944,6 +1952,42 @@ def build_execution_plan(
         )
         if bucket_construction_explanation.unmet_reason:
             warnings.append(f"资金桶 {bucket} 结构约束未完全满足: {bucket_construction_explanation.unmet_reason}")
+        if (
+            bucket in {"equity_cn", "satellite", "bond_cn"}
+            and bucket_construction_explanation.diagnostic_codes
+            and bucket_count_preference_lookup.get(bucket) is not None
+        ):
+            suggested_resolution = resolve_bucket_count(
+                bucket=bucket,
+                bucket_weight=bucket_weight,
+                horizon_months=resolved_goal_horizon_months,
+                goal_horizon_months=resolved_goal_horizon_months,
+                risk_preference=effective_risk_preference,
+                max_drawdown_tolerance=effective_max_drawdown_tolerance,
+                current_market_pressure_score=current_market_pressure_score,
+                required_return_gap=effective_required_return_gap,
+                implied_required_annual_return=implied_required_annual_return,
+                explicit_request=None,
+                persisted_preference=None,
+            )
+            suggested_members = build_bucket_subset(
+                bucket=bucket,
+                bucket_weight=bucket_weight,
+                requested_resolution=suggested_resolution,
+                candidates=bucket_candidates,
+            )
+            suggested_explanation = build_bucket_construction_explanation(
+                bucket=bucket,
+                bucket_weight=bucket_weight,
+                requested_resolution=suggested_resolution,
+                selected_members=suggested_members,
+                candidates=bucket_candidates,
+            )
+            bucket_suggestions[bucket] = {
+                "member_product_ids": [member.candidate.product_id for member in suggested_members],
+                "explanation": suggested_explanation.to_dict(),
+                "diagnostic_codes": list(suggested_explanation.diagnostic_codes),
+            }
         split_target_weights = split_bucket_weight(bucket_weight, len(selected_members))
         current_bucket_weight = normalized_current_weights.get(bucket, 0.0)
         split_current_weights = split_bucket_weight(current_bucket_weight, len(selected_members))
@@ -2014,6 +2058,7 @@ def build_execution_plan(
         source_allocation_id=source_allocation_id,
         items=items,
         bucket_construction_explanations=bucket_explanations,
+        bucket_construction_suggestions=bucket_suggestions,
         warnings=warnings,
         plan_version=max(int(plan_version), 1),
         registry_candidate_count=len(registry),

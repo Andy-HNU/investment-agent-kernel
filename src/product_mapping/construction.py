@@ -69,6 +69,42 @@ def _select_subset(bucket: str, candidates: list[RuntimeProductCandidate], count
     return selected
 
 
+def _has_duplicate_exposure_too_high(members: list[RuntimeProductCandidate]) -> bool:
+    if len(members) <= 1:
+        return False
+    wrapper_types = [item.candidate.wrapper_type for item in members]
+    return len(set(wrapper_types)) < len(wrapper_types)
+
+
+def _diagnostic_codes(
+    *,
+    bucket: str,
+    bucket_weight: float,
+    requested_resolution: BucketCountResolution,
+    selected_members: list[RuntimeProductCandidate],
+    candidates: list[RuntimeProductCandidate],
+    is_explicit_request: bool,
+) -> list[str]:
+    actual_count = len(selected_members)
+    desired_count = int(requested_resolution.requested_count or requested_resolution.resolved_count)
+    domestic_pool = _domestic_only_pool(candidates)
+    codes: list[str] = []
+    if actual_count < desired_count or (is_explicit_request and bucket in _SINGLE_PRODUCT_BUCKETS and desired_count > 1):
+        if len(domestic_pool) < desired_count:
+            codes.append("insufficient_eligible_candidates")
+        if actual_count <= 1 and desired_count > 1:
+            codes.append("estimated_only_member_required")
+    if is_explicit_request and desired_count > 1 and float(bucket_weight) / max(desired_count, 1) < float(_MIN_MEMBER_WEIGHT_BY_BUCKET.get(bucket, 0.05) or 0.05):
+        codes.append("minimum_weight_breach")
+    if _has_duplicate_exposure_too_high(selected_members):
+        codes.append("duplicate_exposure_too_high")
+    if actual_count > 1 and score_candidate_subset(bucket, selected_members) <= score_candidate_subset(bucket, selected_members[:1]) + 0.05:
+        codes.append("insufficient_diversification_gain")
+    if bucket == "bond_cn" and requested_resolution.source == "auto_policy" and actual_count == 1 and desired_count > 1:
+        codes.append("formal_path_coverage_insufficient")
+    return list(dict.fromkeys(codes))
+
+
 def split_bucket_weight(target_weight: float, member_count: int) -> list[float]:
     if member_count <= 1:
         return [round(float(target_weight), 4)]
@@ -118,9 +154,17 @@ def build_bucket_construction_explanation(
     actual_count = len(selected_members)
     requested_count = requested_resolution.requested_count
     desired_count = int(requested_count or requested_resolution.resolved_count)
-    count_satisfied = actual_count >= desired_count
-    minimum_weight = float(_MIN_MEMBER_WEIGHT_BY_BUCKET.get(bucket, 0.05) or 0.05)
     is_explicit_request = requested_resolution.source in {"explicit_user", "persisted_user"}
+    diagnostic_codes = _diagnostic_codes(
+        bucket=bucket,
+        bucket_weight=bucket_weight,
+        requested_resolution=requested_resolution,
+        selected_members=selected_members,
+        candidates=candidates,
+        is_explicit_request=is_explicit_request,
+    )
+    count_satisfied = actual_count >= desired_count and not diagnostic_codes
+    minimum_weight = float(_MIN_MEMBER_WEIGHT_BY_BUCKET.get(bucket, 0.05) or 0.05)
     reasons: list[str] = []
     if bucket in _SINGLE_PRODUCT_BUCKETS:
         reasons.append(f"bucket {bucket} remains single-product")
@@ -141,9 +185,7 @@ def build_bucket_construction_explanation(
                 f"requested_count={desired_count} could not be realized within the available candidate set"
             )
     elif is_explicit_request and desired_count > 1 and float(bucket_weight) / max(desired_count, 1) < minimum_weight:
-        reasons.append(
-            f"explicit_request_honored_despite_minimum_position_guidance={minimum_weight:.0%}"
-        )
+        reasons.append(f"minimum_weight_breach={minimum_weight:.0%}")
     if actual_count > 1 and not reasons:
         reasons.append(f"bucket {bucket} is split across {actual_count} domestic members for construction-time diversification")
     if actual_count <= 1 and bucket not in _SINGLE_PRODUCT_BUCKETS and not reasons:
@@ -165,6 +207,7 @@ def build_bucket_construction_explanation(
         else "; ".join(reasons)
         if reasons
         else "requested bucket count could not be fully satisfied",
+        diagnostic_codes=diagnostic_codes,
         why_split=reasons,
         no_split_counterfactual=no_split_counterfactual,
         member_roles=member_roles,

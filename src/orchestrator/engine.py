@@ -3396,6 +3396,10 @@ def _maybe_build_execution_plan(
         if frontier_analysis.get("implied_required_annual_return") is not None
         else recommended_result.get("implied_required_annual_return")
     )
+    expected_annual_return = recommended_result.get("expected_annual_return")
+    required_return_gap = None
+    if implied_required_annual_return is not None and expected_annual_return is not None:
+        required_return_gap = max(float(implied_required_annual_return) - float(expected_annual_return), 0.0)
     current_market_pressure_score = current_market_pressure.get("market_pressure_score")
     valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
     product_universe_inputs, product_universe_result = _extract_execution_plan_product_universe_context(envelope)
@@ -3424,9 +3428,8 @@ def _maybe_build_execution_plan(
         current_market_pressure_score=(
             None if current_market_pressure_score is None else float(current_market_pressure_score)
         ),
-        implied_required_annual_return=(
-            None if implied_required_annual_return is None else float(implied_required_annual_return)
-        ),
+        required_return_gap=required_return_gap,
+        implied_required_annual_return=None if implied_required_annual_return is None else float(implied_required_annual_return),
         formal_path_required=formal_path_required,
         execution_policy=execution_policy.value,
         account_total_value=account_total_value,

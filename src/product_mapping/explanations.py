@@ -161,6 +161,7 @@ class BucketConstructionExplanation:
     count_source: Literal["explicit_user", "persisted_user", "auto_policy"]
     count_satisfied: bool
     unmet_reason: str | None
+    diagnostic_codes: list[str] = field(default_factory=list)
     why_split: list[str] = field(default_factory=list)
     no_split_counterfactual: list[str] = field(default_factory=list)
     member_roles: dict[str, str] = field(default_factory=dict)
@@ -182,6 +183,11 @@ class BucketConstructionExplanation:
         object.__setattr__(self, "count_satisfied", _require_real_bool(self.count_satisfied, field_name="count_satisfied"))
         if self.unmet_reason is not None:
             object.__setattr__(self, "unmet_reason", str(self.unmet_reason).strip())
+        object.__setattr__(
+            self,
+            "diagnostic_codes",
+            [str(item).strip() for item in self.diagnostic_codes if str(item).strip()],
+        )
         object.__setattr__(self, "why_split", [str(item).strip() for item in self.why_split if str(item).strip()])
         object.__setattr__(
             self,

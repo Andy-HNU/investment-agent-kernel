@@ -259,6 +259,7 @@ class ExecutionPlan:
     status: Literal["draft", "user_review", "approved", "superseded", "cancelled"] = "draft"
     items: list[ExecutionPlanItem] = field(default_factory=list)
     bucket_construction_explanations: dict[str, "BucketConstructionExplanation"] = field(default_factory=dict)
+    bucket_construction_suggestions: dict[str, dict[str, Any]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     confirmation_required: bool = True
     plan_version: int = 1
@@ -299,6 +300,7 @@ class ExecutionPlan:
                 bucket: explanation.to_dict()
                 for bucket, explanation in sorted((self.bucket_construction_explanations or {}).items())
             },
+            "bucket_construction_suggestions": dict(self.bucket_construction_suggestions or {}),
             "confirmation_required": self.confirmation_required,
             "warning_count": len(self.warnings),
             "approved_at": self.approved_at,

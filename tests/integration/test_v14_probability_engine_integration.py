@@ -414,6 +414,15 @@ def test_observed_delivery_path_scenario_ladder_meets_convergence_thresholds(tmp
     probability_result = dict(result.get("probability_engine_result") or {})
     output = dict(probability_result.get("output") or {})
     scenario_comparison = list(output.get("scenario_comparison") or [])
+    by_kind = {
+        item["scenario_kind"]: float(dict(item.get("recipe_result") or {}).get("success_probability", 0.0))
+        for item in scenario_comparison
+    }
+    pressure_by_kind = {
+        item["scenario_kind"]: float(dict(item.get("pressure") or {}).get("market_pressure_score", 0.0))
+        for item in scenario_comparison
+        if item.get("pressure") is not None
+    }
 
     assert [item.get("scenario_kind") for item in scenario_comparison] == [
         "historical_replay",
@@ -422,6 +431,16 @@ def test_observed_delivery_path_scenario_ladder_meets_convergence_thresholds(tmp
         "deteriorated_moderate",
         "deteriorated_severe",
     ]
+    assert by_kind["historical_replay"] - by_kind["current_market"] <= 0.15
+    assert by_kind["current_market"] - by_kind["deteriorated_mild"] <= 0.20
+    assert by_kind["deteriorated_mild"] - by_kind["deteriorated_moderate"] <= 0.20
+    assert by_kind["deteriorated_moderate"] - by_kind["deteriorated_severe"] <= 0.25
+    assert (
+        pressure_by_kind["current_market"]
+        < pressure_by_kind["deteriorated_mild"]
+        < pressure_by_kind["deteriorated_moderate"]
+        < pressure_by_kind["deteriorated_severe"]
+    )
 
 
 def test_execution_plan_payload_exposes_bucket_construction_explanations() -> None:
