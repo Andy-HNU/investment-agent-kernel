@@ -228,6 +228,103 @@ def test_user_portfolio_probability_engine_result_is_populated_for_evaluation_mo
 
 
 @pytest.mark.contract
+def test_user_portfolio_engine_error_fallback_keeps_explanations_neutral_and_skips_counterfactual_reruns(monkeypatch):
+    user_portfolio = [
+        {"product_id": "cn_equity_dividend_etf", "target_weight": 0.60},
+        {"product_id": "cn_gold_etf", "target_weight": 0.40},
+    ]
+    profile = _profile(account_profile_id="user_portfolio_engine_error_fallback")
+    bundle = _profile_bundle_with_user_portfolio(profile, user_portfolio=user_portfolio)
+    call_count = 0
+
+    def _flaky_probability_engine(sim_input):  # type: ignore[no-untyped-def]
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("synthetic engine failure")
+        return {
+            "run_outcome_status": "success",
+            "resolved_result_category": "formal_strict_result",
+            "output": {
+                "primary_result": {
+                    "recipe_name": "unexpected_counterfactual",
+                    "role": "primary",
+                    "success_probability": 0.9,
+                    "success_probability_range": (0.85, 0.95),
+                    "cagr_range": (0.04, 0.08),
+                    "drawdown_range": (0.05, 0.10),
+                    "sample_count": 8,
+                    "path_stats": {
+                        "terminal_value_mean": 123000.0,
+                        "terminal_value_p05": 100000.0,
+                        "terminal_value_p50": 121000.0,
+                        "terminal_value_p95": 130000.0,
+                        "cagr_p05": 0.03,
+                        "cagr_p50": 0.06,
+                        "cagr_p95": 0.09,
+                        "max_drawdown_p05": 0.02,
+                        "max_drawdown_p50": 0.04,
+                        "max_drawdown_p95": 0.10,
+                        "success_count": 7,
+                        "path_count": 8,
+                    },
+                    "calibration_link_ref": "evidence://unexpected_counterfactual",
+                },
+                "challenger_results": [],
+                "stress_results": [],
+                "model_disagreement": {},
+                "probability_disclosure_payload": {
+                    "published_point": 0.9,
+                    "published_range": (0.85, 0.95),
+                    "disclosure_level": "point_and_range",
+                    "confidence_level": "high",
+                    "challenger_gap": None,
+                    "stress_gap": None,
+                    "gap_total": None,
+                    "widening_method": "unexpected_counterfactual",
+                },
+                "evidence_refs": [],
+                "current_market_pressure": None,
+                "scenario_comparison": [],
+            },
+            "failure_artifact": None,
+        }
+
+    monkeypatch.setattr(orchestrator_engine, "_build_product_simulation_input", lambda *args, **kwargs: {"synthetic": True})
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "_build_probability_engine_run_input",
+        lambda **kwargs: (
+            {
+                "current_positions": [
+                    {"product_id": "cn_equity_dividend_etf", "weight": 0.60, "market_value": 60000.0, "units": 60000.0},
+                    {"product_id": "cn_gold_etf", "weight": 0.40, "market_value": 40000.0, "units": 40000.0},
+                ],
+                "products": [
+                    {"product_id": "cn_equity_dividend_etf", "asset_bucket": "equity_cn"},
+                    {"product_id": "cn_gold_etf", "asset_bucket": "gold"},
+                ],
+                "recipes": [{"recipe_name": "primary_daily_factor_garch_dcc_jump_regime_v1"}],
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(orchestrator_engine, "run_probability_engine", _flaky_probability_engine)
+
+    result = run_orchestrator(
+        trigger={"workflow_type": "onboarding", "run_id": "user_portfolio_engine_error_fallback"},
+        raw_inputs=bundle.raw_inputs,
+    ).to_dict()
+
+    assert call_count == 1
+    assert result["probability_engine_result"]["run_outcome_status"] == "degraded"
+    explanation = result["product_explanations"]["cn_equity_dividend_etf"]
+    assert explanation["success_delta_if_removed"] is None
+    assert explanation["quality_labels"] == []
+    assert explanation["suggested_action"] is None
+
+
+@pytest.mark.contract
 def test_user_excluded_product_continues_without_strict_block(monkeypatch, tmp_path):
     user_portfolio = [
         {
