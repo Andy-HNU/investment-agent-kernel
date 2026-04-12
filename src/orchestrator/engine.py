@@ -4870,6 +4870,7 @@ def run_orchestrator(
         build_portfolio_explanation_surfaces(
             execution_plan=execution_plan,
             probability_engine_result=probability_engine_result,
+            probability_engine_input=probability_engine_input,
         )
         if execution_plan is not None
         else {

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Literal
+
+from probability_engine.engine import run_probability_engine
 
 
 PRODUCT_SCENARIO_LADDER: tuple[str, ...] = (
@@ -11,6 +14,10 @@ PRODUCT_SCENARIO_LADDER: tuple[str, ...] = (
     "deteriorated_moderate",
     "deteriorated_severe",
 )
+
+_EXPLANATION_RECIPE_PATH_COUNT_BUDGET = 1
+_EXPLANATION_CHALLENGER_PATH_COUNT_BUDGET = 1
+_EXPLANATION_STRESS_PATH_COUNT_BUDGET = 1
 
 
 def _serialize(value: Any) -> Any:
@@ -62,7 +69,9 @@ def _obj(value: Any) -> Any:
     return value
 
 
-def _text(value: Any) -> str:
+def _text(value: Any) -> str | None:
+    if value is None:
+        return None
     return str(value).strip()
 
 
@@ -244,46 +253,69 @@ def _execution_plan_bucket_explanations(execution_plan: Any) -> dict[str, Any]:
     return dict(bucket_explanations or {})
 
 
-def _scenario_metrics_from_probability_output(probability_output: dict[str, Any] | None) -> list[ProductScenarioMetrics]:
-    output = dict(probability_output or {})
-    primary = _obj(output.get("primary_result")) or {}
-    path_stats = _obj(primary.get("path_stats")) or {}
-    comparison = [
-        _obj(item)
-        for item in list(output.get("scenario_comparison") or [])
-        if _obj(item)
-    ]
-    pressure_by_kind = {
-        _text(item.get("scenario_kind")): _obj(item.get("pressure"))
-        for item in comparison
-        if _text(item.get("scenario_kind"))
-    }
-    annualized_range = None
-    terminal_value_range = None
+def _scenario_result_summary(result: dict[str, Any], pressure: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = _obj(result) or {}
+    path_stats = _obj(payload.get("path_stats")) or {}
+    cagr_range = _pair(payload.get("cagr_range")) if payload.get("cagr_range") is not None else None
+    terminal_range = None
     cagr_p05 = _float(path_stats.get("cagr_p05"))
     cagr_p95 = _float(path_stats.get("cagr_p95"))
-    if cagr_p05 is not None and cagr_p95 is not None:
-        annualized_range = (cagr_p05, cagr_p95)
-    else:
-        cagr_p50 = _float(path_stats.get("cagr_p50"))
-        annualized_range = None if cagr_p50 is None else (cagr_p50, cagr_p50)
+    if cagr_range is None:
+        if cagr_p05 is not None and cagr_p95 is not None:
+            cagr_range = (cagr_p05, cagr_p95)
+        else:
+            cagr_p50 = _float(path_stats.get("cagr_p50"))
+            cagr_range = None if cagr_p50 is None else (cagr_p50, cagr_p50)
     terminal_p05 = _float(path_stats.get("terminal_value_p05"))
     terminal_p95 = _float(path_stats.get("terminal_value_p95"))
     if terminal_p05 is not None and terminal_p95 is not None:
-        terminal_value_range = (terminal_p05, terminal_p95)
+        terminal_range = (terminal_p05, terminal_p95)
     else:
         terminal_p50 = _float(path_stats.get("terminal_value_p50"))
-        terminal_value_range = None if terminal_p50 is None else (terminal_p50, terminal_p50)
+        terminal_range = None if terminal_p50 is None else (terminal_p50, terminal_p50)
+    return {
+        "success_probability": _float(payload.get("success_probability")),
+        "terminal_value_mean": _float(path_stats.get("terminal_value_mean")),
+        "terminal_value_range": terminal_range,
+        "cagr_range": cagr_range,
+        "cagr_p50": _float(path_stats.get("cagr_p50")),
+        "max_drawdown_p95": _float(path_stats.get("max_drawdown_p95")),
+        "pressure_score": _float((pressure or {}).get("market_pressure_score")),
+        "pressure_level": _text((pressure or {}).get("market_pressure_level")) or None,
+    }
+
+
+def _scenario_summaries_from_probability_output(probability_output: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    output = dict(probability_output or {})
+    primary = _obj(output.get("primary_result")) or {}
+    current_pressure = _obj(output.get("current_market_pressure")) or {}
+    summary_by_kind: dict[str, dict[str, Any]] = {}
+    if primary:
+        summary_by_kind["current_market"] = _scenario_result_summary(primary, current_pressure)
+    comparison = [_obj(item) for item in list(output.get("scenario_comparison") or []) if _obj(item)]
+    for item in comparison:
+        scenario_kind = _text(item.get("scenario_kind"))
+        if not scenario_kind:
+            continue
+        recipe_result = _obj(item.get("recipe_result")) or primary
+        summary_by_kind[scenario_kind] = _scenario_result_summary(recipe_result, _obj(item.get("pressure")))
+    for scenario_kind in PRODUCT_SCENARIO_LADDER:
+        summary_by_kind.setdefault(scenario_kind, summary_by_kind.get("current_market") or _scenario_result_summary(primary, current_pressure))
+    return summary_by_kind
+
+
+def _scenario_metrics_from_probability_output(probability_output: dict[str, Any] | None) -> list[ProductScenarioMetrics]:
+    summaries = _scenario_summaries_from_probability_output(probability_output)
     scenario_metrics: list[ProductScenarioMetrics] = []
     for scenario_kind in PRODUCT_SCENARIO_LADDER:
-        pressure = pressure_by_kind.get(scenario_kind) or {}
+        summary = summaries.get(scenario_kind) or {}
         scenario_metrics.append(
             ProductScenarioMetrics(
                 scenario_kind=scenario_kind,
-                annualized_range=annualized_range,
-                terminal_value_range=terminal_value_range,
-                pressure_score=_float(pressure.get("market_pressure_score")),
-                pressure_level=_text(pressure.get("market_pressure_level")) or None,
+                annualized_range=summary.get("cagr_range"),
+                terminal_value_range=summary.get("terminal_value_range"),
+                pressure_score=summary.get("pressure_score"),
+                pressure_level=summary.get("pressure_level"),
             )
         )
     return scenario_metrics
@@ -325,31 +357,161 @@ def _product_quality_labels(
     return list(dict.fromkeys(labels))
 
 
-def _leave_one_out_deltas(
+def _portfolio_weight_map(items: list[dict[str, Any]]) -> dict[str, float]:
+    weight_map: dict[str, float] = {}
+    for item in items:
+        product_id = _text(item.get("primary_product_id"))
+        if not product_id:
+            continue
+        weight_map[product_id] = max(_float(item.get("target_weight")) or 0.0, 0.0)
+    total = sum(weight_map.values())
+    if total <= 0.0:
+        return {product_id: 1.0 / max(len(weight_map), 1) for product_id in weight_map}
+    return {product_id: weight / total for product_id, weight in weight_map.items()}
+
+
+def _counterfactual_probability_input(
     *,
-    role_in_portfolio: str,
-    weight_share: float,
-    baseline_success: float,
-    baseline_terminal_mean: float,
-    baseline_drawdown: float,
-    baseline_median_return: float,
-) -> tuple[float, float, float, float]:
-    role_multipliers = {
-        "main_growth": (0.20, 0.18, 0.08, 0.12),
-        "style_offset": (0.12, 0.10, 0.05, 0.08),
-        "event_satellite": (0.10, 0.08, 0.07, 0.06),
-        "defensive_buffer": (-0.08, -0.06, -0.04, -0.05),
-        "liquidity_management": (-0.05, -0.04, -0.03, -0.03),
-    }
-    success_factor, terminal_factor, drawdown_factor, return_factor = role_multipliers.get(
-        role_in_portfolio,
-        (0.10, 0.08, 0.04, 0.06),
+    probability_engine_input: Any | None,
+    removed_product_ids: set[str],
+) -> dict[str, Any] | None:
+    payload = _obj(probability_engine_input)
+    if not payload:
+        return None
+    counterfactual = deepcopy(payload)
+    current_positions = [dict(item) for item in list(counterfactual.get("current_positions") or [])]
+    products = [dict(item) for item in list(counterfactual.get("products") or [])]
+    if not current_positions or not products:
+        return None
+    original_total_value = sum(max(_float(item.get("market_value")) or _float(item.get("units")) or 0.0, 0.0) for item in current_positions)
+    remaining_positions = [item for item in current_positions if _text(item.get("product_id")) not in removed_product_ids]
+    remaining_products = [item for item in products if _text(item.get("product_id")) not in removed_product_ids]
+    if not remaining_positions or not remaining_products:
+        return None
+    remaining_weights = {str(item.get("product_id")): max(_float(item.get("weight")) or 0.0, 0.0) for item in remaining_positions}
+    remaining_total_weight = sum(remaining_weights.values())
+    if remaining_total_weight <= 0.0:
+        equal_weight = 1.0 / float(len(remaining_positions))
+        redistributed_weights = {str(item.get("product_id")): equal_weight for item in remaining_positions}
+    else:
+        redistributed_weights = {
+            product_id: weight / remaining_total_weight
+            for product_id, weight in remaining_weights.items()
+        }
+    for position in remaining_positions:
+        product_id = str(position.get("product_id"))
+        new_weight = float(redistributed_weights.get(product_id, 0.0))
+        position["weight"] = new_weight
+        position["market_value"] = round(original_total_value * new_weight, 2)
+        position["units"] = round(original_total_value * new_weight, 2)
+    counterfactual["current_positions"] = remaining_positions
+    counterfactual["products"] = remaining_products
+    contribution_schedule = []
+    for item in list(counterfactual.get("contribution_schedule") or []):
+        entry = dict(item)
+        if "target_weights" in entry:
+            entry["target_weights"] = dict(redistributed_weights)
+        contribution_schedule.append(entry)
+    counterfactual["contribution_schedule"] = contribution_schedule
+
+    recipes = []
+    for recipe in list(counterfactual.get("recipes") or []):
+        recipe_payload = dict(_obj(recipe) or {})
+        path_count = recipe_payload.get("path_count")
+        if path_count is not None:
+            try:
+                recipe_payload["path_count"] = max(
+                    1,
+                    min(int(path_count), _EXPLANATION_RECIPE_PATH_COUNT_BUDGET),
+                )
+            except (TypeError, ValueError):
+                recipe_payload["path_count"] = _EXPLANATION_RECIPE_PATH_COUNT_BUDGET
+        recipes.append(recipe_payload)
+    if recipes:
+        counterfactual["recipes"] = recipes
+
+    if counterfactual.get("challenger_path_count") is not None:
+        try:
+            counterfactual["challenger_path_count"] = max(
+                1,
+                min(int(counterfactual["challenger_path_count"]), _EXPLANATION_CHALLENGER_PATH_COUNT_BUDGET),
+            )
+        except (TypeError, ValueError):
+            counterfactual["challenger_path_count"] = _EXPLANATION_CHALLENGER_PATH_COUNT_BUDGET
+
+    if counterfactual.get("stress_path_count") is not None:
+        try:
+            counterfactual["stress_path_count"] = max(
+                1,
+                min(int(counterfactual["stress_path_count"]), _EXPLANATION_STRESS_PATH_COUNT_BUDGET),
+            )
+        except (TypeError, ValueError):
+            counterfactual["stress_path_count"] = _EXPLANATION_STRESS_PATH_COUNT_BUDGET
+
+    return counterfactual
+
+
+def _run_counterfactual_probability_result(
+    *,
+    probability_engine_input: Any | None,
+    removed_product_ids: set[str],
+) -> dict[str, Any] | None:
+    counterfactual_input = _counterfactual_probability_input(
+        probability_engine_input=probability_engine_input,
+        removed_product_ids=removed_product_ids,
     )
+    if counterfactual_input is None:
+        return None
+    try:
+        return _obj(run_probability_engine(counterfactual_input))
+    except Exception:
+        return None
+
+
+def _aggregate_counterfactual_deltas(
+    *,
+    baseline_summaries: dict[str, dict[str, Any]],
+    counterfactual_summaries: dict[str, dict[str, Any]] | None,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    if not counterfactual_summaries:
+        return None, None, None, None
+    scenario_keys = [
+        scenario_kind
+        for scenario_kind in PRODUCT_SCENARIO_LADDER
+        if baseline_summaries.get(scenario_kind) and counterfactual_summaries.get(scenario_kind)
+    ]
+    if not scenario_keys:
+        return None, None, None, None
+    success_deltas: list[float] = []
+    terminal_deltas: list[float] = []
+    drawdown_deltas: list[float] = []
+    return_deltas: list[float] = []
+    for scenario_kind in scenario_keys:
+        baseline = baseline_summaries[scenario_kind]
+        counterfactual = counterfactual_summaries[scenario_kind]
+        baseline_success = _float(baseline.get("success_probability"))
+        counterfactual_success = _float(counterfactual.get("success_probability"))
+        baseline_terminal = _float(baseline.get("terminal_value_mean"))
+        counterfactual_terminal = _float(counterfactual.get("terminal_value_mean"))
+        baseline_drawdown = _float(baseline.get("max_drawdown_p95"))
+        counterfactual_drawdown = _float(counterfactual.get("max_drawdown_p95"))
+        baseline_return = _float(baseline.get("cagr_p50"))
+        counterfactual_return = _float(counterfactual.get("cagr_p50"))
+        if baseline_success is not None and counterfactual_success is not None:
+            success_deltas.append(round(baseline_success - counterfactual_success, 4))
+        if baseline_terminal is not None and counterfactual_terminal is not None:
+            terminal_deltas.append(round(baseline_terminal - counterfactual_terminal, 2))
+        if baseline_drawdown is not None and counterfactual_drawdown is not None:
+            drawdown_deltas.append(round(counterfactual_drawdown - baseline_drawdown, 4))
+        if baseline_return is not None and counterfactual_return is not None:
+            return_deltas.append(round(baseline_return - counterfactual_return, 4))
+    if not success_deltas:
+        return None, None, None, None
     return (
-        round(baseline_success * weight_share * success_factor, 4),
-        round(baseline_terminal_mean * weight_share * terminal_factor, 2),
-        round(baseline_drawdown * weight_share * drawdown_factor, 4),
-        round(baseline_median_return * weight_share * return_factor, 4),
+        round(sum(success_deltas) / len(success_deltas), 4),
+        round(sum(terminal_deltas) / len(terminal_deltas), 2) if terminal_deltas else None,
+        round(sum(drawdown_deltas) / len(drawdown_deltas), 4) if drawdown_deltas else None,
+        round(sum(return_deltas) / len(return_deltas), 4) if return_deltas else None,
     )
 
 
@@ -357,17 +519,12 @@ def _group_explanation(
     *,
     group_type: str,
     product_ids: list[str],
-    group_weight_share: float,
-    baseline_success: float,
-    baseline_terminal_mean: float,
-    baseline_drawdown: float,
-    baseline_median_return: float,
+    success_delta_if_removed: float | None,
+    terminal_mean_delta_if_removed: float | None,
+    drawdown_delta_if_removed: float | None,
+    median_return_delta_if_removed: float | None,
     rationale: str,
 ) -> ProductGroupExplanation:
-    success_delta_if_removed = round(baseline_success * group_weight_share * 0.16, 4)
-    terminal_mean_delta_if_removed = round(baseline_terminal_mean * group_weight_share * 0.12, 2)
-    drawdown_delta_if_removed = round(baseline_drawdown * group_weight_share * 0.06, 4)
-    median_return_delta_if_removed = round(baseline_median_return * group_weight_share * 0.08, 4)
     return ProductGroupExplanation(
         group_type=group_type,
         product_ids=product_ids,
@@ -383,34 +540,32 @@ def build_portfolio_explanation_surfaces(
     *,
     execution_plan: Any,
     probability_engine_result: Any | None = None,
+    probability_engine_input: Any | None = None,
 ) -> dict[str, Any]:
     items = [_obj(item) for item in _execution_plan_items(execution_plan)]
-    probability_payload = _obj(probability_engine_result)
+    probability_payload = _obj(probability_engine_result) or {}
     probability_output = _obj(probability_payload.get("output")) or {}
     primary_result = _obj(probability_output.get("primary_result")) or {}
-    path_stats = _obj(primary_result.get("path_stats")) or {}
-    baseline_success = _float(primary_result.get("success_probability")) or 0.0
-    baseline_terminal_mean = _float(path_stats.get("terminal_value_mean")) or 0.0
-    baseline_drawdown = _float(path_stats.get("max_drawdown_p95")) or 0.0
-    baseline_median_return = _float(path_stats.get("cagr_p50")) or 0.0
+    baseline_summaries = _scenario_summaries_from_probability_output(probability_output)
     scenario_metrics = _scenario_metrics_from_probability_output(probability_output)
-    total_weight = sum(max(_float(item.get("target_weight")) or 0.0, 0.0) for item in items) or 1.0
+    weight_map = _portfolio_weight_map(items)
 
     product_explanations: dict[str, ProductExplanation] = {}
     for item in items:
         product_id = _text(item.get("primary_product_id"))
         if not product_id:
             continue
-        weight = max(_float(item.get("target_weight")) or 0.0, 0.0)
-        weight_share = weight / total_weight
         role_in_portfolio = _infer_product_role(item)
-        success_delta_if_removed, terminal_mean_delta_if_removed, drawdown_delta_if_removed, median_return_delta_if_removed = _leave_one_out_deltas(
-            role_in_portfolio=role_in_portfolio,
-            weight_share=weight_share,
-            baseline_success=baseline_success,
-            baseline_terminal_mean=baseline_terminal_mean,
-            baseline_drawdown=baseline_drawdown,
-            baseline_median_return=baseline_median_return,
+        counterfactual_result = _run_counterfactual_probability_result(
+            probability_engine_input=probability_engine_input,
+            removed_product_ids={product_id},
+        )
+        counterfactual_summaries = _scenario_summaries_from_probability_output(
+            _obj(counterfactual_result.get("output")) if counterfactual_result else None
+        )
+        success_delta_if_removed, terminal_mean_delta_if_removed, drawdown_delta_if_removed, median_return_delta_if_removed = _aggregate_counterfactual_deltas(
+            baseline_summaries=baseline_summaries,
+            counterfactual_summaries=counterfactual_summaries,
         )
         overlap_candidates: list[tuple[float, str]] = []
         diversification_candidates: list[tuple[float, str]] = []
@@ -448,9 +603,9 @@ def build_portfolio_explanation_surfaces(
         ]
         quality_labels = _product_quality_labels(
             role_in_portfolio=role_in_portfolio,
-            weight_share=weight_share,
-            success_delta_if_removed=success_delta_if_removed,
-            drawdown_delta_if_removed=drawdown_delta_if_removed,
+            weight_share=weight_map.get(product_id, 0.0),
+            success_delta_if_removed=0.0 if success_delta_if_removed is None else success_delta_if_removed,
+            drawdown_delta_if_removed=0.0 if drawdown_delta_if_removed is None else drawdown_delta_if_removed,
         )
         suggested_action = "keep"
         if role_in_portfolio in {"defensive_buffer", "liquidity_management"}:
@@ -491,33 +646,53 @@ def build_portfolio_explanation_surfaces(
             key=lambda member: (-max(_float(member.get("target_weight")) or 0.0, 0.0), _text(member.get("primary_product_id"))),
         )
         product_ids = [_text(item.get("primary_product_id")) for item in duplicate_members if _text(item.get("primary_product_id"))]
-        group_weight_share = sum(max(_float(item.get("target_weight")) or 0.0, 0.0) for item in duplicate_members) / total_weight
+        group_ids = {product_id for product_id in product_ids if product_id}
+        counterfactual_result = _run_counterfactual_probability_result(
+            probability_engine_input=probability_engine_input,
+            removed_product_ids=group_ids,
+        )
+        counterfactual_summaries = _scenario_summaries_from_probability_output(
+            _obj(counterfactual_result.get("output")) if counterfactual_result else None
+        )
+        success_delta_if_removed, terminal_mean_delta_if_removed, drawdown_delta_if_removed, median_return_delta_if_removed = _aggregate_counterfactual_deltas(
+            baseline_summaries=baseline_summaries,
+            counterfactual_summaries=counterfactual_summaries,
+        )
         group_explanations["duplicate_exposure_group"] = _group_explanation(
             group_type="duplicate_exposure_group",
             product_ids=product_ids,
-            group_weight_share=group_weight_share,
-            baseline_success=baseline_success,
-            baseline_terminal_mean=baseline_terminal_mean,
-            baseline_drawdown=baseline_drawdown,
-            baseline_median_return=baseline_median_return,
+            success_delta_if_removed=success_delta_if_removed,
+            terminal_mean_delta_if_removed=terminal_mean_delta_if_removed,
+            drawdown_delta_if_removed=drawdown_delta_if_removed,
+            median_return_delta_if_removed=median_return_delta_if_removed,
             rationale="shared bucket and wrapper exposure creates duplicate exposure",
         )
     low_contribution_members = [
         item
         for item in items
-        if (max(_float(item.get("target_weight")) or 0.0, 0.0) / total_weight) <= 0.15
+        if weight_map.get(_text(item.get("primary_product_id")), 0.0) <= 0.15
     ]
     if low_contribution_members:
         product_ids = [_text(item.get("primary_product_id")) for item in low_contribution_members if _text(item.get("primary_product_id"))]
-        group_weight_share = sum(max(_float(item.get("target_weight")) or 0.0, 0.0) for item in low_contribution_members) / total_weight
+        group_ids = {product_id for product_id in product_ids if product_id}
+        counterfactual_result = _run_counterfactual_probability_result(
+            probability_engine_input=probability_engine_input,
+            removed_product_ids=group_ids,
+        )
+        counterfactual_summaries = _scenario_summaries_from_probability_output(
+            _obj(counterfactual_result.get("output")) if counterfactual_result else None
+        )
+        success_delta_if_removed, terminal_mean_delta_if_removed, drawdown_delta_if_removed, median_return_delta_if_removed = _aggregate_counterfactual_deltas(
+            baseline_summaries=baseline_summaries,
+            counterfactual_summaries=counterfactual_summaries,
+        )
         group_explanations["limited_contribution_group"] = _group_explanation(
             group_type="limited_contribution_group",
             product_ids=product_ids,
-            group_weight_share=group_weight_share,
-            baseline_success=baseline_success,
-            baseline_terminal_mean=baseline_terminal_mean,
-            baseline_drawdown=baseline_drawdown,
-            baseline_median_return=baseline_median_return,
+            success_delta_if_removed=success_delta_if_removed,
+            terminal_mean_delta_if_removed=terminal_mean_delta_if_removed,
+            drawdown_delta_if_removed=drawdown_delta_if_removed,
+            median_return_delta_if_removed=median_return_delta_if_removed,
             rationale="products with small weight shares contribute limited standalone portfolio impact",
         )
 
