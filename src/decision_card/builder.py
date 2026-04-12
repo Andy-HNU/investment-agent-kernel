@@ -300,6 +300,34 @@ def _probability_engine_formal_surface(inp: DecisionCardBuildInput) -> dict[str,
     }
 
 
+def _probability_engine_scenario_ladder(inp: DecisionCardBuildInput) -> dict[str, Any]:
+    probability_engine_result = _obj(inp.probability_engine_result or {})
+    probability_output = _obj(probability_engine_result.get("output") or {})
+    current_market_pressure = _obj(probability_output.get("current_market_pressure") or {})
+    scenario_comparison = [dict(_obj(item) or {}) for item in list(probability_output.get("scenario_comparison") or [])]
+    ladder: list[dict[str, Any]] = []
+    for item in scenario_comparison:
+        pressure = _obj(item.get("pressure") or {})
+        recipe_result = _obj(item.get("recipe_result") or {})
+        path_stats = _obj(recipe_result.get("path_stats") or {})
+        ladder.append(
+            {
+                "scenario_kind": _metric(item.get("scenario_kind")),
+                "label": _metric(item.get("label")),
+                "pressure_level": _metric(pressure.get("market_pressure_level")) or None,
+                "pressure_score": _float_metric(pressure.get("market_pressure_score")),
+                "success_probability": _percent_metric(recipe_result.get("success_probability")),
+                "cagr_p50": _percent_metric(path_stats.get("cagr_p50")),
+                "terminal_value_p50": _currency_metric(path_stats.get("terminal_value_p50")),
+            }
+        )
+    return {
+        "current_market_pressure": current_market_pressure or None,
+        "scenario_comparison": scenario_comparison,
+        "scenario_ladder": ladder,
+    }
+
+
 def _canonical_product_probability_method(inp: DecisionCardBuildInput) -> str:
     probability_engine_result = _obj(getattr(inp, "probability_engine_result", {}) or {})
     internal_category = _metric(probability_engine_result.get("resolved_result_category"))
@@ -2351,7 +2379,15 @@ def _build_goal_baseline_card(inp: DecisionCardBuildInput) -> dict[str, Any]:
         execution_plan_summary=_execution_plan_summary(inp),
         **_gate1_card_fields(inp),
     )
-    return _finalize_card(card)
+    rendered = _finalize_card(card)
+    scenario_ladder = _probability_engine_scenario_ladder(inp)
+    rendered["current_market_pressure"] = scenario_ladder.get("current_market_pressure")
+    rendered["scenario_comparison"] = list(scenario_ladder.get("scenario_comparison") or [])
+    rendered["scenario_ladder"] = list(scenario_ladder.get("scenario_ladder") or [])
+    probability_explanation = dict(rendered.get("probability_explanation") or {})
+    probability_explanation["scenario_ladder"] = list(scenario_ladder.get("scenario_ladder") or [])
+    rendered["probability_explanation"] = probability_explanation
+    return rendered
 
 
 def _build_blocked_card(inp: DecisionCardBuildInput) -> dict[str, Any]:

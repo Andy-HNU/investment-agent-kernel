@@ -119,6 +119,59 @@ def _probability_result(
         ),
         calibration_link_ref="evidence://contract/v14",
     )
+    current_market_pressure = {
+        "scenario_kind": "current_market",
+        "market_pressure_score": 43.0,
+        "market_pressure_level": "L1_中性偏紧",
+        "current_regime": "risk_off",
+    }
+    scenario_comparison = [
+        {
+            "scenario_kind": "historical_replay",
+            "label": "历史回测",
+            "pressure": None,
+            "recipe_result": primary,
+        },
+        {
+            "scenario_kind": "current_market",
+            "label": "当前市场延续",
+            "pressure": current_market_pressure,
+            "recipe_result": primary,
+        },
+        {
+            "scenario_kind": "deteriorated_mild",
+            "label": "若市场轻度恶化",
+            "pressure": {
+                "scenario_kind": "deteriorated_mild",
+                "market_pressure_score": 57.0,
+                "market_pressure_level": "L2_风险偏高",
+                "current_regime": "risk_off",
+            },
+            "recipe_result": primary,
+        },
+        {
+            "scenario_kind": "deteriorated_moderate",
+            "label": "若市场中度恶化",
+            "pressure": {
+                "scenario_kind": "deteriorated_moderate",
+                "market_pressure_score": 68.0,
+                "market_pressure_level": "L2_风险偏高",
+                "current_regime": "stress",
+            },
+            "recipe_result": primary,
+        },
+        {
+            "scenario_kind": "deteriorated_severe",
+            "label": "若市场重度恶化",
+            "pressure": {
+                "scenario_kind": "deteriorated_severe",
+                "market_pressure_score": 87.0,
+                "market_pressure_level": "L3_高压",
+                "current_regime": "stress",
+            },
+            "recipe_result": primary,
+        },
+    ]
     return ProbabilityEngineRunResult(
         run_outcome_status=run_outcome_status,
         resolved_result_category=resolved_result_category,
@@ -138,6 +191,8 @@ def _probability_result(
                 widening_method="contract_fixture",
             ),
             evidence_refs=["evidence://contract/v14"],
+            current_market_pressure=current_market_pressure,
+            scenario_comparison=scenario_comparison,
         ),
         failure_artifact=None,
     )
@@ -431,6 +486,14 @@ def test_decision_card_prefers_probability_engine_result_for_formal_probability_
     assert probability_explanation["recommended_expected_annual_return"] == "5.00%"
     assert probability_explanation["product_probability_method"] == "product_independent_path"
     assert key_metrics["product_probability_method"] == "product_independent_path"
+    assert card["current_market_pressure"]["market_pressure_level"] == "L1_中性偏紧"
+    assert [item["label"] for item in card["scenario_ladder"]] == [
+        "历史回测",
+        "当前市场延续",
+        "若市场轻度恶化",
+        "若市场中度恶化",
+        "若市场重度恶化",
+    ]
 
 
 def test_frontdesk_summary_prefers_top_level_probability_fields_over_decision_card_fallback() -> None:

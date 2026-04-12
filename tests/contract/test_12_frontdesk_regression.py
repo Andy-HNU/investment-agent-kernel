@@ -9,6 +9,7 @@ import tempfile
 import pytest
 
 from frontdesk.service import (
+    _frontdesk_summary,
     approve_frontdesk_execution_plan,
     run_frontdesk_followup,
     run_frontdesk_onboarding,
@@ -110,6 +111,54 @@ def test_helper_formal_snapshot_keeps_repeated_acceptance_pattern(tmp_path):
     assert historical_dataset["source_ref"].startswith("helper://")
     assert factor_mapping["source_name"] == "helper_pattern_factor_mapping"
     assert factor_mapping["source_ref"].startswith("helper://")
+
+
+@pytest.mark.contract
+def test_frontdesk_summary_exposes_pressure_ladder_from_probability_engine_output() -> None:
+    summary = _frontdesk_summary(
+        account_profile_id="pressure_ladder_frontdesk",
+        display_name="Andy",
+        db_path=Path("/tmp/pressure_ladder_frontdesk.sqlite"),
+        result_payload={
+            "run_id": "run_pressure_ladder_frontdesk",
+            "workflow_type": "onboarding",
+            "status": "completed",
+            "run_outcome_status": "completed",
+            "resolved_result_category": "formal_independent_result",
+            "decision_card": {},
+            "probability_engine_result": {
+                "run_outcome_status": "success",
+                "resolved_result_category": "formal_strict_result",
+                "output": {
+                    "probability_disclosure_payload": {
+                        "disclosure_level": "point_and_range",
+                        "confidence_level": "medium",
+                    },
+                    "current_market_pressure": {
+                        "scenario_kind": "current_market",
+                        "market_pressure_score": 43.0,
+                        "market_pressure_level": "L1_中性偏紧",
+                    },
+                    "scenario_comparison": [
+                        {"scenario_kind": "historical_replay", "label": "历史回测", "pressure": None, "recipe_result": {}},
+                        {"scenario_kind": "current_market", "label": "当前市场延续", "pressure": {"market_pressure_level": "L1_中性偏紧"}, "recipe_result": {}},
+                        {"scenario_kind": "deteriorated_mild", "label": "若市场轻度恶化", "pressure": {"market_pressure_level": "L2_风险偏高"}, "recipe_result": {}},
+                        {"scenario_kind": "deteriorated_moderate", "label": "若市场中度恶化", "pressure": {"market_pressure_level": "L2_风险偏高"}, "recipe_result": {}},
+                        {"scenario_kind": "deteriorated_severe", "label": "若市场重度恶化", "pressure": {"market_pressure_level": "L3_高压"}, "recipe_result": {}},
+                    ],
+                },
+            },
+        },
+    )
+
+    assert summary["current_market_pressure"]["market_pressure_level"] == "L1_中性偏紧"
+    assert [item["scenario_kind"] for item in summary["scenario_comparison"]] == [
+        "historical_replay",
+        "current_market",
+        "deteriorated_mild",
+        "deteriorated_moderate",
+        "deteriorated_severe",
+    ]
 
 
 @pytest.mark.contract

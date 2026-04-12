@@ -1637,6 +1637,9 @@ def _frontdesk_summary(
     probability_engine_result_payload = _as_dict(probability_engine_result)
     probability_output = _as_dict(probability_engine_result_payload.get("output"))
     probability_disclosure_payload = dict(probability_output.get("probability_disclosure_payload") or {})
+    current_market_pressure = dict(probability_output.get("current_market_pressure") or {})
+    scenario_comparison = list(probability_output.get("scenario_comparison") or [])
+    scenario_ladder = list(probability_output.get("scenario_ladder") or [])
     goal_solver_output = _as_dict(result_payload.get("goal_solver_output"))
     if probability_engine_result_payload:
         product_probability_method = (
@@ -1704,6 +1707,9 @@ def _frontdesk_summary(
         "probability_truth_view": probability_truth_view,
         "probability_engine_result": probability_engine_result,
         "probability_disclosure_payload": probability_disclosure_payload,
+        "current_market_pressure": current_market_pressure or None,
+        "scenario_comparison": scenario_comparison,
+        "scenario_ladder": scenario_ladder,
         "runtime_telemetry": dict(result_payload.get("runtime_telemetry") or {}),
         "product_probability_method": product_probability_method,
         "monthly_fallback_used": monthly_fallback_used,
