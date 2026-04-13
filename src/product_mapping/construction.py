@@ -95,9 +95,9 @@ def profile_aware_candidate_sort_key(
             profile_score -= defensive_intensity * 0.35
         profile_score += policy_score * (0.05 + growth_intensity * 0.10)
     elif bucket == "bond_cn":
-        if "defense" in tags:
-            profile_score += defensive_intensity * 0.08
-        profile_score += policy_score * 0.02
+        # Keep bond selection coarse and stable: ordering falls back to the
+        # existing static rank instead of reacting to profile/news noise.
+        profile_score += 0.0
     else:
         profile_score += policy_score * 0.02
 

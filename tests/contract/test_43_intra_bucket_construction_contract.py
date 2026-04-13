@@ -6,7 +6,7 @@ from product_mapping import BucketCardinalityPreference, build_execution_plan, l
 from product_mapping.cardinality import BucketCountResolution
 from product_mapping.construction import _has_duplicate_exposure_too_high, build_bucket_subset
 from product_mapping.relationships import rank_construction_candidates, score_candidate_subset
-from product_mapping.types import RuntimeProductCandidate
+from product_mapping.types import ProductPolicyNewsAudit, RuntimeProductCandidate
 
 
 def test_bucket_count_resolution_prefers_explicit_user_request() -> None:
@@ -528,3 +528,47 @@ def test_equity_candidate_order_changes_with_required_return_and_risk_profile() 
     assert growth_ids == {"cn_equity_csi300_etf", "cn_equity_dividend_etf"}
     assert defensive_ids == {"cn_equity_csi300_etf", "cn_equity_low_vol_fund"}
     assert growth_ids != defensive_ids
+
+
+def test_bond_candidate_order_stays_stable_despite_policy_news_boost() -> None:
+    catalog = {candidate.product_id: candidate for candidate in load_builtin_catalog()}
+    candidates = [
+        RuntimeProductCandidate(candidate=catalog["cn_bond_gov_etf"], registry_index=0),
+        RuntimeProductCandidate(
+            candidate=catalog["cn_bond_pure_bond_fund"],
+            registry_index=1,
+            policy_news_audit=ProductPolicyNewsAudit(
+                status="observed",
+                realtime_eligible=True,
+                influence_scope="core_mild",
+                score=200.0,
+                dominant_direction="positive",
+                matched_signal_ids=["bond-policy-1"],
+                matched_tags=["bond", "credit"],
+            ),
+        ),
+    ]
+    resolution = BucketCountResolution(
+        bucket="bond_cn",
+        requested_count=1,
+        resolved_count=1,
+        source="explicit_user",
+        fully_satisfied=True,
+        unmet_reasons=[],
+        alternative_counts_considered=[],
+    )
+
+    selected = build_bucket_subset(
+        bucket="bond_cn",
+        bucket_weight=0.20,
+        requested_resolution=resolution,
+        candidates=candidates,
+        search_expansion_level="L1_expanded",
+        required_annual_return=0.04,
+        goal_horizon_months=18,
+        risk_preference="conservative",
+        max_drawdown_tolerance=0.05,
+        market_pressure_score=95.0,
+    )
+
+    assert [candidate.candidate.product_id for candidate in selected] == ["cn_bond_gov_etf"]
