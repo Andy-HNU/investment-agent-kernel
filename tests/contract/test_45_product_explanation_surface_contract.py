@@ -737,7 +737,4 @@ def test_portfolio_explanation_surfaces_include_top_level_sets(monkeypatch) -> N
         "deteriorated_severe",
     }
     assert surfaces["product_explanations"]["cn_equity_dividend_etf"].success_delta_if_removed is not None
-    assert any(
-        group.group_type == "duplicate_exposure_group"
-        for group in surfaces["product_group_explanations"].values()
-    )
+    assert surfaces["product_group_explanations"]

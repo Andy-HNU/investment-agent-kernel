@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from math import floor
-
 from product_mapping.cardinality import BucketCountResolution
 from product_mapping.explanations import BucketConstructionExplanation
-from product_mapping.relationships import rank_construction_candidates, score_candidate_subset
+from product_mapping.relationships import has_high_duplicate_exposure, rank_construction_candidates, score_candidate_subset
 from product_mapping.types import RuntimeProductCandidate
 
 
@@ -15,6 +13,16 @@ _MIN_MEMBER_WEIGHT_BY_BUCKET = {
     "gold": 0.10,
     "cash_liquidity": 0.10,
     "satellite": 0.02,
+}
+_AUTO_EXPANSION_GAIN_THRESHOLD_BY_BUCKET = {
+    "equity_cn": 0.015,
+    "bond_cn": 0.010,
+    "satellite": 0.015,
+}
+_AUTO_DUPLICATE_GUARD_GAIN_THRESHOLD_BY_BUCKET = {
+    "equity_cn": 0.045,
+    "bond_cn": 0.030,
+    "satellite": 0.035,
 }
 
 
@@ -30,23 +38,20 @@ def _domestic_only_pool(candidates: list[RuntimeProductCandidate]) -> list[Runti
     return domestic or list(candidates)
 
 
-def _minimum_position_member_cap(bucket: str, bucket_weight: float) -> int:
-    minimum_weight = float(_MIN_MEMBER_WEIGHT_BY_BUCKET.get(bucket, 0.05) or 0.05)
-    if minimum_weight <= 0.0:
-        return 1
-    return max(1, int(floor(float(bucket_weight) / minimum_weight + 1e-9)))
-
-
 def _desired_count(resolution: BucketCountResolution) -> int:
     return int(resolution.requested_count or resolution.resolved_count)
 
 
-def _policy_cap(bucket: str, resolution: BucketCountResolution, candidate_count: int) -> int:
-    if bucket in _SINGLE_PRODUCT_BUCKETS:
-        return 1
-    if bucket == "bond_cn" and resolution.source == "auto_policy":
-        return min(2, candidate_count)
-    return candidate_count
+def _auto_minimum_count(resolution: BucketCountResolution) -> int:
+    return max(1, int(resolution.resolved_count))
+
+
+def _expansion_gain_threshold(bucket: str) -> float:
+    return float(_AUTO_EXPANSION_GAIN_THRESHOLD_BY_BUCKET.get(bucket, 0.015))
+
+
+def _duplicate_guard_gain_threshold(bucket: str) -> float:
+    return float(_AUTO_DUPLICATE_GUARD_GAIN_THRESHOLD_BY_BUCKET.get(bucket, 0.03))
 
 
 def _select_subset(bucket: str, candidates: list[RuntimeProductCandidate], count: int) -> list[RuntimeProductCandidate]:
@@ -69,11 +74,58 @@ def _select_subset(bucket: str, candidates: list[RuntimeProductCandidate], count
     return selected
 
 
+def _select_auto_subset(
+    bucket: str,
+    candidates: list[RuntimeProductCandidate],
+    *,
+    minimum_count: int,
+    bucket_weight: float,
+) -> list[RuntimeProductCandidate]:
+    if not candidates:
+        return []
+    ranked = rank_construction_candidates(bucket, candidates)
+    selected = [ranked[0]]
+    remaining = ranked[1:]
+    current_score = score_candidate_subset(bucket, selected)
+    minimum_member_weight = float(_MIN_MEMBER_WEIGHT_BY_BUCKET.get(bucket, 0.05) or 0.05)
+    gain_threshold = _expansion_gain_threshold(bucket)
+    duplicate_guard_gain_threshold = _duplicate_guard_gain_threshold(bucket)
+
+    while remaining:
+        if len(selected) >= 1 and float(bucket_weight) / float(len(selected) + 1) < minimum_member_weight:
+            break
+
+        best_index = 0
+        best_subset_score = float("-inf")
+        best_candidate_id = ""
+        for index, candidate in enumerate(remaining):
+            subset = [*selected, candidate]
+            subset_score = score_candidate_subset(bucket, subset)
+            candidate_id = candidate.candidate.product_id
+            if subset_score > best_subset_score or (
+                subset_score == best_subset_score and candidate_id < best_candidate_id
+            ):
+                best_subset_score = subset_score
+                best_index = index
+                best_candidate_id = candidate_id
+
+        gain = best_subset_score - current_score
+        next_selected = [*selected, remaining[best_index]]
+        duplicate_high = has_high_duplicate_exposure(next_selected)
+
+        if len(selected) >= minimum_count and (
+            gain <= gain_threshold or (duplicate_high and gain <= duplicate_guard_gain_threshold)
+        ):
+            break
+
+        selected.append(remaining.pop(best_index))
+        current_score = best_subset_score
+
+    return selected
+
+
 def _has_duplicate_exposure_too_high(members: list[RuntimeProductCandidate]) -> bool:
-    if len(members) <= 1:
-        return False
-    wrapper_types = [item.candidate.wrapper_type for item in members]
-    return len(set(wrapper_types)) < len(wrapper_types)
+    return has_high_duplicate_exposure(members)
 
 
 def _diagnostic_codes(
@@ -135,11 +187,11 @@ def build_bucket_subset(
     elif is_explicit_request:
         capped_count = min(desired_count, len(working_pool))
     else:
-        capped_count = min(
-            desired_count,
-            _policy_cap(bucket, requested_resolution, len(working_pool)),
-            _minimum_position_member_cap(bucket, float(bucket_weight)),
-            len(working_pool),
+        return _select_auto_subset(
+            bucket,
+            working_pool,
+            minimum_count=_auto_minimum_count(requested_resolution),
+            bucket_weight=float(bucket_weight),
         )
     return _select_subset(bucket, working_pool, max(1, capped_count))
 

@@ -16,6 +16,18 @@ _WRAPPER_PRIORITY = {
     "stock": 0.2,
     "other": 0.0,
 }
+_GENERIC_THEME_TAGS = {
+    "cn",
+    "cash",
+    "core",
+    "defense",
+    "equity",
+    "etf",
+    "fund",
+    "liquidity",
+    "satellite",
+    "stock",
+}
 
 
 def _candidate(candidate: RuntimeProductCandidate | object) -> object:
@@ -34,6 +46,65 @@ def _candidate_risk_labels(candidate: RuntimeProductCandidate | object) -> set[s
         for label in list(getattr(product, "risk_labels", []) or [])
         if str(label).strip()
     }
+
+
+def _candidate_family(candidate: RuntimeProductCandidate | object) -> str:
+    product = _candidate(candidate)
+    return str(getattr(product, "product_family", "") or "").strip().lower()
+
+
+def _candidate_theme_tags(candidate: RuntimeProductCandidate | object) -> set[str]:
+    tags = _candidate_tags(candidate)
+    theme_tags = {tag for tag in tags if tag not in _GENERIC_THEME_TAGS}
+    if theme_tags:
+        return theme_tags
+    family = _candidate_family(candidate)
+    return {family} if family else set()
+
+
+def _candidate_theme_signature(candidate: RuntimeProductCandidate | object) -> tuple[str, ...]:
+    return tuple(sorted(_candidate_theme_tags(candidate)))
+
+
+def pairwise_duplicate_exposure_score(
+    left: RuntimeProductCandidate,
+    right: RuntimeProductCandidate,
+) -> float:
+    left_product = left.candidate
+    right_product = right.candidate
+    score = 0.0
+    if str(left_product.asset_bucket or "").strip() == str(right_product.asset_bucket or "").strip():
+        score += 0.08
+    if str(left_product.region or "").strip().upper() == str(right_product.region or "").strip().upper():
+        score += 0.08
+    if _candidate_family(left) == _candidate_family(right):
+        score += 0.40
+    if _candidate_theme_signature(left) == _candidate_theme_signature(right):
+        score += 0.32
+    if left_product.wrapper_type == right_product.wrapper_type:
+        score += 0.08
+    shared_tags = _candidate_theme_tags(left).intersection(_candidate_theme_tags(right))
+    score += min(len(shared_tags), 3) * 0.05
+    shared_risk_labels = _candidate_risk_labels(left).intersection(_candidate_risk_labels(right))
+    score += min(len(shared_risk_labels), 2) * 0.05
+    if "qdii" in _candidate_tags(left) or "qdii" in _candidate_tags(right) or "overseas" in _candidate_tags(left) or "overseas" in _candidate_tags(right):
+        score += 0.12
+    return round(score, 6)
+
+
+def _subset_duplicate_exposure_score(members: Iterable[RuntimeProductCandidate]) -> float:
+    selected = list(members)
+    if len(selected) <= 1:
+        return 0.0
+    return round(max(pairwise_duplicate_exposure_score(left, right) for left, right in combinations(selected, 2)), 6)
+
+
+def has_high_duplicate_exposure(
+    members: Iterable[RuntimeProductCandidate],
+    *,
+    threshold: float = 0.75,
+) -> bool:
+    return _subset_duplicate_exposure_score(members) >= float(threshold)
 
 
 def _construction_prior_score(bucket: str, candidate: RuntimeProductCandidate) -> float:
@@ -83,12 +154,16 @@ def score_construction_relation(
         score += 0.2
     elif not same_region:
         score -= 1.0
-    left_tags = _candidate_tags(left)
-    right_tags = _candidate_tags(right)
+    left_tags = _candidate_theme_tags(left)
+    right_tags = _candidate_theme_tags(right)
+    if _candidate_family(left) == _candidate_family(right):
+        score -= 0.14
+    if _candidate_theme_signature(left) == _candidate_theme_signature(right):
+        score -= 0.18
     shared_tags = left_tags.intersection(right_tags)
-    score += min(len(shared_tags), 3) * 0.12
+    score += min(len(shared_tags), 3) * 0.08
     if left_product.wrapper_type == right_product.wrapper_type:
-        score -= 0.08
+        score -= 0.05
     else:
         score += 0.05
     shared_risk_labels = _candidate_risk_labels(left).intersection(_candidate_risk_labels(right))
@@ -109,7 +184,9 @@ def score_candidate_subset(bucket: str, members: Iterable[RuntimeProductCandidat
     pairwise_score = sum(pairwise_scores) / len(pairwise_scores)
     wrapper_diversity = len({item.candidate.wrapper_type for item in selected}) * 0.08
     region_diversity = len({str(item.candidate.region or "").strip().upper() for item in selected}) * 0.04
-    return round(base_score + pairwise_score + wrapper_diversity + region_diversity, 6)
+    family_diversity = len({_candidate_family(item) for item in selected}) * 0.06
+    theme_diversity = len({_candidate_theme_signature(item) for item in selected}) * 0.05
+    return round(base_score + pairwise_score + wrapper_diversity + region_diversity + family_diversity + theme_diversity, 6)
 
 
 def rank_construction_candidates(
@@ -123,3 +200,12 @@ def rank_construction_candidates(
             candidate.candidate.product_id,
         ),
     )
+
+
+__all__ = [
+    "has_high_duplicate_exposure",
+    "pairwise_duplicate_exposure_score",
+    "rank_construction_candidates",
+    "score_candidate_subset",
+    "score_construction_relation",
+]

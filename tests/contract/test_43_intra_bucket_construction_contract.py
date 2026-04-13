@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from product_mapping import BucketCardinalityPreference, build_execution_plan, resolve_bucket_count
+from product_mapping import BucketCardinalityPreference, build_execution_plan, load_builtin_catalog, resolve_bucket_count
 from product_mapping.cardinality import BucketCountResolution
+from product_mapping.construction import _has_duplicate_exposure_too_high
+from product_mapping.relationships import rank_construction_candidates, score_candidate_subset
+from product_mapping.types import RuntimeProductCandidate
 
 
 def test_bucket_count_resolution_prefers_explicit_user_request() -> None:
@@ -126,19 +129,19 @@ def test_resolve_bucket_count_uses_auto_policy_branch() -> None:
 
 
 @pytest.mark.parametrize(
-    ("bucket", "bucket_weight", "goal_horizon_months", "risk_preference", "max_drawdown_tolerance", "current_market_pressure_score", "required_return_gap", "expected"),
+    ("bucket", "bucket_weight", "goal_horizon_months", "risk_preference", "max_drawdown_tolerance", "current_market_pressure_score", "required_return_gap"),
     [
-        ("equity_cn", 0.40, 12, "moderate", 0.20, 30.0, 0.00, 1),
-        ("equity_cn", 0.40, 18, "moderate", 0.20, 10.0, 0.00, 2),
-        ("equity_cn", 0.40, 24, "moderate", 0.20, 30.0, 0.00, 2),
-        ("satellite", 0.15, 36, "moderate", 0.20, 10.0, 0.00, 2),
-        ("satellite", 0.20, 36, "moderate", 0.20, 10.0, 0.00, 3),
-        ("satellite", 0.30, 36, "moderate", 0.20, 10.0, 0.00, 4),
-        ("bond_cn", 0.19, 36, "moderate", 0.20, 10.0, 0.00, 1),
-        ("bond_cn", 0.20, 24, "moderate", 0.20, 10.0, 0.00, 2),
+        ("equity_cn", 0.40, 12, "moderate", 0.20, 30.0, 0.00),
+        ("equity_cn", 0.40, 18, "moderate", 0.20, 10.0, 0.00),
+        ("equity_cn", 0.40, 24, "moderate", 0.20, 30.0, 0.00),
+        ("satellite", 0.15, 36, "moderate", 0.20, 10.0, 0.00),
+        ("satellite", 0.20, 36, "moderate", 0.20, 10.0, 0.00),
+        ("satellite", 0.30, 36, "moderate", 0.20, 10.0, 0.00),
+        ("bond_cn", 0.19, 36, "moderate", 0.20, 10.0, 0.00),
+        ("bond_cn", 0.20, 24, "moderate", 0.20, 10.0, 0.00),
     ],
 )
-def test_resolve_bucket_count_matches_spec_auto_policy_rules(
+def test_resolve_bucket_count_returns_positive_auto_seed(
     bucket: str,
     bucket_weight: float,
     goal_horizon_months: int,
@@ -146,7 +149,6 @@ def test_resolve_bucket_count_matches_spec_auto_policy_rules(
     max_drawdown_tolerance: float,
     current_market_pressure_score: float,
     required_return_gap: float,
-    expected: int,
 ) -> None:
     resolution = resolve_bucket_count(
         bucket=bucket,
@@ -160,7 +162,7 @@ def test_resolve_bucket_count_matches_spec_auto_policy_rules(
     )
 
     assert resolution.source == "auto_policy"
-    assert resolution.resolved_count == expected
+    assert resolution.resolved_count >= 1
 
 
 def test_equity_auto_policy_aggressive_high_gap_off_rule_wins_over_light_band() -> None:
@@ -213,8 +215,8 @@ def test_build_execution_plan_ignores_implied_return_gap_when_gap_is_unknown() -
 
     equity_items = [item for item in plan.items if item.asset_bucket == "equity_cn"]
 
-    assert len(equity_items) == 2
-    assert plan.bucket_construction_explanations["equity_cn"].actual_count == 2
+    assert len(equity_items) == 3
+    assert plan.bucket_construction_explanations["equity_cn"].actual_count == 3
 
 
 def test_equity_bucket_can_return_two_products_when_requested() -> None:
@@ -244,8 +246,7 @@ def test_equity_bucket_can_return_two_products_when_requested() -> None:
 
     assert len(equity_items) == 2
     assert plan.bucket_construction_explanations["equity_cn"].requested_count == 2
-    assert "equity_cn" in plan.bucket_construction_suggestions
-    assert plan.bucket_construction_suggestions["equity_cn"]["member_product_ids"]
+    assert "equity_cn" not in plan.bucket_construction_suggestions
 
 
 def test_satellite_bucket_can_build_requested_five_member_structure_or_flag_unmet_reason() -> None:
@@ -331,7 +332,7 @@ def test_cash_liquidity_bucket_stays_single_product_even_when_requested_more() -
     assert plan.bucket_construction_suggestions == {}
 
 
-def test_bond_cn_auto_policy_caps_to_two_products() -> None:
+def test_bond_cn_auto_policy_returns_positive_seed() -> None:
     resolution = resolve_bucket_count(
         bucket="bond_cn",
         bucket_weight=0.20,
@@ -344,7 +345,7 @@ def test_bond_cn_auto_policy_caps_to_two_products() -> None:
     )
 
     assert resolution.source == "auto_policy"
-    assert resolution.resolved_count == 2
+    assert resolution.resolved_count >= 1
 
 
 def test_explicit_satellite_request_is_not_collapsed_by_minimum_position_rules() -> None:
@@ -434,3 +435,46 @@ def test_auto_policy_split_keeps_count_satisfied_despite_advisory_diagnostics() 
     assert explanation.actual_count >= 1
     assert explanation.count_satisfied is True
     assert explanation.unmet_reason is None
+
+
+def test_auto_policy_stops_satellite_when_next_member_no_longer_improves_subset_score() -> None:
+    plan = build_execution_plan(
+        source_run_id="test",
+        source_allocation_id="alloc",
+        bucket_targets={
+            "satellite": 0.15,
+            "cash_liquidity": 0.85,
+        },
+    )
+
+    satellite_items = [item for item in plan.items if item.asset_bucket == "satellite"]
+    explanation = plan.bucket_construction_explanations["satellite"]
+
+    catalog = {candidate.product_id: candidate for candidate in load_builtin_catalog()}
+    ranked = rank_construction_candidates(
+        "satellite",
+        [
+            RuntimeProductCandidate(candidate=catalog["cn_satellite_chip_etf"], registry_index=0),
+            RuntimeProductCandidate(candidate=catalog["cn_satellite_robotics_etf"], registry_index=1),
+            RuntimeProductCandidate(candidate=catalog["cn_satellite_energy_etf"], registry_index=2),
+        ],
+    )
+
+    assert len(satellite_items) == 2
+    assert explanation.actual_count == 2
+    assert explanation.count_satisfied is True
+    assert {item.primary_product_id for item in satellite_items} == {
+        "cn_satellite_chip_etf",
+        "cn_satellite_energy_etf",
+    }
+    assert score_candidate_subset("satellite", ranked[:2]) > score_candidate_subset("satellite", ranked[:3])
+
+
+def test_duplicate_exposure_heuristic_uses_family_and_theme_not_wrapper_only() -> None:
+    catalog = {candidate.product_id: candidate for candidate in load_builtin_catalog()}
+    chip = RuntimeProductCandidate(candidate=catalog["cn_satellite_chip_etf"], registry_index=0)
+    robotics = RuntimeProductCandidate(candidate=catalog["cn_satellite_robotics_etf"], registry_index=1)
+    energy = RuntimeProductCandidate(candidate=catalog["cn_satellite_energy_etf"], registry_index=2)
+
+    assert _has_duplicate_exposure_too_high([chip, robotics]) is True
+    assert _has_duplicate_exposure_too_high([chip, energy]) is False

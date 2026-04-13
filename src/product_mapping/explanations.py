@@ -84,6 +84,32 @@ def _float(value: Any) -> float | None:
         return None
 
 
+_GENERIC_THEME_TAGS = {
+    "cn",
+    "cash",
+    "core",
+    "defense",
+    "equity",
+    "etf",
+    "fund",
+    "liquidity",
+    "satellite",
+    "stock",
+}
+
+
+def _theme_signature(product: dict[str, Any]) -> tuple[str, ...]:
+    tags = {
+        str(tag).strip().lower()
+        for tag in list(product.get("tags") or [])
+        if str(tag).strip().lower() and str(tag).strip().lower() not in _GENERIC_THEME_TAGS
+    }
+    if tags:
+        return tuple(sorted(tags))
+    family = _text(product.get("product_family"))
+    return (family,) if family else tuple()
+
+
 @dataclass(frozen=True)
 class ProductScenarioMetrics:
     scenario_kind: str
@@ -617,16 +643,17 @@ def build_portfolio_explanation_surfaces(
                 continue
             peer_product = _obj(peer.get("primary_product"))
             peer_bucket = _text(peer.get("asset_bucket"))
-            peer_wrapper = _text(peer_product.get("wrapper_type"))
             peer_family = _text(peer_product.get("product_family"))
             peer_weight = max(_float(peer.get("target_weight")) or 0.0, 0.0)
             overlap_score = 0.0
             if primary_bucket and primary_bucket == peer_bucket:
                 overlap_score += 0.4
-            if primary_wrapper and primary_wrapper == peer_wrapper:
-                overlap_score += 0.4
             if primary_family and primary_family == peer_family:
-                overlap_score += 0.2
+                overlap_score += 0.3
+            if _theme_signature(primary_product) == _theme_signature(peer_product):
+                overlap_score += 0.3
+            if primary_wrapper and primary_wrapper == _text(peer_product.get("wrapper_type")):
+                overlap_score += 0.1
             if overlap_score > 0.0:
                 overlap_candidates.append((overlap_score + peer_weight, peer_product_id))
             else:
@@ -671,10 +698,14 @@ def build_portfolio_explanation_surfaces(
         )
 
     group_explanations: dict[str, ProductGroupExplanation] = {}
-    duplicate_groups: dict[tuple[str | None, str | None], list[dict[str, Any]]] = {}
+    duplicate_groups: dict[tuple[str | None, str | None, tuple[str, ...]], list[dict[str, Any]]] = {}
     for item in items:
         primary = _obj(item.get("primary_product"))
-        key = (_text(item.get("asset_bucket")) or None, _text(primary.get("wrapper_type")) or None)
+        key = (
+            _text(item.get("asset_bucket")) or None,
+            _text(primary.get("product_family")) or None,
+            _theme_signature(primary),
+        )
         duplicate_groups.setdefault(key, []).append(item)
     duplicate_members = [
         member
@@ -712,7 +743,7 @@ def build_portfolio_explanation_surfaces(
             terminal_mean_delta_if_removed=terminal_mean_delta_if_removed,
             drawdown_delta_if_removed=drawdown_delta_if_removed,
             median_return_delta_if_removed=median_return_delta_if_removed,
-            rationale="shared bucket and wrapper exposure creates duplicate exposure",
+            rationale="shared bucket, family, and theme exposure creates duplicate exposure",
         )
     low_contribution_members = [
         item

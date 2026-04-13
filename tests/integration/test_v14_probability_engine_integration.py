@@ -484,7 +484,7 @@ def test_execution_plan_payload_exposes_bucket_construction_explanations() -> No
     assert payload["bucket_construction_explanations"]["equity_cn"]["requested_count"] == 2
     assert payload["bucket_construction_explanations"]["satellite"]["requested_count"] == 5
     assert len([item for item in payload["items"] if item["asset_bucket"] == "equity_cn"]) == 2
-    assert payload["bucket_construction_suggestions"]["equity_cn"]["member_product_ids"]
+    assert "equity_cn" not in payload["bucket_construction_suggestions"]
     assert payload["bucket_construction_suggestions"]["satellite"]["member_product_ids"]
 
 
