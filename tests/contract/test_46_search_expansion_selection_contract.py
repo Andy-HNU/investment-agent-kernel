@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import pytest
 
+from product_mapping.cardinality import BucketCountResolution
+from product_mapping.construction import build_bucket_subset
 from product_mapping.search_expansion import (
     candidate_pool_limit,
     normalize_search_expansion_level,
     resolve_search_stop_reason,
 )
-from product_mapping.types import SearchExpansionRecommendation
+from product_mapping.types import (
+    ProductCandidate,
+    ProductPolicyNewsAudit,
+    RuntimeProductCandidate,
+    SearchExpansionRecommendation,
+)
 
 
 @pytest.mark.contract
@@ -55,3 +62,149 @@ def test_search_expansion_result_requires_visible_delta_fields():
 def test_candidate_pool_limit_rejects_invalid_bucket(bucket):
     with pytest.raises(ValueError, match="invalid bucket"):
         candidate_pool_limit(bucket, "L0_compact")
+
+
+def test_l1_expanded_considers_more_satellite_candidates_than_l0() -> None:
+    candidates = [
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_chip_etf",
+                product_name="Chip ETF",
+                asset_bucket="satellite",
+                product_family="theme_etf_chip",
+                wrapper_type="etf",
+                provider_source="test",
+                liquidity_tier="high",
+                fee_tier="low",
+                tags=["satellite", "technology", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=0,
+        ),
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_robotics_etf",
+                product_name="Robotics ETF",
+                asset_bucket="satellite",
+                product_family="theme_etf_robotics",
+                wrapper_type="etf",
+                provider_source="test",
+                liquidity_tier="medium",
+                fee_tier="low",
+                tags=["satellite", "technology", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=1,
+        ),
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_ai_etf",
+                product_name="AI ETF",
+                asset_bucket="satellite",
+                product_family="theme_etf_ai",
+                wrapper_type="etf",
+                provider_source="test",
+                liquidity_tier="medium",
+                fee_tier="low",
+                tags=["satellite", "technology", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=2,
+        ),
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_cloud_etf",
+                product_name="Cloud ETF",
+                asset_bucket="satellite",
+                product_family="theme_etf_cloud",
+                wrapper_type="etf",
+                provider_source="test",
+                liquidity_tier="medium",
+                fee_tier="low",
+                tags=["satellite", "technology", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=3,
+        ),
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_semiconductor_etf",
+                product_name="Semiconductor ETF",
+                asset_bucket="satellite",
+                product_family="theme_etf_semiconductor",
+                wrapper_type="etf",
+                provider_source="test",
+                liquidity_tier="medium",
+                fee_tier="low",
+                tags=["satellite", "technology", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=4,
+        ),
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_energy_fund",
+                product_name="Energy Fund",
+                asset_bucket="satellite",
+                product_family="theme_fund_energy",
+                wrapper_type="fund",
+                provider_source="test",
+                liquidity_tier="medium",
+                fee_tier="low",
+                tags=["satellite", "cyclical", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=5,
+            policy_news_audit=ProductPolicyNewsAudit(
+                status="observed",
+                realtime_eligible=True,
+                influence_scope="satellite_dynamic",
+                score=0.95,
+                dominant_direction="positive",
+                matched_signal_ids=["policy-energy-1"],
+                matched_tags=["cyclical", "energy"],
+            ),
+        ),
+    ]
+    resolution = BucketCountResolution(
+        bucket="satellite",
+        requested_count=2,
+        resolved_count=2,
+        source="explicit_user",
+        fully_satisfied=True,
+        unmet_reasons=[],
+        alternative_counts_considered=[],
+    )
+
+    compact_selected = build_bucket_subset(
+        bucket="satellite",
+        bucket_weight=0.20,
+        requested_resolution=resolution,
+        candidates=candidates,
+        search_expansion_level="L0_compact",
+        required_annual_return=0.14,
+        goal_horizon_months=48,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.28,
+        market_pressure_score=18.0,
+    )
+    expanded_selected = build_bucket_subset(
+        bucket="satellite",
+        bucket_weight=0.20,
+        requested_resolution=resolution,
+        candidates=candidates,
+        search_expansion_level="L1_expanded",
+        required_annual_return=0.14,
+        goal_horizon_months=48,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.28,
+        market_pressure_score=18.0,
+    )
+
+    compact_ids = {candidate.candidate.product_id for candidate in compact_selected}
+    expanded_ids = {candidate.candidate.product_id for candidate in expanded_selected}
+
+    assert "satellite_chip_etf" in compact_ids
+    assert "satellite_energy_fund" not in compact_ids
+    assert expanded_ids == {"satellite_chip_etf", "satellite_energy_fund"}
+    assert compact_ids != expanded_ids

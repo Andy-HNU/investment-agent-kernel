@@ -4,7 +4,7 @@ import pytest
 
 from product_mapping import BucketCardinalityPreference, build_execution_plan, load_builtin_catalog, resolve_bucket_count
 from product_mapping.cardinality import BucketCountResolution
-from product_mapping.construction import _has_duplicate_exposure_too_high
+from product_mapping.construction import _has_duplicate_exposure_too_high, build_bucket_subset
 from product_mapping.relationships import rank_construction_candidates, score_candidate_subset
 from product_mapping.types import RuntimeProductCandidate
 
@@ -478,3 +478,53 @@ def test_duplicate_exposure_heuristic_uses_family_and_theme_not_wrapper_only() -
 
     assert _has_duplicate_exposure_too_high([chip, robotics]) is True
     assert _has_duplicate_exposure_too_high([chip, energy]) is False
+
+
+def test_equity_candidate_order_changes_with_required_return_and_risk_profile() -> None:
+    catalog = {candidate.product_id: candidate for candidate in load_builtin_catalog()}
+    candidates = [
+        RuntimeProductCandidate(candidate=catalog["cn_equity_csi300_etf"], registry_index=0),
+        RuntimeProductCandidate(candidate=catalog["cn_equity_dividend_etf"], registry_index=1),
+        RuntimeProductCandidate(candidate=catalog["cn_equity_low_vol_fund"], registry_index=2),
+    ]
+    resolution = BucketCountResolution(
+        bucket="equity_cn",
+        requested_count=2,
+        resolved_count=2,
+        source="explicit_user",
+        fully_satisfied=True,
+        unmet_reasons=[],
+        alternative_counts_considered=[],
+    )
+
+    growth_selected = build_bucket_subset(
+        bucket="equity_cn",
+        bucket_weight=0.40,
+        requested_resolution=resolution,
+        candidates=candidates,
+        search_expansion_level="L1_expanded",
+        required_annual_return=0.16,
+        goal_horizon_months=72,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.35,
+        market_pressure_score=12.0,
+    )
+    defensive_selected = build_bucket_subset(
+        bucket="equity_cn",
+        bucket_weight=0.40,
+        requested_resolution=resolution,
+        candidates=candidates,
+        search_expansion_level="L1_expanded",
+        required_annual_return=0.04,
+        goal_horizon_months=12,
+        risk_preference="conservative",
+        max_drawdown_tolerance=0.08,
+        market_pressure_score=82.0,
+    )
+
+    growth_ids = {candidate.candidate.product_id for candidate in growth_selected}
+    defensive_ids = {candidate.candidate.product_id for candidate in defensive_selected}
+
+    assert growth_ids == {"cn_equity_csi300_etf", "cn_equity_dividend_etf"}
+    assert defensive_ids == {"cn_equity_csi300_etf", "cn_equity_low_vol_fund"}
+    assert growth_ids != defensive_ids

@@ -3,6 +3,7 @@ from __future__ import annotations
 from product_mapping.cardinality import BucketCountResolution
 from product_mapping.explanations import BucketConstructionExplanation
 from product_mapping.relationships import has_high_duplicate_exposure, rank_construction_candidates, score_candidate_subset
+from product_mapping.search_expansion import SearchExpansionLevels, candidate_pool_limit
 from product_mapping.types import RuntimeProductCandidate
 
 
@@ -24,6 +25,83 @@ _AUTO_DUPLICATE_GUARD_GAIN_THRESHOLD_BY_BUCKET = {
     "bond_cn": 0.030,
     "satellite": 0.035,
 }
+_RISK_SEEKING_PREFERENCE = {"aggressive", "growth", "进取"}
+_RISK_DEFENSIVE_PREFERENCE = {"conservative", "稳健", "保守"}
+
+
+def _candidate_tags(runtime_candidate: RuntimeProductCandidate) -> set[str]:
+    return {
+        str(tag).strip().lower()
+        for tag in list(runtime_candidate.candidate.tags or [])
+        if str(tag).strip()
+    }
+
+
+def profile_aware_candidate_sort_key(
+    runtime_candidate: RuntimeProductCandidate,
+    *,
+    bucket: str,
+    required_annual_return: float | None,
+    goal_horizon_months: int | None,
+    risk_preference: str | None,
+    max_drawdown_tolerance: float | None,
+    market_pressure_score: float | None,
+) -> tuple[float, ...]:
+    tags = _candidate_tags(runtime_candidate)
+    policy_score = 0.0
+    if runtime_candidate.policy_news_audit is not None:
+        policy_score = float(runtime_candidate.policy_news_audit.score or 0.0)
+
+    effective_required_return = max(float(required_annual_return or 0.0), 0.0)
+    effective_horizon = max(int(goal_horizon_months or 0), 0)
+    effective_drawdown = 0.20 if max_drawdown_tolerance is None else max(float(max_drawdown_tolerance), 0.0)
+    effective_pressure = max(float(market_pressure_score or 0.0), 0.0)
+    normalized_risk_preference = str(risk_preference or "").strip().lower()
+
+    growth_intensity = 0.0
+    if effective_required_return >= 0.10:
+        growth_intensity += min((effective_required_return - 0.10) / 0.06, 1.0)
+    if effective_horizon >= 36:
+        growth_intensity += min((effective_horizon - 36) / 36, 1.0) * 0.5
+    if normalized_risk_preference in _RISK_SEEKING_PREFERENCE:
+        growth_intensity += 0.3
+
+    defensive_intensity = 0.0
+    if effective_drawdown <= 0.12:
+        defensive_intensity += min((0.12 - effective_drawdown) / 0.07, 1.0)
+    if effective_pressure >= 60.0:
+        defensive_intensity += min((effective_pressure - 60.0) / 30.0, 1.0)
+    if normalized_risk_preference in _RISK_DEFENSIVE_PREFERENCE:
+        defensive_intensity += 0.3
+
+    profile_score = 0.0
+    if bucket == "equity_cn":
+        if "dividend" in tags:
+            profile_score += growth_intensity * 1.15
+        if "broad_market" in tags:
+            profile_score += growth_intensity * 0.85
+        if "low_vol" in tags or "defense" in tags:
+            profile_score += defensive_intensity * 1.70
+        if "core" in tags and defensive_intensity > 0.0:
+            profile_score += defensive_intensity * 0.30
+    elif bucket == "satellite":
+        if "technology" in tags:
+            profile_score += growth_intensity * 0.40
+        if "cyclical" in tags:
+            profile_score += growth_intensity * 0.18
+        if "defense" in tags or "low_vol" in tags:
+            profile_score += defensive_intensity * 0.70
+        if "qdii" in tags or "overseas" in tags:
+            profile_score -= defensive_intensity * 0.35
+        profile_score += policy_score * (0.05 + growth_intensity * 0.10)
+    elif bucket == "bond_cn":
+        if "defense" in tags:
+            profile_score += defensive_intensity * 0.08
+        profile_score += policy_score * 0.02
+    else:
+        profile_score += policy_score * 0.02
+
+    return (round(-profile_score, 6),)
 
 
 def _is_domestic_candidate(candidate: RuntimeProductCandidate) -> bool:
@@ -57,9 +135,8 @@ def _duplicate_guard_gain_threshold(bucket: str) -> float:
 def _select_subset(bucket: str, candidates: list[RuntimeProductCandidate], count: int) -> list[RuntimeProductCandidate]:
     if count <= 0 or not candidates:
         return []
-    ranked = rank_construction_candidates(bucket, candidates)
-    selected = [ranked[0]]
-    remaining = ranked[1:]
+    selected = [candidates[0]]
+    remaining = list(candidates[1:])
     while len(selected) < count and remaining:
         best_index = 0
         best_score = float("-inf")
@@ -83,9 +160,8 @@ def _select_auto_subset(
 ) -> list[RuntimeProductCandidate]:
     if not candidates:
         return []
-    ranked = rank_construction_candidates(bucket, candidates)
-    selected = [ranked[0]]
-    remaining = ranked[1:]
+    selected = [candidates[0]]
+    remaining = list(candidates[1:])
     current_score = score_candidate_subset(bucket, selected)
     minimum_member_weight = float(_MIN_MEMBER_WEIGHT_BY_BUCKET.get(bucket, 0.05) or 0.05)
     gain_threshold = _expansion_gain_threshold(bucket)
@@ -176,10 +252,36 @@ def build_bucket_subset(
     bucket_weight: float,
     requested_resolution: BucketCountResolution,
     candidates: list[RuntimeProductCandidate],
+    search_expansion_level: str = SearchExpansionLevels.L0_COMPACT,
+    required_annual_return: float | None = None,
+    goal_horizon_months: int | None = None,
+    risk_preference: str | None = None,
+    max_drawdown_tolerance: float | None = None,
+    market_pressure_score: float | None = None,
 ) -> list[RuntimeProductCandidate]:
     if not candidates:
         return []
-    working_pool = _domestic_only_pool(candidates)
+    static_rank = {
+        candidate.candidate.product_id: index
+        for index, candidate in enumerate(rank_construction_candidates(bucket, candidates))
+    }
+    ordered_pool = sorted(
+        _domestic_only_pool(candidates),
+        key=lambda candidate: (
+            profile_aware_candidate_sort_key(
+                candidate,
+                bucket=bucket,
+                required_annual_return=required_annual_return,
+                goal_horizon_months=goal_horizon_months,
+                risk_preference=risk_preference,
+                max_drawdown_tolerance=max_drawdown_tolerance,
+                market_pressure_score=market_pressure_score,
+            ),
+            float(static_rank.get(candidate.candidate.product_id, len(static_rank))),
+            candidate.candidate.product_id,
+        ),
+    )
+    working_pool = ordered_pool[: candidate_pool_limit(bucket, search_expansion_level)]
     desired_count = _desired_count(requested_resolution)
     is_explicit_request = requested_resolution.source in {"explicit_user", "persisted_user"}
     if bucket in _SINGLE_PRODUCT_BUCKETS:

@@ -13,9 +13,15 @@ from shared.profile_parser import parse_profile_semantics
 from shared.providers.timeseries import fetch_timeseries
 
 from product_mapping.cardinality import BucketCardinalityPreference, BucketCountResolution, resolve_bucket_count
-from product_mapping.construction import build_bucket_construction_explanation, build_bucket_subset, split_bucket_weight
+from product_mapping.construction import (
+    build_bucket_construction_explanation,
+    build_bucket_subset,
+    profile_aware_candidate_sort_key,
+    split_bucket_weight,
+)
 from product_mapping.catalog import load_builtin_catalog
 from product_mapping.policy_news import apply_policy_news_scores
+from product_mapping.search_expansion import SearchExpansionLevels, normalize_search_expansion_level
 from product_mapping.types import (
     CandidateFilterBreakdown,
     CandidateFilterStage,
@@ -292,19 +298,48 @@ def _risk_reason(candidate: ProductCandidate, restriction_filter: _RestrictionFi
     return None
 
 
-def _candidate_sort_key(runtime_candidate: RuntimeProductCandidate) -> tuple[float, int, int, int, str]:
+def _profile_aware_candidate_sort_key(
+    runtime_candidate: RuntimeProductCandidate,
+    *,
+    bucket: str,
+    required_annual_return: float | None,
+    goal_horizon_months: int | None,
+    risk_preference: str | None,
+    max_drawdown_tolerance: float | None,
+    market_pressure_score: float | None,
+) -> tuple[float, ...]:
+    return profile_aware_candidate_sort_key(
+        runtime_candidate,
+        bucket=bucket,
+        required_annual_return=required_annual_return,
+        goal_horizon_months=goal_horizon_months,
+        risk_preference=risk_preference,
+        max_drawdown_tolerance=max_drawdown_tolerance,
+        market_pressure_score=market_pressure_score,
+    )
+
+
+def _candidate_sort_key(
+    runtime_candidate: RuntimeProductCandidate,
+    *,
+    bucket: str,
+    required_annual_return: float | None,
+    goal_horizon_months: int | None,
+    risk_preference: str | None,
+    max_drawdown_tolerance: float | None,
+    market_pressure_score: float | None,
+) -> tuple[float | int | str, ...]:
     candidate = runtime_candidate.candidate
-    policy_score = 0.0
-    if runtime_candidate.policy_news_audit is not None:
-        policy_score = float(runtime_candidate.policy_news_audit.score or 0.0)
-    if candidate.asset_bucket == "satellite":
-        policy_priority = -policy_score
-    else:
-        # Core buckets can see the score in audits, but ranking only uses it as a
-        # late tiebreaker so policy/news cannot silently replace the core.
-        policy_priority = 0.0
     return (
-        policy_priority,
+        *_profile_aware_candidate_sort_key(
+            runtime_candidate,
+            bucket=bucket,
+            required_annual_return=required_annual_return,
+            goal_horizon_months=goal_horizon_months,
+            risk_preference=risk_preference,
+            max_drawdown_tolerance=max_drawdown_tolerance,
+            market_pressure_score=market_pressure_score,
+        ),
         _WRAPPER_PRIORITY.get((candidate.asset_bucket, candidate.wrapper_type), 9),
         _LIQUIDITY_PRIORITY.get(candidate.liquidity_tier, 9),
         _FEE_PRIORITY.get(candidate.fee_tier, 9),
@@ -586,6 +621,11 @@ def _build_item(
     target_weight: float,
     candidates: list[RuntimeProductCandidate],
     *,
+    required_annual_return: float | None = None,
+    goal_horizon_months: int | None = None,
+    risk_preference: str | None = None,
+    max_drawdown_tolerance: float | None = None,
+    market_pressure_score: float | None = None,
     primary_runtime_candidate: RuntimeProductCandidate | None = None,
     account_total_value: float | None = None,
     current_weight: float | None = None,
@@ -594,7 +634,18 @@ def _build_item(
     transaction_fee_rate: dict[str, float] | None = None,
     wrapper_slippage_rate: dict[str, float] | None = None,
 ) -> ExecutionPlanItem:
-    ordered_candidates = sorted(candidates, key=_candidate_sort_key)
+    ordered_candidates = sorted(
+        candidates,
+        key=lambda candidate: _candidate_sort_key(
+            candidate,
+            bucket=bucket,
+            required_annual_return=required_annual_return,
+            goal_horizon_months=goal_horizon_months,
+            risk_preference=risk_preference,
+            max_drawdown_tolerance=max_drawdown_tolerance,
+            market_pressure_score=market_pressure_score,
+        ),
+    )
     if primary_runtime_candidate is not None:
         forced_product_id = primary_runtime_candidate.candidate.product_id
         primary_runtime_candidate = next(
@@ -1775,6 +1826,7 @@ def build_execution_plan(
     initial_deploy_fraction: float = 0.40,
     transaction_fee_rate: dict[str, float] | None = None,
     wrapper_slippage_rate: dict[str, float] | None = None,
+    search_expansion_level: str = SearchExpansionLevels.L0_COMPACT,
     formal_path_required: bool = False,
     execution_policy: ExecutionPolicy | str | None = None,
 ) -> ExecutionPlan:
@@ -1905,6 +1957,7 @@ def build_execution_plan(
     }
     effective_risk_preference = str(risk_preference or "moderate")
     effective_max_drawdown_tolerance = 0.20 if max_drawdown_tolerance is None else float(max_drawdown_tolerance)
+    normalized_search_expansion_level = normalize_search_expansion_level(search_expansion_level)
     for bucket, target_weight in adjusted_targets.items():
         if target_weight <= 0:
             continue
@@ -1938,6 +1991,12 @@ def build_execution_plan(
             bucket_weight=bucket_weight,
             requested_resolution=count_resolution,
             candidates=bucket_candidates,
+            search_expansion_level=normalized_search_expansion_level,
+            required_annual_return=implied_required_annual_return,
+            goal_horizon_months=resolved_goal_horizon_months,
+            risk_preference=effective_risk_preference,
+            max_drawdown_tolerance=effective_max_drawdown_tolerance,
+            market_pressure_score=current_market_pressure_score,
         )
         bucket_construction_explanation = build_bucket_construction_explanation(
             bucket=bucket,
@@ -1971,6 +2030,12 @@ def build_execution_plan(
                 bucket_weight=bucket_weight,
                 requested_resolution=suggested_resolution,
                 candidates=bucket_candidates,
+                search_expansion_level=normalized_search_expansion_level,
+                required_annual_return=implied_required_annual_return,
+                goal_horizon_months=resolved_goal_horizon_months,
+                risk_preference=effective_risk_preference,
+                max_drawdown_tolerance=effective_max_drawdown_tolerance,
+                market_pressure_score=current_market_pressure_score,
             )
             suggested_explanation = build_bucket_construction_explanation(
                 bucket=bucket,
@@ -2002,6 +2067,11 @@ def build_execution_plan(
                     bucket,
                     member_target_weight,
                     selected_members,
+                    required_annual_return=implied_required_annual_return,
+                    goal_horizon_months=resolved_goal_horizon_months,
+                    risk_preference=effective_risk_preference,
+                    max_drawdown_tolerance=effective_max_drawdown_tolerance,
+                    market_pressure_score=current_market_pressure_score,
                     primary_runtime_candidate=selected_member,
                     account_total_value=account_total_value,
                     current_weight=member_current_weight,

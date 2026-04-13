@@ -19,6 +19,7 @@ _SEARCH_EXPANSION_LEVELS: set[str] = {
     SearchExpansionLevels.L2_DIVERSIFIED,
     SearchExpansionLevels.L3_EXHAUSTIVE,
 }
+DEFAULT_SEARCH_EXPANSION_LEVEL: str = SearchExpansionLevels.L0_COMPACT
 
 _SEARCH_EXPANSION_POOL_LIMITS_BY_BUCKET: dict[str, dict[str, int]] = {
     "equity_cn": {
