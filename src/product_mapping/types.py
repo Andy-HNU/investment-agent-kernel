@@ -223,6 +223,18 @@ class RuntimeProductCandidate:
 
 
 @dataclass(frozen=True)
+class RecommendationRankingContext:
+    required_annual_return: float | None = None
+    goal_horizon_months: int | None = None
+    risk_preference: str | None = None
+    max_drawdown_tolerance: float | None = None
+    market_pressure_score: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
+@dataclass(frozen=True)
 class CandidateFilterStage:
     stage_name: str
     input_count: int

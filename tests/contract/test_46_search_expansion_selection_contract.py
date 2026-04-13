@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from product_mapping import BucketCardinalityPreference, build_execution_plan
 from product_mapping.cardinality import BucketCountResolution
 from product_mapping.construction import build_bucket_subset
 from product_mapping.search_expansion import (
@@ -12,60 +13,14 @@ from product_mapping.search_expansion import (
 from product_mapping.types import (
     ProductCandidate,
     ProductPolicyNewsAudit,
+    RecommendationRankingContext,
     RuntimeProductCandidate,
     SearchExpansionRecommendation,
 )
 
 
-@pytest.mark.contract
-def test_candidate_pool_limit_grows_by_search_expansion_level():
-    assert candidate_pool_limit("equity_cn", "L0_compact") == 4
-    assert candidate_pool_limit("equity_cn", "L1_expanded") == 6
-    assert candidate_pool_limit("satellite", "L1_expanded") == 8
-    assert candidate_pool_limit("satellite", "L2_diversified") == 10
-    assert candidate_pool_limit("bond_cn", "L3_exhaustive") == 4
-    assert candidate_pool_limit("equity_cn", "L3_exhaustive") == 10
-
-
-@pytest.mark.contract
-def test_search_expansion_level_normalization_accepts_exhaustive_level():
-    assert normalize_search_expansion_level("L3_exhaustive") == "L3_exhaustive"
-
-
-@pytest.mark.contract
-def test_search_expansion_stop_reason_emits_target_distance_stall():
-    reason = resolve_search_stop_reason(
-        success_improvement=0.001,
-        target_distance_improvement=0.0005,
-        drawdown_improvement=0.001,
-        hard_stop_reason=None,
-        consecutive_small_gain_count=2,
-    )
-    assert reason == "marginal_target_distance_gain_too_small"
-
-
-@pytest.mark.contract
-def test_search_expansion_result_requires_visible_delta_fields():
-    result = SearchExpansionRecommendation(
-        search_expansion_level="L1_expanded",
-        why_this_level_was_run="user_not_satisfied",
-        why_search_stopped="candidate_supply_exhausted",
-        new_product_ids_added=["cn_equity_low_vol_fund"],
-        products_removed=["cn_equity_dividend_etf"],
-    )
-    assert result.search_expansion_level == "L1_expanded"
-    assert result.new_product_ids_added == ["cn_equity_low_vol_fund"]
-
-
-@pytest.mark.contract
-@pytest.mark.parametrize("bucket", [None, "mystery_bucket"])
-def test_candidate_pool_limit_rejects_invalid_bucket(bucket):
-    with pytest.raises(ValueError, match="invalid bucket"):
-        candidate_pool_limit(bucket, "L0_compact")
-
-
-def test_l1_expanded_considers_more_satellite_candidates_than_l0() -> None:
-    candidates = [
+def _satellite_expansion_test_candidates() -> list[RuntimeProductCandidate]:
+    return [
         RuntimeProductCandidate(
             candidate=ProductCandidate(
                 product_id="satellite_chip_etf",
@@ -166,6 +121,57 @@ def test_l1_expanded_considers_more_satellite_candidates_than_l0() -> None:
             ),
         ),
     ]
+
+
+@pytest.mark.contract
+def test_candidate_pool_limit_grows_by_search_expansion_level():
+    assert candidate_pool_limit("equity_cn", "L0_compact") == 4
+    assert candidate_pool_limit("equity_cn", "L1_expanded") == 6
+    assert candidate_pool_limit("satellite", "L1_expanded") == 8
+    assert candidate_pool_limit("satellite", "L2_diversified") == 10
+    assert candidate_pool_limit("bond_cn", "L3_exhaustive") == 4
+    assert candidate_pool_limit("equity_cn", "L3_exhaustive") == 10
+
+
+@pytest.mark.contract
+def test_search_expansion_level_normalization_accepts_exhaustive_level():
+    assert normalize_search_expansion_level("L3_exhaustive") == "L3_exhaustive"
+
+
+@pytest.mark.contract
+def test_search_expansion_stop_reason_emits_target_distance_stall():
+    reason = resolve_search_stop_reason(
+        success_improvement=0.001,
+        target_distance_improvement=0.0005,
+        drawdown_improvement=0.001,
+        hard_stop_reason=None,
+        consecutive_small_gain_count=2,
+    )
+    assert reason == "marginal_target_distance_gain_too_small"
+
+
+@pytest.mark.contract
+def test_search_expansion_result_requires_visible_delta_fields():
+    result = SearchExpansionRecommendation(
+        search_expansion_level="L1_expanded",
+        why_this_level_was_run="user_not_satisfied",
+        why_search_stopped="candidate_supply_exhausted",
+        new_product_ids_added=["cn_equity_low_vol_fund"],
+        products_removed=["cn_equity_dividend_etf"],
+    )
+    assert result.search_expansion_level == "L1_expanded"
+    assert result.new_product_ids_added == ["cn_equity_low_vol_fund"]
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize("bucket", [None, "mystery_bucket"])
+def test_candidate_pool_limit_rejects_invalid_bucket(bucket):
+    with pytest.raises(ValueError, match="invalid bucket"):
+        candidate_pool_limit(bucket, "L0_compact")
+
+
+def test_l1_expanded_considers_more_satellite_candidates_than_l0() -> None:
+    candidates = _satellite_expansion_test_candidates()
     resolution = BucketCountResolution(
         bucket="satellite",
         requested_count=2,
@@ -182,11 +188,13 @@ def test_l1_expanded_considers_more_satellite_candidates_than_l0() -> None:
         requested_resolution=resolution,
         candidates=candidates,
         search_expansion_level="L0_compact",
-        required_annual_return=0.14,
-        goal_horizon_months=48,
-        risk_preference="aggressive",
-        max_drawdown_tolerance=0.28,
-        market_pressure_score=18.0,
+        ranking_context=RecommendationRankingContext(
+            required_annual_return=0.14,
+            goal_horizon_months=48,
+            risk_preference="aggressive",
+            max_drawdown_tolerance=0.28,
+            market_pressure_score=18.0,
+        ),
     )
     expanded_selected = build_bucket_subset(
         bucket="satellite",
@@ -194,11 +202,13 @@ def test_l1_expanded_considers_more_satellite_candidates_than_l0() -> None:
         requested_resolution=resolution,
         candidates=candidates,
         search_expansion_level="L1_expanded",
-        required_annual_return=0.14,
-        goal_horizon_months=48,
-        risk_preference="aggressive",
-        max_drawdown_tolerance=0.28,
-        market_pressure_score=18.0,
+        ranking_context=RecommendationRankingContext(
+            required_annual_return=0.14,
+            goal_horizon_months=48,
+            risk_preference="aggressive",
+            max_drawdown_tolerance=0.28,
+            market_pressure_score=18.0,
+        ),
     )
 
     compact_ids = {candidate.candidate.product_id for candidate in compact_selected}
@@ -208,3 +218,57 @@ def test_l1_expanded_considers_more_satellite_candidates_than_l0() -> None:
     assert "satellite_energy_fund" not in compact_ids
     assert expanded_ids == {"satellite_chip_etf", "satellite_energy_fund"}
     assert compact_ids != expanded_ids
+
+
+def test_build_execution_plan_search_expansion_level_changes_selected_satellite_products() -> None:
+    compact_plan = build_execution_plan(
+        source_run_id="test",
+        source_allocation_id="alloc",
+        bucket_targets={"satellite": 0.20, "cash_liquidity": 0.80},
+        bucket_count_preferences=[
+            BucketCardinalityPreference(
+                bucket="satellite",
+                mode="target_count",
+                target_count=2,
+                min_count=None,
+                max_count=None,
+                source="user_requested",
+            ),
+        ],
+        runtime_candidates=_satellite_expansion_test_candidates(),
+        search_expansion_level="L0_compact",
+        goal_horizon_months=48,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.28,
+        current_market_pressure_score=18.0,
+        implied_required_annual_return=0.14,
+    )
+    expanded_plan = build_execution_plan(
+        source_run_id="test",
+        source_allocation_id="alloc",
+        bucket_targets={"satellite": 0.20, "cash_liquidity": 0.80},
+        bucket_count_preferences=[
+            BucketCardinalityPreference(
+                bucket="satellite",
+                mode="target_count",
+                target_count=2,
+                min_count=None,
+                max_count=None,
+                source="user_requested",
+            ),
+        ],
+        runtime_candidates=_satellite_expansion_test_candidates(),
+        search_expansion_level="L1_expanded",
+        goal_horizon_months=48,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.28,
+        current_market_pressure_score=18.0,
+        implied_required_annual_return=0.14,
+    )
+
+    compact_ids = {item.primary_product_id for item in compact_plan.items if item.asset_bucket == "satellite"}
+    expanded_ids = {item.primary_product_id for item in expanded_plan.items if item.asset_bucket == "satellite"}
+
+    assert compact_ids != expanded_ids
+    assert "satellite_energy_fund" not in compact_ids
+    assert expanded_ids == {"satellite_chip_etf", "satellite_energy_fund"}

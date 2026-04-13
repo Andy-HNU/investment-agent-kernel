@@ -4,9 +4,122 @@ import pytest
 
 from product_mapping import BucketCardinalityPreference, build_execution_plan, load_builtin_catalog, resolve_bucket_count
 from product_mapping.cardinality import BucketCountResolution
-from product_mapping.construction import _has_duplicate_exposure_too_high, build_bucket_subset
+from product_mapping.construction import (
+    _has_duplicate_exposure_too_high,
+    build_bucket_construction_explanation,
+    build_bucket_subset,
+)
 from product_mapping.relationships import rank_construction_candidates, score_candidate_subset
-from product_mapping.types import ProductPolicyNewsAudit, RuntimeProductCandidate
+from product_mapping.types import (
+    ProductCandidate,
+    ProductPolicyNewsAudit,
+    RecommendationRankingContext,
+    RuntimeProductCandidate,
+)
+
+
+def _satellite_expansion_test_candidates() -> list[RuntimeProductCandidate]:
+    return [
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_chip_etf",
+                product_name="Chip ETF",
+                asset_bucket="satellite",
+                product_family="theme_etf_chip",
+                wrapper_type="etf",
+                provider_source="test",
+                liquidity_tier="high",
+                fee_tier="low",
+                tags=["satellite", "technology", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=0,
+        ),
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_robotics_etf",
+                product_name="Robotics ETF",
+                asset_bucket="satellite",
+                product_family="theme_etf_robotics",
+                wrapper_type="etf",
+                provider_source="test",
+                liquidity_tier="medium",
+                fee_tier="low",
+                tags=["satellite", "technology", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=1,
+        ),
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_ai_etf",
+                product_name="AI ETF",
+                asset_bucket="satellite",
+                product_family="theme_etf_ai",
+                wrapper_type="etf",
+                provider_source="test",
+                liquidity_tier="medium",
+                fee_tier="low",
+                tags=["satellite", "technology", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=2,
+        ),
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_cloud_etf",
+                product_name="Cloud ETF",
+                asset_bucket="satellite",
+                product_family="theme_etf_cloud",
+                wrapper_type="etf",
+                provider_source="test",
+                liquidity_tier="medium",
+                fee_tier="low",
+                tags=["satellite", "technology", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=3,
+        ),
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_semiconductor_etf",
+                product_name="Semiconductor ETF",
+                asset_bucket="satellite",
+                product_family="theme_etf_semiconductor",
+                wrapper_type="etf",
+                provider_source="test",
+                liquidity_tier="medium",
+                fee_tier="low",
+                tags=["satellite", "technology", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=4,
+        ),
+        RuntimeProductCandidate(
+            candidate=ProductCandidate(
+                product_id="satellite_energy_fund",
+                product_name="Energy Fund",
+                asset_bucket="satellite",
+                product_family="theme_fund_energy",
+                wrapper_type="fund",
+                provider_source="test",
+                liquidity_tier="medium",
+                fee_tier="low",
+                tags=["satellite", "cyclical", "cn"],
+                risk_labels=["主题波动", "权益波动"],
+            ),
+            registry_index=5,
+            policy_news_audit=ProductPolicyNewsAudit(
+                status="observed",
+                realtime_eligible=True,
+                influence_scope="satellite_dynamic",
+                score=0.95,
+                dominant_direction="positive",
+                matched_signal_ids=["policy-energy-1"],
+                matched_tags=["cyclical", "energy"],
+            ),
+        ),
+    ]
 
 
 def test_bucket_count_resolution_prefers_explicit_user_request() -> None:
@@ -503,11 +616,13 @@ def test_equity_candidate_order_changes_with_required_return_and_risk_profile() 
         requested_resolution=resolution,
         candidates=candidates,
         search_expansion_level="L1_expanded",
-        required_annual_return=0.16,
-        goal_horizon_months=72,
-        risk_preference="aggressive",
-        max_drawdown_tolerance=0.35,
-        market_pressure_score=12.0,
+        ranking_context=RecommendationRankingContext(
+            required_annual_return=0.16,
+            goal_horizon_months=72,
+            risk_preference="aggressive",
+            max_drawdown_tolerance=0.35,
+            market_pressure_score=12.0,
+        ),
     )
     defensive_selected = build_bucket_subset(
         bucket="equity_cn",
@@ -515,11 +630,13 @@ def test_equity_candidate_order_changes_with_required_return_and_risk_profile() 
         requested_resolution=resolution,
         candidates=candidates,
         search_expansion_level="L1_expanded",
-        required_annual_return=0.04,
-        goal_horizon_months=12,
-        risk_preference="conservative",
-        max_drawdown_tolerance=0.08,
-        market_pressure_score=82.0,
+        ranking_context=RecommendationRankingContext(
+            required_annual_return=0.04,
+            goal_horizon_months=12,
+            risk_preference="conservative",
+            max_drawdown_tolerance=0.08,
+            market_pressure_score=82.0,
+        ),
     )
 
     growth_ids = {candidate.candidate.product_id for candidate in growth_selected}
@@ -564,11 +681,57 @@ def test_bond_candidate_order_stays_stable_despite_policy_news_boost() -> None:
         requested_resolution=resolution,
         candidates=candidates,
         search_expansion_level="L1_expanded",
-        required_annual_return=0.04,
-        goal_horizon_months=18,
-        risk_preference="conservative",
-        max_drawdown_tolerance=0.05,
-        market_pressure_score=95.0,
+        ranking_context=RecommendationRankingContext(
+            required_annual_return=0.04,
+            goal_horizon_months=18,
+            risk_preference="conservative",
+            max_drawdown_tolerance=0.05,
+            market_pressure_score=95.0,
+        ),
     )
 
     assert [candidate.candidate.product_id for candidate in selected] == ["cn_bond_gov_etf"]
+
+
+def test_explanation_uses_search_expansion_pool_limit_when_l0_trimming_blocks_requested_count() -> None:
+    candidates = _satellite_expansion_test_candidates()
+    ranking_context = RecommendationRankingContext(
+        required_annual_return=0.14,
+        goal_horizon_months=48,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.28,
+        market_pressure_score=18.0,
+    )
+    resolution = BucketCountResolution(
+        bucket="satellite",
+        requested_count=6,
+        resolved_count=6,
+        source="explicit_user",
+        fully_satisfied=True,
+        unmet_reasons=[],
+        alternative_counts_considered=[],
+    )
+
+    selected = build_bucket_subset(
+        bucket="satellite",
+        bucket_weight=0.20,
+        requested_resolution=resolution,
+        candidates=candidates,
+        search_expansion_level="L0_compact",
+        ranking_context=ranking_context,
+    )
+    explanation = build_bucket_construction_explanation(
+        bucket="satellite",
+        bucket_weight=0.20,
+        requested_resolution=resolution,
+        selected_members=selected,
+        candidates=candidates,
+        search_expansion_level="L0_compact",
+        ranking_context=ranking_context,
+    )
+
+    assert explanation.actual_count == 5
+    assert "search_expansion_pool_limit" in explanation.diagnostic_codes
+    assert "insufficient_eligible_candidates" not in explanation.diagnostic_codes
+    assert explanation.unmet_reason is not None
+    assert "search_expansion_level=L0_compact" in explanation.unmet_reason

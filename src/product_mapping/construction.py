@@ -4,7 +4,7 @@ from product_mapping.cardinality import BucketCountResolution
 from product_mapping.explanations import BucketConstructionExplanation
 from product_mapping.relationships import has_high_duplicate_exposure, rank_construction_candidates, score_candidate_subset
 from product_mapping.search_expansion import SearchExpansionLevels, candidate_pool_limit
-from product_mapping.types import RuntimeProductCandidate
+from product_mapping.types import RecommendationRankingContext, RuntimeProductCandidate
 
 
 _SINGLE_PRODUCT_BUCKETS = {"gold", "cash_liquidity"}
@@ -37,26 +37,31 @@ def _candidate_tags(runtime_candidate: RuntimeProductCandidate) -> set[str]:
     }
 
 
+def _ranking_context(
+    ranking_context: RecommendationRankingContext | None,
+) -> RecommendationRankingContext:
+    return ranking_context if ranking_context is not None else RecommendationRankingContext()
+
+
 def profile_aware_candidate_sort_key(
     runtime_candidate: RuntimeProductCandidate,
     *,
     bucket: str,
-    required_annual_return: float | None,
-    goal_horizon_months: int | None,
-    risk_preference: str | None,
-    max_drawdown_tolerance: float | None,
-    market_pressure_score: float | None,
+    ranking_context: RecommendationRankingContext | None,
 ) -> tuple[float, ...]:
+    context = _ranking_context(ranking_context)
     tags = _candidate_tags(runtime_candidate)
     policy_score = 0.0
     if runtime_candidate.policy_news_audit is not None:
         policy_score = float(runtime_candidate.policy_news_audit.score or 0.0)
 
-    effective_required_return = max(float(required_annual_return or 0.0), 0.0)
-    effective_horizon = max(int(goal_horizon_months or 0), 0)
-    effective_drawdown = 0.20 if max_drawdown_tolerance is None else max(float(max_drawdown_tolerance), 0.0)
-    effective_pressure = max(float(market_pressure_score or 0.0), 0.0)
-    normalized_risk_preference = str(risk_preference or "").strip().lower()
+    effective_required_return = max(float(context.required_annual_return or 0.0), 0.0)
+    effective_horizon = max(int(context.goal_horizon_months or 0), 0)
+    effective_drawdown = (
+        0.20 if context.max_drawdown_tolerance is None else max(float(context.max_drawdown_tolerance), 0.0)
+    )
+    effective_pressure = max(float(context.market_pressure_score or 0.0), 0.0)
+    normalized_risk_preference = str(context.risk_preference or "").strip().lower()
 
     growth_intensity = 0.0
     if effective_required_return >= 0.10:
@@ -102,6 +107,35 @@ def profile_aware_candidate_sort_key(
         profile_score += policy_score * 0.02
 
     return (round(-profile_score, 6),)
+
+
+def _working_pool_details(
+    *,
+    bucket: str,
+    candidates: list[RuntimeProductCandidate],
+    search_expansion_level: str,
+    ranking_context: RecommendationRankingContext | None,
+) -> tuple[list[RuntimeProductCandidate], list[RuntimeProductCandidate], bool]:
+    domestic_pool = _domestic_only_pool(candidates)
+    static_rank = {
+        candidate.candidate.product_id: index
+        for index, candidate in enumerate(rank_construction_candidates(bucket, domestic_pool))
+    }
+    ordered_pool = sorted(
+        domestic_pool,
+        key=lambda candidate: (
+            profile_aware_candidate_sort_key(
+                candidate,
+                bucket=bucket,
+                ranking_context=ranking_context,
+            ),
+            float(static_rank.get(candidate.candidate.product_id, len(static_rank))),
+            candidate.candidate.product_id,
+        ),
+    )
+    pool_limit = candidate_pool_limit(bucket, search_expansion_level)
+    working_pool = ordered_pool[:pool_limit]
+    return domestic_pool, working_pool, len(ordered_pool) > len(working_pool)
 
 
 def _is_domestic_candidate(candidate: RuntimeProductCandidate) -> bool:
@@ -210,15 +244,21 @@ def _diagnostic_codes(
     bucket_weight: float,
     requested_resolution: BucketCountResolution,
     selected_members: list[RuntimeProductCandidate],
-    candidates: list[RuntimeProductCandidate],
+    domestic_pool: list[RuntimeProductCandidate],
+    working_pool: list[RuntimeProductCandidate],
+    working_pool_trimmed: bool,
     is_explicit_request: bool,
 ) -> list[str]:
     actual_count = len(selected_members)
     desired_count = int(requested_resolution.requested_count or requested_resolution.resolved_count)
-    domestic_pool = _domestic_only_pool(candidates)
     codes: list[str] = []
+    search_expansion_pool_limited = (
+        working_pool_trimmed and len(working_pool) < desired_count and len(domestic_pool) >= desired_count
+    )
     if actual_count < desired_count or (is_explicit_request and bucket in _SINGLE_PRODUCT_BUCKETS and desired_count > 1):
-        if len(domestic_pool) < desired_count:
+        if search_expansion_pool_limited:
+            codes.append("search_expansion_pool_limit")
+        elif len(working_pool) < desired_count:
             codes.append("insufficient_eligible_candidates")
         if actual_count <= 1 and desired_count > 1:
             codes.append("estimated_only_member_required")
@@ -253,35 +293,16 @@ def build_bucket_subset(
     requested_resolution: BucketCountResolution,
     candidates: list[RuntimeProductCandidate],
     search_expansion_level: str = SearchExpansionLevels.L0_COMPACT,
-    required_annual_return: float | None = None,
-    goal_horizon_months: int | None = None,
-    risk_preference: str | None = None,
-    max_drawdown_tolerance: float | None = None,
-    market_pressure_score: float | None = None,
+    ranking_context: RecommendationRankingContext | None = None,
 ) -> list[RuntimeProductCandidate]:
     if not candidates:
         return []
-    static_rank = {
-        candidate.candidate.product_id: index
-        for index, candidate in enumerate(rank_construction_candidates(bucket, candidates))
-    }
-    ordered_pool = sorted(
-        _domestic_only_pool(candidates),
-        key=lambda candidate: (
-            profile_aware_candidate_sort_key(
-                candidate,
-                bucket=bucket,
-                required_annual_return=required_annual_return,
-                goal_horizon_months=goal_horizon_months,
-                risk_preference=risk_preference,
-                max_drawdown_tolerance=max_drawdown_tolerance,
-                market_pressure_score=market_pressure_score,
-            ),
-            float(static_rank.get(candidate.candidate.product_id, len(static_rank))),
-            candidate.candidate.product_id,
-        ),
+    _, working_pool, _ = _working_pool_details(
+        bucket=bucket,
+        candidates=candidates,
+        search_expansion_level=search_expansion_level,
+        ranking_context=ranking_context,
     )
-    working_pool = ordered_pool[: candidate_pool_limit(bucket, search_expansion_level)]
     desired_count = _desired_count(requested_resolution)
     is_explicit_request = requested_resolution.source in {"explicit_user", "persisted_user"}
     if bucket in _SINGLE_PRODUCT_BUCKETS:
@@ -305,17 +326,27 @@ def build_bucket_construction_explanation(
     requested_resolution: BucketCountResolution,
     selected_members: list[RuntimeProductCandidate],
     candidates: list[RuntimeProductCandidate],
+    search_expansion_level: str = SearchExpansionLevels.L0_COMPACT,
+    ranking_context: RecommendationRankingContext | None = None,
 ) -> BucketConstructionExplanation:
     actual_count = len(selected_members)
     requested_count = requested_resolution.requested_count
     desired_count = int(requested_count or requested_resolution.resolved_count)
     is_explicit_request = requested_resolution.source in {"explicit_user", "persisted_user"}
+    domestic_pool, working_pool, working_pool_trimmed = _working_pool_details(
+        bucket=bucket,
+        candidates=candidates,
+        search_expansion_level=search_expansion_level,
+        ranking_context=ranking_context,
+    )
     diagnostic_codes = _diagnostic_codes(
         bucket=bucket,
         bucket_weight=bucket_weight,
         requested_resolution=requested_resolution,
         selected_members=selected_members,
-        candidates=candidates,
+        domestic_pool=domestic_pool,
+        working_pool=working_pool,
+        working_pool_trimmed=working_pool_trimmed,
         is_explicit_request=is_explicit_request,
     )
     count_satisfied = actual_count >= desired_count and (
@@ -326,10 +357,17 @@ def build_bucket_construction_explanation(
     if bucket in _SINGLE_PRODUCT_BUCKETS:
         reasons.append(f"bucket {bucket} remains single-product")
     if actual_count < desired_count:
-        domestic_pool = _domestic_only_pool(candidates)
-        if len(domestic_pool) < desired_count:
+        search_expansion_pool_limited = (
+            working_pool_trimmed and len(working_pool) < desired_count and len(domestic_pool) >= desired_count
+        )
+        if search_expansion_pool_limited:
             reasons.append(
-                f"requested_count={desired_count} exceeds domestic candidate supply ({len(domestic_pool)})"
+                "search_expansion_level="
+                f"{search_expansion_level} limited working pool to {len(working_pool)} of {len(domestic_pool)} eligible candidates"
+            )
+        elif len(working_pool) < desired_count:
+            reasons.append(
+                f"requested_count={desired_count} exceeds domestic candidate supply ({len(working_pool)})"
             )
         if float(bucket_weight) / max(desired_count, 1) < minimum_weight:
             reasons.append(

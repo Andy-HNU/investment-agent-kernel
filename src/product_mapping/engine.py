@@ -33,6 +33,7 @@ from product_mapping.types import (
     ProductProxySpec,
     ProductValuationAudit,
     ProxyUniverseSummary,
+    RecommendationRankingContext,
     RuntimeProductCandidate,
 )
 
@@ -302,20 +303,12 @@ def _profile_aware_candidate_sort_key(
     runtime_candidate: RuntimeProductCandidate,
     *,
     bucket: str,
-    required_annual_return: float | None,
-    goal_horizon_months: int | None,
-    risk_preference: str | None,
-    max_drawdown_tolerance: float | None,
-    market_pressure_score: float | None,
+    ranking_context: RecommendationRankingContext | None,
 ) -> tuple[float, ...]:
     return profile_aware_candidate_sort_key(
         runtime_candidate,
         bucket=bucket,
-        required_annual_return=required_annual_return,
-        goal_horizon_months=goal_horizon_months,
-        risk_preference=risk_preference,
-        max_drawdown_tolerance=max_drawdown_tolerance,
-        market_pressure_score=market_pressure_score,
+        ranking_context=ranking_context,
     )
 
 
@@ -323,22 +316,14 @@ def _candidate_sort_key(
     runtime_candidate: RuntimeProductCandidate,
     *,
     bucket: str,
-    required_annual_return: float | None,
-    goal_horizon_months: int | None,
-    risk_preference: str | None,
-    max_drawdown_tolerance: float | None,
-    market_pressure_score: float | None,
+    ranking_context: RecommendationRankingContext | None,
 ) -> tuple[float | int | str, ...]:
     candidate = runtime_candidate.candidate
     return (
         *_profile_aware_candidate_sort_key(
             runtime_candidate,
             bucket=bucket,
-            required_annual_return=required_annual_return,
-            goal_horizon_months=goal_horizon_months,
-            risk_preference=risk_preference,
-            max_drawdown_tolerance=max_drawdown_tolerance,
-            market_pressure_score=market_pressure_score,
+            ranking_context=ranking_context,
         ),
         _WRAPPER_PRIORITY.get((candidate.asset_bucket, candidate.wrapper_type), 9),
         _LIQUIDITY_PRIORITY.get(candidate.liquidity_tier, 9),
@@ -621,11 +606,7 @@ def _build_item(
     target_weight: float,
     candidates: list[RuntimeProductCandidate],
     *,
-    required_annual_return: float | None = None,
-    goal_horizon_months: int | None = None,
-    risk_preference: str | None = None,
-    max_drawdown_tolerance: float | None = None,
-    market_pressure_score: float | None = None,
+    ranking_context: RecommendationRankingContext | None = None,
     primary_runtime_candidate: RuntimeProductCandidate | None = None,
     account_total_value: float | None = None,
     current_weight: float | None = None,
@@ -639,11 +620,7 @@ def _build_item(
         key=lambda candidate: _candidate_sort_key(
             candidate,
             bucket=bucket,
-            required_annual_return=required_annual_return,
-            goal_horizon_months=goal_horizon_months,
-            risk_preference=risk_preference,
-            max_drawdown_tolerance=max_drawdown_tolerance,
-            market_pressure_score=market_pressure_score,
+            ranking_context=ranking_context,
         ),
     )
     if primary_runtime_candidate is not None:
@@ -1974,6 +1951,13 @@ def build_execution_plan(
             if goal_horizon_months is not None
             else (24 if bucket_weight >= 0.20 else 12)
         )
+        ranking_context = RecommendationRankingContext(
+            required_annual_return=implied_required_annual_return,
+            goal_horizon_months=resolved_goal_horizon_months,
+            risk_preference=effective_risk_preference,
+            max_drawdown_tolerance=effective_max_drawdown_tolerance,
+            market_pressure_score=current_market_pressure_score,
+        )
         count_resolution = resolve_bucket_count(
             bucket=bucket,
             bucket_weight=bucket_weight,
@@ -1992,11 +1976,7 @@ def build_execution_plan(
             requested_resolution=count_resolution,
             candidates=bucket_candidates,
             search_expansion_level=normalized_search_expansion_level,
-            required_annual_return=implied_required_annual_return,
-            goal_horizon_months=resolved_goal_horizon_months,
-            risk_preference=effective_risk_preference,
-            max_drawdown_tolerance=effective_max_drawdown_tolerance,
-            market_pressure_score=current_market_pressure_score,
+            ranking_context=ranking_context,
         )
         bucket_construction_explanation = build_bucket_construction_explanation(
             bucket=bucket,
@@ -2004,6 +1984,8 @@ def build_execution_plan(
             requested_resolution=count_resolution,
             selected_members=selected_members,
             candidates=bucket_candidates,
+            search_expansion_level=normalized_search_expansion_level,
+            ranking_context=ranking_context,
         )
         if bucket_construction_explanation.unmet_reason:
             warnings.append(f"资金桶 {bucket} 结构约束未完全满足: {bucket_construction_explanation.unmet_reason}")
@@ -2031,11 +2013,7 @@ def build_execution_plan(
                 requested_resolution=suggested_resolution,
                 candidates=bucket_candidates,
                 search_expansion_level=normalized_search_expansion_level,
-                required_annual_return=implied_required_annual_return,
-                goal_horizon_months=resolved_goal_horizon_months,
-                risk_preference=effective_risk_preference,
-                max_drawdown_tolerance=effective_max_drawdown_tolerance,
-                market_pressure_score=current_market_pressure_score,
+                ranking_context=ranking_context,
             )
             suggested_explanation = build_bucket_construction_explanation(
                 bucket=bucket,
@@ -2043,6 +2021,8 @@ def build_execution_plan(
                 requested_resolution=suggested_resolution,
                 selected_members=suggested_members,
                 candidates=bucket_candidates,
+                search_expansion_level=normalized_search_expansion_level,
+                ranking_context=ranking_context,
             )
             bucket_suggestions[bucket] = {
                 "member_product_ids": [member.candidate.product_id for member in suggested_members],
@@ -2067,11 +2047,7 @@ def build_execution_plan(
                     bucket,
                     member_target_weight,
                     selected_members,
-                    required_annual_return=implied_required_annual_return,
-                    goal_horizon_months=resolved_goal_horizon_months,
-                    risk_preference=effective_risk_preference,
-                    max_drawdown_tolerance=effective_max_drawdown_tolerance,
-                    market_pressure_score=current_market_pressure_score,
+                    ranking_context=ranking_context,
                     primary_runtime_candidate=selected_member,
                     account_total_value=account_total_value,
                     current_weight=member_current_weight,
