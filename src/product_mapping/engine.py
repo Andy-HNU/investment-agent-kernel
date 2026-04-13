@@ -256,6 +256,12 @@ def _wrapper_reason(candidate: ProductCandidate, restriction_filter: _Restrictio
     return None
 
 
+def _recommendation_wrapper_policy_reason(candidate: ProductCandidate) -> str | None:
+    if candidate.wrapper_type == "stock":
+        return "recommendation_wrapper:stock"
+    return None
+
+
 def _region_reason(candidate: ProductCandidate, restriction_filter: _RestrictionFilter) -> str | None:
     region = str(candidate.region or "").strip().upper()
     if restriction_filter.allowed_regions and region and region not in restriction_filter.allowed_regions:
@@ -1813,6 +1819,7 @@ def _build_runtime_candidate_pool(
     restriction_filter: _RestrictionFilter,
     *,
     runtime_candidates: list[ProductCandidate] | list[RuntimeProductCandidate] | None = None,
+    exclude_stock_wrappers: bool = True,
     product_universe_inputs: dict[str, Any] | None = None,
     product_universe_result: dict[str, Any] | None = None,
     valuation_inputs: dict[str, Any] | None = None,
@@ -1851,6 +1858,13 @@ def _build_runtime_candidate_pool(
         lambda candidate: _wrapper_reason(candidate, restriction_filter),
     )
     stages.append(stage)
+    if exclude_stock_wrappers:
+        staged_candidates, stage = _apply_stage(
+            "recommendation_wrapper_policy",
+            staged_candidates,
+            _recommendation_wrapper_policy_reason,
+        )
+        stages.append(stage)
     staged_candidates, stage = _apply_stage(
         "region_restrictions",
         staged_candidates,

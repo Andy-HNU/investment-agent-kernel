@@ -272,3 +272,33 @@ def test_build_execution_plan_search_expansion_level_changes_selected_satellite_
     assert compact_ids != expanded_ids
     assert "satellite_energy_fund" not in compact_ids
     assert expanded_ids == {"satellite_chip_etf", "satellite_energy_fund"}
+
+
+def test_default_formal_recommendation_excludes_stock_wrappers_from_selected_products() -> None:
+    plan = build_execution_plan(
+        source_run_id="test",
+        source_allocation_id="alloc",
+        bucket_targets={"equity_cn": 1.0},
+        bucket_count_preferences=[
+            BucketCardinalityPreference(
+                bucket="equity_cn",
+                mode="target_count",
+                target_count=3,
+                min_count=None,
+                max_count=None,
+                source="user_requested",
+            ),
+        ],
+        search_expansion_level="L2_diversified",
+        goal_horizon_months=48,
+        risk_preference="aggressive",
+        max_drawdown_tolerance=0.28,
+        current_market_pressure_score=18.0,
+        implied_required_annual_return=0.14,
+    )
+
+    selected_ids = {item.primary_product_id for item in plan.items if item.asset_bucket == "equity_cn"}
+    selected_wrappers = {item.primary_product.wrapper_type for item in plan.items if item.asset_bucket == "equity_cn"}
+
+    assert "cn_equity_single_stock_proxy" not in selected_ids
+    assert "stock" not in selected_wrappers

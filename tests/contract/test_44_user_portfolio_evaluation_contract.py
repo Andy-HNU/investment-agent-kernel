@@ -200,6 +200,34 @@ def test_runtime_only_candidate_is_resolved_consistently_across_evaluation_and_p
 
 
 @pytest.mark.contract
+def test_user_portfolio_allows_recognized_stock_wrapper_without_rewriting(monkeypatch, tmp_path):
+    user_portfolio = [
+        {"product_id": "cn_equity_single_stock_proxy", "target_weight": 0.55},
+        {"product_id": "cn_cash_money_fund", "target_weight": 0.45},
+    ]
+    profile = _profile(account_profile_id="user_portfolio_recognized_stock")
+
+    def _fake_build_user_onboarding_inputs(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return _profile_bundle_with_user_portfolio(
+            profile,
+            user_portfolio=user_portfolio,
+            as_of=kwargs.get("as_of") or "2026-04-07T00:00:00Z",
+        )
+
+    monkeypatch.setattr("frontdesk.service.build_user_onboarding_inputs", _fake_build_user_onboarding_inputs)
+
+    result = run_frontdesk_onboarding(profile, db_path=tmp_path / "frontdesk_recognized_stock.sqlite")
+
+    assert result["evaluation_mode"] == "user_specified_portfolio"
+    assert result["unknown_product_resolution"]["state"] == "recognized"
+    assert [item["primary_product_id"] for item in result["pending_execution_plan"]["items"]] == [
+        "cn_equity_single_stock_proxy",
+        "cn_cash_money_fund",
+    ]
+    assert result["pending_execution_plan"]["items"][0]["primary_product"]["wrapper_type"] == "stock"
+
+
+@pytest.mark.contract
 def test_user_portfolio_probability_engine_result_is_populated_for_evaluation_mode(monkeypatch):
     user_portfolio = [
         {"product_id": "cn_equity_dividend_etf", "target_weight": 0.25},
