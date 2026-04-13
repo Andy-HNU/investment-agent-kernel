@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 _WRAPPER_TO_VENUE = {
     "etf": "场内ETF",
     "stock": "场内股票",
@@ -10,7 +12,7 @@ _WRAPPER_TO_VENUE = {
 }
 
 
-def build_product_display(payload):
+def build_product_display(payload: dict[str, Any] | None) -> dict[str, Any]:
     data = payload or {}
     display_name = str(data.get("product_name") or "").strip() or None
     display_code = str(data.get("provider_symbol") or "").strip() or None
