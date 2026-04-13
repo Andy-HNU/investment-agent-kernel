@@ -16,6 +16,8 @@ def test_candidate_pool_limit_grows_by_search_expansion_level():
     assert candidate_pool_limit("equity_cn", "L1_expanded") == 6
     assert candidate_pool_limit("satellite", "L1_expanded") == 8
     assert candidate_pool_limit("satellite", "L2_diversified") == 10
+    assert candidate_pool_limit("bond_cn", "L3_exhaustive") == 4
+    assert candidate_pool_limit("equity_cn", "L3_exhaustive") == 10
 
 
 @pytest.mark.contract
@@ -46,3 +48,10 @@ def test_search_expansion_result_requires_visible_delta_fields():
     )
     assert result.search_expansion_level == "L1_expanded"
     assert result.new_product_ids_added == ["cn_equity_low_vol_fund"]
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize("bucket", [None, "mystery_bucket"])
+def test_candidate_pool_limit_rejects_invalid_bucket(bucket):
+    with pytest.raises(ValueError, match="invalid bucket"):
+        candidate_pool_limit(bucket, "L0_compact")

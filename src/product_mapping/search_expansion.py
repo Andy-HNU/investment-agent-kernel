@@ -48,6 +48,21 @@ _SEARCH_EXPANSION_DEFAULT_LIMITS: dict[str, int] = {
     SearchExpansionLevels.L3_EXHAUSTIVE: 10,
 }
 
+_MIN_TARGET_DISTANCE_STALL_GAIN = 0.001
+_MIN_CONSECUTIVE_SMALL_GAIN_COUNT = 2
+_CANONICAL_BUCKETS: set[str] = {"equity_cn", "bond_cn", "gold", "cash_liquidity", "satellite"}
+
+
+def _normalize_bucket(bucket: Any) -> str:
+    if bucket is None:
+        raise ValueError("invalid bucket: None")
+    if not isinstance(bucket, str):
+        raise ValueError(f"invalid bucket: {bucket!r}")
+    normalized = bucket.strip()
+    if normalized not in _CANONICAL_BUCKETS:
+        raise ValueError(f"invalid bucket: {bucket!r}")
+    return normalized
+
 
 def normalize_search_expansion_level(value: Any) -> str:
     if not isinstance(value, str):
@@ -58,12 +73,10 @@ def normalize_search_expansion_level(value: Any) -> str:
     return normalized
 
 
-def candidate_pool_limit(bucket: str, search_expansion_level: SearchExpansionLevel | str) -> int:
-    bucket = str(bucket).strip()
-    if not bucket:
-        raise ValueError("bucket must be a non-empty string")
+def candidate_pool_limit(bucket: Any, search_expansion_level: SearchExpansionLevel | str) -> int:
+    normalized_bucket = _normalize_bucket(bucket)
     normalized_level = normalize_search_expansion_level(search_expansion_level)
-    bucket_limits = _SEARCH_EXPANSION_POOL_LIMITS_BY_BUCKET.get(bucket)
+    bucket_limits = _SEARCH_EXPANSION_POOL_LIMITS_BY_BUCKET.get(normalized_bucket)
     if bucket_limits is not None and normalized_level in bucket_limits:
         return bucket_limits[normalized_level]
     return _SEARCH_EXPANSION_DEFAULT_LIMITS[normalized_level]
@@ -81,7 +94,7 @@ def resolve_search_stop_reason(
         reason = str(hard_stop_reason).strip()
         return reason or None
 
-    if consecutive_small_gain_count >= 2 and float(target_distance_improvement) < 0.001:
+    if consecutive_small_gain_count >= _MIN_CONSECUTIVE_SMALL_GAIN_COUNT and float(target_distance_improvement) < _MIN_TARGET_DISTANCE_STALL_GAIN:
         return "marginal_target_distance_gain_too_small"
 
     if float(success_improvement) <= 0.0 and float(drawdown_improvement) <= 0.0:
