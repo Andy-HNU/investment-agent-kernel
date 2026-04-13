@@ -265,6 +265,52 @@ def test_product_display_label_uses_name_code_and_venue() -> None:
 
 
 @pytest.mark.contract
+def test_product_display_label_uses_name_only_and_venue() -> None:
+    from shared.product_display import build_product_display
+
+    payload = build_product_display(
+        {
+            "product_name": "沪深300ETF",
+            "wrapper_type": "etf",
+        }
+    )
+
+    assert payload["display_name"] == "沪深300ETF"
+    assert payload["display_code"] is None
+    assert payload["trading_venue_label"] == "场内ETF"
+    assert payload["display_label"] == "沪深300ETF (场内ETF)"
+
+
+@pytest.mark.contract
+def test_product_display_label_handles_none_payload() -> None:
+    from shared.product_display import build_product_display
+
+    payload = build_product_display(None)
+
+    assert payload == {
+        "display_name": None,
+        "display_code": None,
+        "trading_venue_label": "其他产品",
+        "display_label": "其他产品",
+    }
+
+
+@pytest.mark.contract
+def test_product_display_label_falls_back_for_unknown_wrapper() -> None:
+    from shared.product_display import build_product_display
+
+    payload = build_product_display(
+        {
+            "product_name": "沪深300ETF",
+            "wrapper_type": "mystery",
+        }
+    )
+
+    assert payload["trading_venue_label"] == "其他产品"
+    assert payload["display_label"] == "沪深300ETF (其他产品)"
+
+
+@pytest.mark.contract
 def test_runtime_action_card_surfaces_low_confidence_and_review_conditions():
     card = build_decision_card(
         DecisionCardBuildInput(
