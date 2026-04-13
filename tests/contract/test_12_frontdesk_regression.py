@@ -353,6 +353,18 @@ def test_frontdesk_summary_uses_market_facing_product_labels_for_pending_items()
         account_profile_id="market_label_frontdesk",
         display_name="Andy",
         db_path=Path("/tmp/market_label_frontdesk.sqlite"),
+        result_payload={
+            "evaluation_mode": "user_specified_portfolio",
+            "requested_structure": [
+                {"product_id": "cn_equity_dividend_etf", "target_weight": 1.0}
+            ],
+            "requested_structure_visibility": {
+                "requested_structure": [
+                    {"product_id": "cn_equity_dividend_etf", "target_weight": 1.0}
+                ]
+            },
+            "unknown_product_resolution": {"state": "recognized"},
+        },
         user_state={
             "pending_execution_plan": {
                 "items": [
@@ -368,11 +380,14 @@ def test_frontdesk_summary_uses_market_facing_product_labels_for_pending_items()
                 ]
             }
         },
-        result_payload={},
     )
 
     assert (
         summary["pending_execution_plan"]["items"][0]["primary_product"]["display_label"]
+        == "红利ETF (510880, 场内ETF)"
+    )
+    assert (
+        summary["requested_structure_result"]["items"][0]["primary_product"]["display_label"]
         == "红利ETF (510880, 场内ETF)"
     )
 

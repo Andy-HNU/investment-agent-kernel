@@ -730,6 +730,45 @@ def test_decision_card_surfaces_recommendation_expansion_facts_from_execution_pl
 
 
 @pytest.mark.contract
+def test_recommendation_expansion_view_attaches_market_facing_labels_to_nested_products() -> None:
+    from shared.execution_plan_summary import build_recommendation_expansion_view
+
+    view = build_recommendation_expansion_view(
+        {
+            "search_expansion_level": "L0_compact",
+            "recommendation_expansion": {
+                "requested_search_expansion_level": "L1_expanded",
+                "expanded_alternatives": [
+                    {
+                        "recommendation_kind": "same_allocation_search_expansion",
+                        "allocation_name": "compact_primary",
+                        "search_expansion_level": "L1_expanded",
+                        "primary_product": {
+                            "product_id": "cn_equity_dividend_etf",
+                            "product_name": "红利ETF",
+                            "provider_symbol": "510880",
+                            "wrapper_type": "etf",
+                        },
+                        "recommended_products": [
+                            {
+                                "product_id": "cn_equity_dividend_etf",
+                                "product_name": "红利ETF",
+                                "provider_symbol": "510880",
+                                "wrapper_type": "etf",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+
+    alternative = view["expanded_alternatives"][0]
+    assert alternative["primary_product"]["display_label"] == "红利ETF (510880, 场内ETF)"
+    assert alternative["recommended_products"][0]["display_label"] == "红利ETF (510880, 场内ETF)"
+
+
+@pytest.mark.contract
 def test_runtime_action_card_requires_recommended_action_or_ranked_actions():
     with pytest.raises(ValueError, match="recommended_action or ranked_actions"):
         build_decision_card(
