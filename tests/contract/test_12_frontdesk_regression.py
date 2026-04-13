@@ -394,22 +394,32 @@ def test_frontdesk_summary_uses_market_facing_product_labels_for_pending_items()
 
 @pytest.mark.contract
 def test_frontdesk_summary_surfaces_canonical_no_delta_recommendation_expansion_view() -> None:
-    execution_plan_summary = {
-        "plan_id": "plan_no_delta",
-        "plan_version": 1,
-        "source_run_id": "run_no_delta",
-        "source_allocation_id": "compact_primary",
-        "status": "draft",
-        "search_expansion_level": "L0_compact",
-        "recommendation_expansion": {
-            "requested_search_expansion_level": "L1_expanded",
-            "why_this_level_was_run": "user_requested_deeper_search",
-            "why_search_stopped": "no_new_products_found_at_requested_level",
-            "new_product_ids_added": [],
-            "products_removed": [],
-            "expanded_alternatives": [],
-        },
-        "items": [],
+    execution_plan_summary = _build_execution_plan_summary(
+        {
+            "plan_id": "plan_no_delta",
+            "plan_version": 1,
+            "source_run_id": "run_no_delta",
+            "source_allocation_id": "compact_primary",
+            "status": "draft",
+            "search_expansion_level": "L0_compact",
+            "recommendation_expansion": {
+                "requested_search_expansion_level": "L1_expanded",
+                "why_this_level_was_run": "user_requested_deeper_search",
+                "why_search_stopped": "no_new_products_found_at_requested_level",
+                "new_product_ids_added": [],
+                "products_removed": [],
+                "expanded_alternatives": [],
+            },
+            "items": [],
+        }
+    )
+    expected_recommendation_expansion = {
+        "requested_search_expansion_level": "L1_expanded",
+        "why_this_level_was_run": "user_requested_deeper_search",
+        "why_search_stopped": "no_new_products_found_at_requested_level",
+        "new_product_ids_added": [],
+        "products_removed": [],
+        "expanded_alternatives": [],
     }
     expected_view = {
         "search_expansion_level": "L0_compact",
@@ -430,9 +440,7 @@ def test_frontdesk_summary_surfaces_canonical_no_delta_recommendation_expansion_
 
     assert summary["recommendation_expansion_view"] == expected_view
     assert summary["decision_card"]["recommendation_expansion_view"] == expected_view
-    assert summary["decision_card"]["execution_plan_summary"]["recommendation_expansion"] == execution_plan_summary[
-        "recommendation_expansion"
-    ]
+    assert summary["decision_card"]["execution_plan_summary"]["recommendation_expansion"] == expected_recommendation_expansion
     assert "recommendation_expansion_view" not in summary["decision_card"]["execution_plan_summary"]
 
 
