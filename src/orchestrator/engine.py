@@ -26,8 +26,10 @@ from product_mapping import (
     build_execution_plan,
     build_portfolio_explanation_surfaces,
     load_builtin_catalog,
+    normalize_search_expansion_level,
 )
 from product_mapping.engine import _build_product_simulation_input
+from product_mapping.search_expansion import SearchExpansionLevels
 from product_mapping.types import ExecutionPlan, ExecutionPlanItem, ProductCandidate
 from product_mapping.runtime_inputs import enrich_market_raw_with_runtime_product_inputs
 from runtime_optimizer.engine import run_runtime_optimizer
@@ -57,7 +59,12 @@ from orchestrator.types import (
     WorkflowStatus,
     WorkflowType,
 )
-from product_mapping.types import PortfolioEvaluationSummary, ProductCandidate, UserPortfolioResolutionItem
+from product_mapping.types import (
+    PortfolioEvaluationSummary,
+    ProductCandidate,
+    SearchExpansionRecommendation,
+    UserPortfolioResolutionItem,
+)
 
 
 _GOAL_SOLVER_CONSTRAINT_FIELDS = (
@@ -954,6 +961,8 @@ def _materialize_goal_solver_output_like(template: Any, payload: dict[str, Any])
     if isinstance(template, dict):
         return payload
     materialized = deepcopy(template)
+    if hasattr(materialized, "frontier_diagnostics"):
+        materialized.frontier_diagnostics = deepcopy(_as_dict(payload.get("frontier_diagnostics")))
     if hasattr(materialized, "recommended_allocation"):
         materialized.recommended_allocation = StrategicAllocation(
             **_filter_dataclass_kwargs(StrategicAllocation, _as_dict(payload.get("recommended_allocation")))
@@ -1136,6 +1145,236 @@ def _rerank_goal_solver_output_with_v14_primary(
         candidate_probability_inputs.get(selected_name),
         candidate_probability_results.get(selected_name),
     )
+
+
+def _requested_search_expansion(envelope: dict[str, Any]) -> tuple[str | None, str | None]:
+    request_payload = _as_dict(envelope.get("recommendation_expansion"))
+    control_flags = _as_dict(envelope.get("control_flags"))
+    raw_level = _first_text(
+        request_payload.get("search_expansion_level"),
+        control_flags.get("search_expansion_level"),
+        envelope.get("search_expansion_level"),
+    )
+    if raw_level is None:
+        return None, None
+    normalized_level = normalize_search_expansion_level(raw_level)
+    why_this_level_was_run = _first_text(
+        request_payload.get("why_this_level_was_run"),
+        request_payload.get("reason"),
+        control_flags.get("why_this_level_was_run"),
+        control_flags.get("search_expansion_reason"),
+        envelope.get("why_this_level_was_run"),
+        envelope.get("search_expansion_reason"),
+    )
+    return normalized_level, (why_this_level_was_run or "explicit_opt_in_requested_level")
+
+
+def _goal_solver_result_by_allocation_name(goal_solver_output: Any) -> dict[str, dict[str, Any]]:
+    result_index: dict[str, dict[str, Any]] = {}
+    for result in list(_as_dict(goal_solver_output).get("all_results") or []):
+        payload = _as_dict(result)
+        allocation_name = _first_text(payload.get("allocation_name"))
+        if allocation_name is not None:
+            result_index[allocation_name] = payload
+    return result_index
+
+
+def _candidate_allocation_by_name(goal_solver_input: Any) -> dict[str, dict[str, Any]]:
+    allocation_index: dict[str, dict[str, Any]] = {}
+    for allocation in list(_as_dict(goal_solver_input).get("candidate_allocations") or []):
+        payload = _as_dict(allocation)
+        allocation_name = _first_text(payload.get("name"))
+        if allocation_name is not None:
+            allocation_index[allocation_name] = payload
+    return allocation_index
+
+
+def _selected_product_ids_from_context(context: Any) -> list[str]:
+    return [
+        str(product_id).strip()
+        for product_id in list(_as_dict(context).get("selected_product_ids") or [])
+        if str(product_id).strip()
+    ]
+
+
+def _search_expansion_delta(
+    *,
+    compact_context: Any,
+    expanded_context: Any,
+) -> tuple[list[str], list[str]]:
+    compact_ids = _selected_product_ids_from_context(compact_context)
+    expanded_ids = _selected_product_ids_from_context(expanded_context)
+    compact_set = set(compact_ids)
+    expanded_set = set(expanded_ids)
+    return (
+        sorted(product_id for product_id in expanded_ids if product_id not in compact_set),
+        sorted(product_id for product_id in compact_ids if product_id not in expanded_set),
+    )
+
+
+def _search_expansion_alternative_payload(
+    *,
+    recommendation_kind: str,
+    allocation_name: str,
+    search_expansion_level: str,
+    why_this_level_was_run: str,
+    why_search_stopped: str,
+    compact_context: Any,
+    expanded_context: Any,
+    result_payload: dict[str, Any],
+    allocation_payload: dict[str, Any],
+) -> dict[str, Any]:
+    new_product_ids_added, products_removed = _search_expansion_delta(
+        compact_context=compact_context,
+        expanded_context=expanded_context,
+    )
+    return {
+        "recommendation_kind": recommendation_kind,
+        "allocation_name": allocation_name,
+        "search_expansion_level": search_expansion_level,
+        "why_this_level_was_run": why_this_level_was_run,
+        "why_search_stopped": why_search_stopped,
+        "new_product_ids_added": new_product_ids_added,
+        "products_removed": products_removed,
+        "selected_product_ids": _selected_product_ids_from_context(expanded_context),
+        "recommended_result": deepcopy(result_payload),
+        "recommended_allocation": deepcopy(allocation_payload),
+    }
+
+
+def _apply_progressive_recommendation_expansion(
+    *,
+    run_id: str,
+    envelope: dict[str, Any],
+    snapshot_bundle: Any | None,
+    calibration_result: Any,
+    goal_solver_input: Any,
+    goal_solver_output: Any,
+    formal_path_required: bool,
+    execution_policy: ExecutionPolicy | str,
+) -> tuple[Any, SearchExpansionRecommendation | None]:
+    requested_level, why_this_level_was_run = _requested_search_expansion(envelope)
+    if requested_level is None or requested_level == SearchExpansionLevels.L0_COMPACT:
+        return goal_solver_output, None
+
+    effective_execution_policy = (
+        execution_policy if isinstance(execution_policy, ExecutionPolicy) else coerce_execution_policy(execution_policy)
+    )
+    candidate_allocations = list(_as_dict(goal_solver_input).get("candidate_allocations") or [])
+    if not candidate_allocations:
+        return goal_solver_output, None
+
+    expanded_contexts = _build_solver_candidate_product_contexts(
+        candidate_allocations=candidate_allocations,
+        envelope=envelope,
+        snapshot_bundle=snapshot_bundle,
+        formal_path_required=formal_path_required,
+        execution_policy=effective_execution_policy,
+        search_expansion_level=requested_level,
+    )
+    if not expanded_contexts:
+        return goal_solver_output, None
+
+    expanded_solver_input = deepcopy(_as_dict(goal_solver_input))
+    expanded_solver_input["candidate_product_contexts"] = expanded_contexts
+    expanded_goal_solver_output, _, _ = _rerank_goal_solver_output_with_v14_primary(
+        run_id=run_id,
+        envelope=envelope,
+        calibration_result=calibration_result,
+        goal_solver_input=expanded_solver_input,
+        goal_solver_output=goal_solver_output,
+    )
+    expanded_goal_output = _as_dict(expanded_goal_solver_output)
+    if not expanded_goal_output:
+        return goal_solver_output, None
+
+    compact_goal_output = deepcopy(_as_dict(goal_solver_output))
+    compact_contexts = _as_dict(_as_dict(goal_solver_input).get("candidate_product_contexts"))
+    compact_primary_name = _first_text(
+        compact_goal_output.get("recommended_allocation_name"),
+        _as_dict(compact_goal_output.get("recommended_result")).get("allocation_name"),
+        _as_dict(compact_goal_output.get("recommended_allocation")).get("name"),
+    )
+    expanded_primary_name = _first_text(
+        expanded_goal_output.get("recommended_allocation_name"),
+        _as_dict(expanded_goal_output.get("recommended_result")).get("allocation_name"),
+        _as_dict(expanded_goal_output.get("recommended_allocation")).get("name"),
+    )
+    if compact_primary_name is None or expanded_primary_name is None:
+        return goal_solver_output, None
+
+    compact_primary_context = _as_dict(compact_contexts.get(compact_primary_name))
+    expanded_primary_context = _as_dict(expanded_contexts.get(expanded_primary_name))
+    new_product_ids_added, products_removed = _search_expansion_delta(
+        compact_context=compact_primary_context,
+        expanded_context=expanded_primary_context,
+    )
+    why_search_stopped = (
+        "requested_search_expansion_level_reached"
+        if new_product_ids_added or products_removed
+        else "requested_search_expansion_level_reached_no_product_delta"
+    )
+    search_expansion_recommendation = SearchExpansionRecommendation(
+        search_expansion_level=requested_level,
+        why_this_level_was_run=why_this_level_was_run or "explicit_opt_in_requested_level",
+        why_search_stopped=why_search_stopped,
+        new_product_ids_added=new_product_ids_added,
+        products_removed=products_removed,
+    )
+
+    expanded_results = _goal_solver_result_by_allocation_name(expanded_goal_output)
+    candidate_allocations_by_name = _candidate_allocation_by_name(goal_solver_input)
+    frontier_analysis = _as_dict(expanded_goal_output.get("frontier_analysis"))
+    highest_success_name = _first_text(_as_dict(frontier_analysis.get("highest_probability")).get("allocation_name"))
+
+    alternatives: list[dict[str, Any]] = []
+
+    def _append_alternative(allocation_name: str, recommendation_kind: str) -> None:
+        result_payload = _as_dict(expanded_results.get(allocation_name))
+        if not result_payload:
+            return
+        allocation_payload = _as_dict(candidate_allocations_by_name.get(allocation_name))
+        if not allocation_payload and allocation_name == expanded_primary_name:
+            allocation_payload = _as_dict(expanded_goal_output.get("recommended_allocation"))
+        alternatives.append(
+            _search_expansion_alternative_payload(
+                recommendation_kind=recommendation_kind,
+                allocation_name=allocation_name,
+                search_expansion_level=requested_level,
+                why_this_level_was_run=search_expansion_recommendation.why_this_level_was_run,
+                why_search_stopped=why_search_stopped,
+                compact_context=compact_primary_context,
+                expanded_context=_as_dict(expanded_contexts.get(allocation_name)),
+                result_payload=result_payload,
+                allocation_payload=allocation_payload,
+            )
+        )
+
+    _append_alternative(expanded_primary_name, "expanded_primary")
+    if highest_success_name is not None and highest_success_name != expanded_primary_name:
+        _append_alternative(highest_success_name, "highest_success_alternative")
+
+    frontier_diagnostics = deepcopy(_as_dict(compact_goal_output.get("frontier_diagnostics")))
+    frontier_diagnostics["recommendation_expansion"] = {
+        "primary_recommendation_level": SearchExpansionLevels.L0_COMPACT,
+        "requested_search_expansion_level": requested_level,
+        "why_this_level_was_run": search_expansion_recommendation.why_this_level_was_run,
+        "why_search_stopped": why_search_stopped,
+        "new_product_ids_added": new_product_ids_added,
+        "products_removed": products_removed,
+        "alternatives": alternatives,
+    }
+    compact_goal_output["frontier_diagnostics"] = frontier_diagnostics
+    solver_notes = [str(note) for note in list(compact_goal_output.get("solver_notes") or [])]
+    solver_notes.append(
+        "progressive_recommendation_expansion "
+        f"primary_level={SearchExpansionLevels.L0_COMPACT} "
+        f"requested_level={requested_level} "
+        f"reason={search_expansion_recommendation.why_this_level_was_run} "
+        f"stop={why_search_stopped}"
+    )
+    compact_goal_output["solver_notes"] = solver_notes
+    return _materialize_goal_solver_output_like(goal_solver_output, compact_goal_output), search_expansion_recommendation
 
 
 def _mapped_probability_result_category(value: Any) -> str | None:
@@ -3118,6 +3357,8 @@ def _build_execution_plan_summary(execution_plan: Any) -> dict[str, Any]:
         "source_run_id": data.get("source_run_id"),
         "source_allocation_id": data.get("source_allocation_id"),
         "status": data.get("status"),
+        "search_expansion_level": data.get("search_expansion_level"),
+        "search_expansion_recommendation": dict(data.get("search_expansion_recommendation") or {}),
         "item_count": len(items),
         "confirmation_required": bool(data.get("confirmation_required", True)),
         "warning_count": len(list(data.get("warnings") or [])),
@@ -4279,6 +4520,7 @@ def _maybe_build_execution_plan(
     envelope: dict[str, Any],
     formal_path_required: bool,
     execution_policy: ExecutionPolicy,
+    search_expansion_recommendation: SearchExpansionRecommendation | None = None,
 ) -> Any | None:
     if workflow_type not in {
         WorkflowType.ONBOARDING,
@@ -4374,6 +4616,8 @@ def _maybe_build_execution_plan(
         available_cash=available_cash,
         liquidity_reserve_min=liquidity_reserve_min,
         transaction_fee_rate=transaction_fee_rate,
+        search_expansion_level=SearchExpansionLevels.L0_COMPACT,
+        search_expansion_recommendation=search_expansion_recommendation,
     )
 
 
@@ -4384,6 +4628,7 @@ def _build_solver_candidate_product_contexts(
     snapshot_bundle: Any | None,
     formal_path_required: bool,
     execution_policy: ExecutionPolicy,
+    search_expansion_level: str = SearchExpansionLevels.L0_COMPACT,
 ) -> dict[str, Any]:
     restrictions = _extract_execution_plan_restrictions(envelope)
     valuation_inputs, valuation_result = _extract_execution_plan_valuation_context(envelope)
@@ -4411,6 +4656,7 @@ def _build_solver_candidate_product_contexts(
             policy_news_signals=policy_news_signals,
             product_proxy_result=product_proxy_result,
             historical_dataset=historical_dataset,
+            search_expansion_level=search_expansion_level,
             formal_path_required=formal_path_required,
             execution_policy=execution_policy.value,
         )
@@ -4629,6 +4875,7 @@ def run_orchestrator(
     runtime_result = None
     probability_engine_result = None
     probability_engine_input = None
+    search_expansion_recommendation = None
     solver_snapshot_id = None
     has_prior_baseline = prior_solver_output is not None and prior_solver_input is not None
 
@@ -4673,6 +4920,7 @@ def run_orchestrator(
                         snapshot_bundle=snapshot_bundle,
                         formal_path_required=formal_path_required,
                         execution_policy=execution_policy,
+                        search_expansion_level=SearchExpansionLevels.L0_COMPACT,
                     )
                     candidate_context_blocking, candidate_context_degraded = _collect_formal_path_preflight_issues(
                         solver_input["candidate_product_contexts"],
@@ -4706,6 +4954,18 @@ def run_orchestrator(
                                     calibration_result=calibration_result,
                                     goal_solver_input=solver_input,
                                     goal_solver_output=goal_solver_output,
+                                )
+                            )
+                            goal_solver_output, search_expansion_recommendation = (
+                                _apply_progressive_recommendation_expansion(
+                                    run_id=run_id,
+                                    envelope=envelope,
+                                    snapshot_bundle=snapshot_bundle,
+                                    calibration_result=calibration_result,
+                                    goal_solver_input=solver_input,
+                                    goal_solver_output=goal_solver_output,
+                                    formal_path_required=formal_path_required,
+                                    execution_policy=execution_policy,
                                 )
                             )
                             if probability_engine_result is None:
@@ -4832,6 +5092,7 @@ def run_orchestrator(
         envelope=envelope,
         formal_path_required=formal_path_required,
         execution_policy=execution_policy,
+        search_expansion_recommendation=search_expansion_recommendation,
     )
     if (
         skip_solver_for_user_portfolio

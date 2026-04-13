@@ -10,7 +10,11 @@ import pytest
 import orchestrator.engine as orchestrator_engine
 from allocation_engine.types import AllocationEngineResult
 from decision_card.types import DecisionCardType
-from orchestrator.engine import _rerank_goal_solver_output_with_v14_primary, run_orchestrator
+from orchestrator.engine import (
+    _apply_progressive_recommendation_expansion,
+    _rerank_goal_solver_output_with_v14_primary,
+    run_orchestrator,
+)
 from orchestrator.types import OrchestratorResult, WorkflowStatus, WorkflowType
 from probability_engine.contracts import (
     PathStatsSummary,
@@ -379,6 +383,45 @@ def test_run_orchestrator_attaches_candidate_product_contexts_before_solver(
         assert context["product_probability_method"] == "product_proxy_adjustment_estimate"
         assert context["selected_product_ids"]
         assert "bucket_expected_return_adjustments" in context
+
+
+@pytest.mark.contract
+def test_build_solver_candidate_product_contexts_defaults_initial_recommendation_to_l0_compact(monkeypatch):
+    observed_levels: list[str] = []
+
+    def _fake_build_candidate_product_context(*, source_allocation_id, search_expansion_level="L0_compact", **_kwargs):
+        observed_levels.append(search_expansion_level)
+        return {
+            "allocation_name": source_allocation_id,
+            "search_expansion_level": search_expansion_level,
+            "selected_product_ids": [f"{source_allocation_id}_{search_expansion_level}"],
+        }
+
+    monkeypatch.setattr(orchestrator_engine, "build_candidate_product_context", _fake_build_candidate_product_context)
+
+    compact_contexts = orchestrator_engine._build_solver_candidate_product_contexts(
+        candidate_allocations=[
+            {"name": "compact_primary", "weights": {"equity_cn": 0.55, "bond_cn": 0.35, "gold": 0.10}},
+        ],
+        envelope={},
+        snapshot_bundle=None,
+        formal_path_required=False,
+        execution_policy=orchestrator_engine.ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED,
+    )
+    expanded_contexts = orchestrator_engine._build_solver_candidate_product_contexts(
+        candidate_allocations=[
+            {"name": "compact_primary", "weights": {"equity_cn": 0.55, "bond_cn": 0.35, "gold": 0.10}},
+        ],
+        envelope={},
+        snapshot_bundle=None,
+        formal_path_required=False,
+        execution_policy=orchestrator_engine.ExecutionPolicy.FORMAL_ESTIMATION_ALLOWED,
+        search_expansion_level="L1_expanded",
+    )
+
+    assert compact_contexts["compact_primary"]["search_expansion_level"] == "L0_compact"
+    assert expanded_contexts["compact_primary"]["search_expansion_level"] == "L1_expanded"
+    assert observed_levels == ["L0_compact", "L1_expanded"]
 
 
 @pytest.mark.contract
@@ -1685,3 +1728,244 @@ def test_v14_primary_reranking_falls_back_to_highest_success_when_required_retur
     assert updated_output["recommended_result"]["allocation_name"] == "high_success"
     assert updated_output["frontier_analysis"]["highest_probability"]["allocation_name"] == "high_success"
     assert updated_output["frontier_analysis"]["scenario_status"]["target_return_priority"]["reason"] == "required_annual_return_not_provided"
+
+
+@pytest.mark.contract
+def test_progressive_recommendation_expansion_adds_expanded_alternatives_without_overwriting_compact_primary(
+    monkeypatch,
+):
+    goal_solver_input = {
+        "candidate_allocations": [
+            {"name": "compact_primary", "weights": {"equity_cn": 0.55, "bond_cn": 0.35, "gold": 0.10}},
+            {"name": "higher_success_alt", "weights": {"equity_cn": 0.60, "bond_cn": 0.25, "gold": 0.15}},
+        ],
+        "candidate_product_contexts": {
+            "compact_primary": {
+                "allocation_name": "compact_primary",
+                "selected_product_ids": ["equity_l0", "bond_l0"],
+            },
+            "higher_success_alt": {
+                "allocation_name": "higher_success_alt",
+                "selected_product_ids": ["equity_alt_l0", "bond_alt_l0"],
+            },
+        },
+    }
+    goal_solver_output = {
+        "recommended_allocation": {
+            "name": "compact_primary",
+            "weights": {"equity_cn": 0.55, "bond_cn": 0.35, "gold": 0.10},
+        },
+        "recommended_result": {
+            "allocation_name": "compact_primary",
+            "success_probability": 0.67,
+            "expected_annual_return": 0.056,
+            "implied_required_annual_return": 0.06,
+        },
+        "all_results": [
+            {
+                "allocation_name": "compact_primary",
+                "success_probability": 0.67,
+                "expected_annual_return": 0.056,
+                "implied_required_annual_return": 0.06,
+            },
+            {
+                "allocation_name": "higher_success_alt",
+                "success_probability": 0.72,
+                "expected_annual_return": 0.071,
+                "implied_required_annual_return": 0.06,
+            },
+        ],
+        "frontier_analysis": {
+            "recommended": {"allocation_name": "compact_primary"},
+            "highest_probability": {"allocation_name": "higher_success_alt"},
+            "target_return_priority": {"allocation_name": "compact_primary"},
+            "scenario_status": {},
+        },
+        "solver_notes": [],
+    }
+
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "_build_solver_candidate_product_contexts",
+        lambda **_kwargs: {
+            "compact_primary": {
+                "allocation_name": "compact_primary",
+                "selected_product_ids": ["equity_l1", "bond_l0", "gold_l1"],
+            },
+            "higher_success_alt": {
+                "allocation_name": "higher_success_alt",
+                "selected_product_ids": ["equity_alt_l1", "bond_alt_l0", "gold_alt_l1"],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "_rerank_goal_solver_output_with_v14_primary",
+        lambda **_kwargs: (
+            {
+                "recommended_allocation": {
+                    "name": "compact_primary",
+                    "weights": {"equity_cn": 0.55, "bond_cn": 0.35, "gold": 0.10},
+                },
+                "recommended_result": {
+                    "allocation_name": "compact_primary",
+                    "success_probability": 0.69,
+                    "expected_annual_return": 0.058,
+                    "implied_required_annual_return": 0.06,
+                },
+                "all_results": [
+                    {
+                        "allocation_name": "compact_primary",
+                        "success_probability": 0.69,
+                        "expected_annual_return": 0.058,
+                        "implied_required_annual_return": 0.06,
+                    },
+                    {
+                        "allocation_name": "higher_success_alt",
+                        "success_probability": 0.74,
+                        "expected_annual_return": 0.072,
+                        "implied_required_annual_return": 0.06,
+                    },
+                ],
+                "frontier_analysis": {
+                    "recommended": {"allocation_name": "compact_primary"},
+                    "highest_probability": {"allocation_name": "higher_success_alt"},
+                    "target_return_priority": {"allocation_name": "compact_primary"},
+                    "scenario_status": {},
+                },
+            },
+            {"evidence_bundle_ref": "evidence://contract/compact_primary"},
+            _probability_result(success_probability=0.69, cagr_p50=0.058, terminal_value_mean=121000.0),
+        ),
+    )
+
+    updated_output, recommendation = _apply_progressive_recommendation_expansion(
+        run_id="contract_progressive_expansion",
+        envelope={"search_expansion_level": "L1_expanded", "why_this_level_was_run": "user_requested_deeper_search"},
+        snapshot_bundle=None,
+        calibration_result={},
+        goal_solver_input=goal_solver_input,
+        goal_solver_output=goal_solver_output,
+        formal_path_required=False,
+        execution_policy="formal_estimation_allowed",
+    )
+
+    expansion = updated_output["frontier_diagnostics"]["recommendation_expansion"]
+
+    assert updated_output["recommended_result"]["allocation_name"] == "compact_primary"
+    assert recommendation.search_expansion_level == "L1_expanded"
+    assert recommendation.why_this_level_was_run == "user_requested_deeper_search"
+    assert recommendation.new_product_ids_added == ["equity_l1", "gold_l1"]
+    assert recommendation.products_removed == ["equity_l0"]
+    assert expansion["primary_recommendation_level"] == "L0_compact"
+    assert expansion["requested_search_expansion_level"] == "L1_expanded"
+    assert expansion["alternatives"][0]["recommended_result"]["allocation_name"] == "compact_primary"
+    assert expansion["alternatives"][0]["new_product_ids_added"] == ["equity_l1", "gold_l1"]
+
+
+@pytest.mark.contract
+def test_progressive_recommendation_expansion_keeps_closest_target_primary_and_highest_success_as_alternative_when_no_candidate_meets_return(
+    monkeypatch,
+):
+    goal_solver_input = {
+        "candidate_allocations": [
+            {"name": "closest_to_target", "weights": {"equity_cn": 0.40, "bond_cn": 0.35, "gold": 0.15, "satellite": 0.10}},
+            {"name": "highest_success", "weights": {"equity_cn": 0.60, "bond_cn": 0.20, "gold": 0.10, "satellite": 0.10}},
+        ],
+        "candidate_product_contexts": {
+            "closest_to_target": {
+                "allocation_name": "closest_to_target",
+                "selected_product_ids": ["closest_l0"],
+                "product_simulation_input": {"coverage_summary": {}},
+            },
+            "highest_success": {
+                "allocation_name": "highest_success",
+                "selected_product_ids": ["highest_l0"],
+                "product_simulation_input": {"coverage_summary": {}},
+            },
+        },
+    }
+    goal_solver_output = {
+        "recommended_allocation": {
+            "name": "closest_to_target",
+            "weights": {"equity_cn": 0.40, "bond_cn": 0.35, "gold": 0.15, "satellite": 0.10},
+        },
+        "recommended_result": {
+            "allocation_name": "closest_to_target",
+            "implied_required_annual_return": 0.06,
+            "success_probability": 0.66,
+            "expected_annual_return": 0.057,
+        },
+        "all_results": [
+            {
+                "allocation_name": "closest_to_target",
+                "implied_required_annual_return": 0.06,
+                "success_probability": 0.66,
+                "expected_annual_return": 0.057,
+                "max_drawdown_p95": 0.06,
+                "terminal_value_p50": 120000.0,
+            },
+            {
+                "allocation_name": "highest_success",
+                "implied_required_annual_return": 0.06,
+                "success_probability": 0.78,
+                "expected_annual_return": 0.075,
+                "max_drawdown_p95": 0.04,
+                "terminal_value_p50": 126000.0,
+            },
+        ],
+        "frontier_analysis": {
+            "recommended": {"allocation_name": "closest_to_target"},
+            "highest_probability": {"allocation_name": "highest_success"},
+            "target_return_priority": {"allocation_name": "closest_to_target"},
+            "scenario_status": {},
+        },
+        "solver_notes": [],
+    }
+
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "_build_solver_candidate_product_contexts",
+        lambda **_kwargs: {
+            "closest_to_target": {
+                "allocation_name": "closest_to_target",
+                "selected_product_ids": ["closest_l1"],
+                "product_simulation_input": {"coverage_summary": {}},
+            },
+            "highest_success": {
+                "allocation_name": "highest_success",
+                "selected_product_ids": ["highest_l1"],
+                "product_simulation_input": {"coverage_summary": {}},
+            },
+        },
+    )
+
+    def _fake_build(**kwargs):  # type: ignore[no-untyped-def]
+        allocation_name = kwargs.get("allocation_name")
+        return ({"evidence_bundle_ref": f"evidence://contract/{allocation_name}"}, {})
+
+    def _fake_probability_engine(sim_input):  # type: ignore[no-untyped-def]
+        if str(sim_input["evidence_bundle_ref"]).endswith("/closest_to_target"):
+            return _probability_result(success_probability=0.68, cagr_p50=0.058, terminal_value_mean=120500.0)
+        return _probability_result(success_probability=0.80, cagr_p50=0.076, terminal_value_mean=126500.0)
+
+    monkeypatch.setattr(orchestrator_engine, "_build_probability_engine_run_input", _fake_build)
+    monkeypatch.setattr(orchestrator_engine, "run_probability_engine", _fake_probability_engine)
+
+    updated_output, recommendation = _apply_progressive_recommendation_expansion(
+        run_id="contract_progressive_no_target_match",
+        envelope={"search_expansion_level": "L1_expanded", "why_this_level_was_run": "user_requested_deeper_search"},
+        snapshot_bundle=None,
+        calibration_result={},
+        goal_solver_input=goal_solver_input,
+        goal_solver_output=goal_solver_output,
+        formal_path_required=False,
+        execution_policy="formal_estimation_allowed",
+    )
+
+    expansion = updated_output["frontier_diagnostics"]["recommendation_expansion"]
+    alternative_names = [item["recommended_result"]["allocation_name"] for item in expansion["alternatives"]]
+
+    assert updated_output["recommended_result"]["allocation_name"] == "closest_to_target"
+    assert recommendation.search_expansion_level == "L1_expanded"
+    assert alternative_names == ["closest_to_target", "highest_success"]

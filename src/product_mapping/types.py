@@ -319,6 +319,8 @@ class ExecutionPlan:
     source_run_id: str
     source_allocation_id: str
     status: Literal["draft", "user_review", "approved", "superseded", "cancelled"] = "draft"
+    search_expansion_level: str = "L0_compact"
+    search_expansion_recommendation: "SearchExpansionRecommendation | None" = None
     items: list[ExecutionPlanItem] = field(default_factory=list)
     bucket_construction_explanations: dict[str, "BucketConstructionExplanation"] = field(default_factory=dict)
     bucket_construction_suggestions: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -357,6 +359,12 @@ class ExecutionPlan:
             "source_run_id": self.source_run_id,
             "source_allocation_id": self.source_allocation_id,
             "status": self.status,
+            "search_expansion_level": self.search_expansion_level,
+            "search_expansion_recommendation": (
+                {}
+                if self.search_expansion_recommendation is None
+                else self.search_expansion_recommendation.to_dict()
+            ),
             "item_count": len(self.items),
             "bucket_construction_explanations": {
                 bucket: explanation.to_dict()

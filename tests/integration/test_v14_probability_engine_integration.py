@@ -25,8 +25,9 @@ from probability_engine.portfolio_policy import (
     apply_daily_cashflows_and_rebalance,
 )
 from probability_engine.recipes import PRIMARY_RECIPE_V14
-from product_mapping import BucketCardinalityPreference, build_execution_plan
+from product_mapping import BucketCardinalityPreference, SearchExpansionRecommendation, build_execution_plan
 from orchestrator.engine import (
+    _build_execution_plan_summary,
     _build_probability_engine_run_input,
     _rescale_factor_runtime_state_from_selected_products,
 )
@@ -486,6 +487,38 @@ def test_execution_plan_payload_exposes_bucket_construction_explanations() -> No
     assert len([item for item in payload["items"] if item["asset_bucket"] == "equity_cn"]) == 2
     assert "equity_cn" not in payload["bucket_construction_suggestions"]
     assert payload["bucket_construction_suggestions"]["satellite"]["member_product_ids"]
+
+
+def test_execution_plan_summary_threads_search_expansion_metadata_for_compact_primary() -> None:
+    plan = build_execution_plan(
+        source_run_id="integration_search_expansion_summary",
+        source_allocation_id="allocation_search_expansion_summary",
+        bucket_targets={
+            "equity_cn": 0.45,
+            "bond_cn": 0.30,
+            "gold": 0.15,
+            "cash_liquidity": 0.10,
+        },
+        goal_horizon_months=36,
+        risk_preference="moderate",
+        max_drawdown_tolerance=0.20,
+        current_market_pressure_score=28.0,
+        implied_required_annual_return=0.08,
+        search_expansion_level="L0_compact",
+        search_expansion_recommendation=SearchExpansionRecommendation(
+            search_expansion_level="L1_expanded",
+            why_this_level_was_run="user_requested_deeper_search",
+            why_search_stopped="requested_search_expansion_level_reached",
+            new_product_ids_added=["cn_equity_low_vol_fund"],
+            products_removed=["cn_equity_dividend_etf"],
+        ),
+    )
+
+    summary = _build_execution_plan_summary(plan)
+
+    assert summary["search_expansion_level"] == "L0_compact"
+    assert summary["search_expansion_recommendation"]["search_expansion_level"] == "L1_expanded"
+    assert summary["search_expansion_recommendation"]["new_product_ids_added"] == ["cn_equity_low_vol_fund"]
 
 
 def test_same_month_twenty_trading_day_path_accepts_horizon_months_one() -> None:

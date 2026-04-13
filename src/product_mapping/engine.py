@@ -35,6 +35,7 @@ from product_mapping.types import (
     ProxyUniverseSummary,
     RecommendationRankingContext,
     RuntimeProductCandidate,
+    SearchExpansionRecommendation,
 )
 
 
@@ -1388,6 +1389,7 @@ def build_candidate_product_context(
     policy_news_signals: list[dict[str, Any]] | list[Any] | None = None,
     product_proxy_result: dict[str, Any] | None = None,
     historical_dataset: dict[str, Any] | None = None,
+    search_expansion_level: str = SearchExpansionLevels.L0_COMPACT,
     formal_path_required: bool = False,
     execution_policy: ExecutionPolicy | str | None = None,
 ) -> dict[str, Any]:
@@ -1411,6 +1413,7 @@ def build_candidate_product_context(
         available_cash=None,
         liquidity_reserve_min=None,
         minimum_trade_amount=None,
+        search_expansion_level=search_expansion_level,
     )
     proxy_specs = _proxy_spec_by_product_id(preview_plan.product_proxy_specs)
     history_window = AuditWindow.from_any((historical_dataset or {}).get("audit_window"))
@@ -1469,6 +1472,7 @@ def build_candidate_product_context(
             product_probability_method = "product_proxy_path"
     return {
         "allocation_name": source_allocation_id,
+        "search_expansion_level": preview_plan.search_expansion_level,
         "product_probability_method": product_probability_method,
         "bucket_expected_return_adjustments": bucket_expected_return_adjustments,
         "bucket_volatility_multipliers": bucket_volatility_multipliers,
@@ -1480,6 +1484,39 @@ def build_candidate_product_context(
         "failure_artifact": failure_artifact,
         "notes": notes,
     }
+
+
+def _materialize_search_expansion_recommendation(
+    value: SearchExpansionRecommendation | dict[str, Any] | None,
+) -> SearchExpansionRecommendation | None:
+    if value is None:
+        return None
+    if isinstance(value, SearchExpansionRecommendation):
+        return value
+    payload = dict(value or {})
+    if not payload:
+        return None
+    return SearchExpansionRecommendation(
+        search_expansion_level=normalize_search_expansion_level(
+            payload.get("search_expansion_level", SearchExpansionLevels.L0_COMPACT)
+        ),
+        why_this_level_was_run=str(payload.get("why_this_level_was_run") or "").strip(),
+        why_search_stopped=(
+            None
+            if payload.get("why_search_stopped") in (None, "")
+            else str(payload.get("why_search_stopped")).strip()
+        ),
+        new_product_ids_added=[
+            str(product_id).strip()
+            for product_id in list(payload.get("new_product_ids_added") or [])
+            if str(product_id).strip()
+        ],
+        products_removed=[
+            str(product_id).strip()
+            for product_id in list(payload.get("products_removed") or [])
+            if str(product_id).strip()
+        ],
+    )
 
 
 def _build_execution_realism_summary(
@@ -1804,6 +1841,7 @@ def build_execution_plan(
     transaction_fee_rate: dict[str, float] | None = None,
     wrapper_slippage_rate: dict[str, float] | None = None,
     search_expansion_level: str = SearchExpansionLevels.L0_COMPACT,
+    search_expansion_recommendation: SearchExpansionRecommendation | dict[str, Any] | None = None,
     formal_path_required: bool = False,
     execution_policy: ExecutionPolicy | str | None = None,
 ) -> ExecutionPlan:
@@ -1935,6 +1973,9 @@ def build_execution_plan(
     effective_risk_preference = str(risk_preference or "moderate")
     effective_max_drawdown_tolerance = 0.20 if max_drawdown_tolerance is None else float(max_drawdown_tolerance)
     normalized_search_expansion_level = normalize_search_expansion_level(search_expansion_level)
+    materialized_search_expansion_recommendation = _materialize_search_expansion_recommendation(
+        search_expansion_recommendation
+    )
     for bucket, target_weight in adjusted_targets.items():
         if target_weight <= 0:
             continue
@@ -2102,6 +2143,8 @@ def build_execution_plan(
         plan_id=f"{source_run_id}:{source_allocation_id}",
         source_run_id=source_run_id,
         source_allocation_id=source_allocation_id,
+        search_expansion_level=normalized_search_expansion_level,
+        search_expansion_recommendation=materialized_search_expansion_recommendation,
         items=items,
         bucket_construction_explanations=bucket_explanations,
         bucket_construction_suggestions=bucket_suggestions,
