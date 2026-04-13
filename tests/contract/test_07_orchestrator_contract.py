@@ -2100,8 +2100,12 @@ def test_progressive_recommendation_expansion_does_not_collapse_mixed_delta_requ
 
     assert recommendation_expansion["why_search_stopped"] != "no_new_products_found_at_requested_level"
     assert recommendation_expansion["expanded_alternatives"]
+    assert recommendation_expansion["new_product_ids_added"] == ["equity_l1"]
+    assert recommendation_expansion["products_removed"] == ["equity_l0"]
     assert expansion["why_search_stopped"] != "no_new_products_found_at_requested_level"
     assert expansion["expanded_alternatives"]
+    assert expansion["new_product_ids_added"] == ["equity_l1"]
+    assert expansion["products_removed"] == ["equity_l0"]
     assert expansion["alternatives"][0]["recommended_result"]["allocation_name"] == "compact_primary"
     assert expansion["alternatives"][0]["new_product_ids_added"] == []
     assert expansion["alternatives"][1]["recommended_result"]["allocation_name"] == "higher_success_alt"

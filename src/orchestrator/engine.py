@@ -1314,7 +1314,7 @@ def _apply_progressive_recommendation_expansion(
 
     compact_primary_context = _as_dict(compact_contexts.get(compact_primary_name))
     expanded_primary_context = _as_dict(expanded_contexts.get(expanded_primary_name))
-    new_product_ids_added, products_removed = _search_expansion_delta(
+    compact_primary_new_product_ids_added, compact_primary_products_removed = _search_expansion_delta(
         compact_context=compact_primary_context,
         expanded_context=expanded_primary_context,
     )
@@ -1392,13 +1392,28 @@ def _apply_progressive_recommendation_expansion(
     if not has_real_delta:
         alternatives = []
 
+    surfaced_new_product_ids_added = list(compact_primary_new_product_ids_added)
+    surfaced_products_removed = list(compact_primary_products_removed)
+    if not surfaced_new_product_ids_added and not surfaced_products_removed:
+        surfaced_delta_alternative = next(
+            (
+                alternative
+                for alternative in alternatives
+                if alternative["new_product_ids_added"] or alternative["products_removed"]
+            ),
+            None,
+        )
+        if surfaced_delta_alternative is not None:
+            surfaced_new_product_ids_added = list(surfaced_delta_alternative["new_product_ids_added"])
+            surfaced_products_removed = list(surfaced_delta_alternative["products_removed"])
+
     recommendation_expansion = {
         "search_expansion_level": SearchExpansionLevels.L0_COMPACT,
         "requested_search_expansion_level": requested_level,
         "why_this_level_was_run": search_expansion_recommendation.why_this_level_was_run,
         "why_search_stopped": why_search_stopped,
-        "new_product_ids_added": new_product_ids_added,
-        "products_removed": products_removed,
+        "new_product_ids_added": surfaced_new_product_ids_added,
+        "products_removed": surfaced_products_removed,
         "expanded_alternatives": alternatives,
         "alternatives": alternatives,
     }
