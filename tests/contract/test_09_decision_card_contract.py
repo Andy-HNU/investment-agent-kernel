@@ -328,6 +328,19 @@ def test_product_display_label_uses_other_wrapper_mapping() -> None:
 
 
 @pytest.mark.contract
+def test_product_display_label_rejects_unknown_wrapper() -> None:
+    from shared.product_display import build_product_display
+
+    with pytest.raises(KeyError, match="mystery"):
+        build_product_display(
+            {
+                "product_name": "沪深300ETF",
+                "wrapper_type": "mystery",
+            }
+        )
+
+
+@pytest.mark.contract
 def test_runtime_action_card_surfaces_low_confidence_and_review_conditions():
     card = build_decision_card(
         DecisionCardBuildInput(

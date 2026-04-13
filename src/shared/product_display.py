@@ -15,7 +15,9 @@ def build_product_display(payload):
     display_name = str(data.get("product_name") or "").strip() or None
     display_code = str(data.get("provider_symbol") or "").strip() or None
     wrapper_type = str(data.get("wrapper_type") or "other").strip()
-    trading_venue_label = _WRAPPER_TO_VENUE.get(wrapper_type, "其他产品")
+    if wrapper_type not in _WRAPPER_TO_VENUE:
+        raise KeyError(wrapper_type)
+    trading_venue_label = _WRAPPER_TO_VENUE[wrapper_type]
 
     if display_name and display_code:
         display_label = f"{display_name} ({display_code}, {trading_venue_label})"
