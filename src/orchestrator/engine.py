@@ -848,7 +848,7 @@ def _candidate_probability_ranking_key(
     summary: dict[str, Any],
     *,
     required_return: float | None,
-) -> tuple[int, int, float, float, float, float]:
+) -> tuple[int, float, float, float, float]:
     status = _text(summary.get("run_outcome_status")) or ""
     category = _text(summary.get("resolved_result_category")) or ""
     is_usable = status in {"success", "degraded"} and category in {
@@ -860,25 +860,51 @@ def _candidate_probability_ranking_key(
     cagr_p50 = float(summary.get("cagr_p50") or 0.0)
     drawdown_p95 = float(summary.get("max_drawdown_p95") or 1.0)
     terminal_value_p50 = float(summary.get("terminal_value_p50") or 0.0)
-    return_gap = 0.0 if required_return is None else max(float(required_return) - cagr_p50, 0.0)
-    meets_target = required_return is None or cagr_p50 >= float(required_return)
-    if meets_target:
+    if required_return is None:
         return (
             1 if is_usable else 0,
-            1,
-            -return_gap,
+            0.0,
+            success_probability,
             -drawdown_p95,
             terminal_value_p50,
-            success_probability,
         )
+    return_gap = abs(cagr_p50 - float(required_return))
     return (
         1 if is_usable else 0,
-        0,
-        success_probability,
         -return_gap,
+        success_probability,
         -drawdown_p95,
         terminal_value_p50,
     )
+
+
+def _frontier_probability_payload(
+    *,
+    existing: dict[str, Any] | None,
+    allocation_name: str,
+    allocation_payload: dict[str, Any],
+    summary: dict[str, Any],
+    why_selected: str,
+) -> dict[str, Any]:
+    payload = deepcopy(_as_dict(existing))
+    payload["allocation_name"] = allocation_name
+    payload["label"] = allocation_name
+    payload["weights"] = deepcopy(_as_dict(allocation_payload).get("weights") or payload.get("weights") or {})
+    payload["success_probability"] = float(summary.get("success_probability") or 0.0)
+    payload["product_independent_success_probability"] = float(summary.get("success_probability") or 0.0)
+    payload["product_proxy_adjusted_success_probability"] = float(summary.get("success_probability") or 0.0)
+    payload["product_probability_method"] = _text(summary.get("product_probability_method")) or payload.get(
+        "product_probability_method"
+    ) or "product_independent_path"
+    payload["expected_annual_return"] = float(summary.get("cagr_p50") or 0.0)
+    payload["expected_terminal_value"] = float(summary.get("terminal_value_mean") or 0.0)
+    payload["max_drawdown_90pct"] = float(summary.get("max_drawdown_p95") or 0.0)
+    payload["why_selected"] = why_selected
+    return payload
+
+
+def _summary_cagr_p50(summary: dict[str, Any]) -> float:
+    return float(summary.get("cagr_p50") or 0.0)
 
 
 def _apply_probability_summary_to_result(result: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
@@ -996,7 +1022,8 @@ def _rerank_goal_solver_output_with_v14_primary(
     if not candidate_summaries:
         return _materialize_goal_solver_output_like(goal_solver_output, goal_output), None, None
 
-    required_return = float(_as_dict(all_results[0]).get("implied_required_annual_return") or 0.0)
+    raw_required_return = _as_dict(all_results[0]).get("implied_required_annual_return")
+    required_return = None if raw_required_return in (None, "") else float(raw_required_return)
     ranked_names = sorted(
         candidate_summaries,
         key=lambda name: _candidate_probability_ranking_key(
@@ -1006,6 +1033,17 @@ def _rerank_goal_solver_output_with_v14_primary(
         reverse=True,
     )
     selected_name = ranked_names[0]
+    highest_success_name = max(
+        candidate_summaries,
+        key=lambda name: (
+            float(candidate_summaries[name].get("success_probability") or 0.0),
+            0.0
+            if required_return is None
+            else -abs(float(candidate_summaries[name].get("cagr_p50") or 0.0) - float(required_return)),
+            -float(candidate_summaries[name].get("max_drawdown_p95") or 1.0),
+            float(candidate_summaries[name].get("terminal_value_p50") or 0.0),
+        ),
+    )
     patched_results: list[dict[str, Any]] = []
     selected_result_payload: dict[str, Any] | None = None
     for result in all_results:
@@ -1027,28 +1065,70 @@ def _rerank_goal_solver_output_with_v14_primary(
     goal_output["recommended_allocation"] = deepcopy(candidate_allocations[selected_name])
     goal_output["recommended_allocation_name"] = selected_name
     goal_output["v14_candidate_probability_ranking"] = deepcopy(candidate_summaries)
+    target_return_priority_name = None
+    if required_return is not None:
+        target_return_meeting_names = [
+            name for name, summary in candidate_summaries.items() if _summary_cagr_p50(summary) >= float(required_return)
+        ]
+        if target_return_meeting_names:
+            target_return_priority_name = sorted(
+                target_return_meeting_names,
+                key=lambda name: _candidate_probability_ranking_key(
+                    candidate_summaries[name],
+                    required_return=required_return,
+                ),
+                reverse=True,
+            )[0]
     solver_notes = [str(note) for note in list(goal_output.get("solver_notes") or [])]
+    required_return_label = "none" if required_return is None else f"{required_return:.4f}"
     solver_notes.append(
         "v14_primary_reranked "
         f"selected={selected_name} "
-        f"required_return={required_return:.4f} "
+        f"required_return={required_return_label} "
+        "criterion=closest_required_annual_return "
         f"success={float(candidate_summaries[selected_name].get('success_probability') or 0.0):.4f} "
         f"cagr_p50={float(candidate_summaries[selected_name].get('cagr_p50') or 0.0):.4f}"
+    )
+    solver_notes.append(
+        "v14_primary_alternative "
+        f"highest_success={highest_success_name} "
+        f"success={float(candidate_summaries[highest_success_name].get('success_probability') or 0.0):.4f} "
+        f"cagr_p50={float(candidate_summaries[highest_success_name].get('cagr_p50') or 0.0):.4f}"
     )
     goal_output["solver_notes"] = solver_notes
 
     frontier_analysis = _as_dict(goal_output.get("frontier_analysis"))
     if frontier_analysis:
-        recommended_frontier = _as_dict(frontier_analysis.get("recommended"))
-        recommended_frontier["allocation_name"] = selected_name
-        recommended_frontier["label"] = selected_name
-        recommended_frontier["success_probability"] = float(
-            candidate_summaries[selected_name].get("success_probability") or 0.0
+        frontier_analysis["recommended"] = _frontier_probability_payload(
+            existing=_as_dict(frontier_analysis.get("recommended")),
+            allocation_name=selected_name,
+            allocation_payload=candidate_allocations[selected_name],
+            summary=candidate_summaries[selected_name],
+            why_selected="当前推荐方案最接近目标年化要求；若仍不满意，可对比最高达成率备选方案。",
         )
-        recommended_frontier["expected_annual_return"] = float(
-            candidate_summaries[selected_name].get("cagr_p50") or 0.0
+        if target_return_priority_name is not None:
+            frontier_analysis["target_return_priority"] = _frontier_probability_payload(
+                existing=_as_dict(frontier_analysis.get("target_return_priority")),
+                allocation_name=target_return_priority_name,
+                allocation_payload=candidate_allocations[target_return_priority_name],
+                summary=candidate_summaries[target_return_priority_name],
+                why_selected="当前候选里，这个方案满足目标收益约束且最接近目标年化要求。",
+            )
+        frontier_analysis["highest_probability"] = _frontier_probability_payload(
+            existing=_as_dict(frontier_analysis.get("highest_probability")),
+            allocation_name=highest_success_name,
+            allocation_payload=candidate_allocations[highest_success_name],
+            summary=candidate_summaries[highest_success_name],
+            why_selected="如果优先追求达成率，这个方案是当前候选中的最高成功率方案。",
         )
-        frontier_analysis["recommended"] = recommended_frontier
+        scenario_status = dict(frontier_analysis.get("scenario_status") or {})
+        scenario_status["highest_probability"] = {"available": True, "reason": "selected_highest_success_probability"}
+        if target_return_priority_name is not None:
+            scenario_status["target_return_priority"] = {
+                "available": True,
+                "reason": "selected_meets_required_annual_return",
+            }
+        frontier_analysis["scenario_status"] = scenario_status
         goal_output["frontier_analysis"] = frontier_analysis
 
     return (

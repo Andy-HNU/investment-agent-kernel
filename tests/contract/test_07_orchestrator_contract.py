@@ -1492,39 +1492,56 @@ def test_run_orchestrator_onboarding_auto_enriches_runtime_product_inputs_withou
 
 
 @pytest.mark.contract
-def test_v14_primary_reranking_prefers_target_meeting_candidate(monkeypatch):
+def test_v14_primary_reranking_prefers_closest_required_return_candidate_and_keeps_highest_success_alternative(monkeypatch):
     goal_solver_input = {
         "candidate_allocations": [
-            {"name": "income_buffer", "weights": {"equity_cn": 0.30, "bond_cn": 0.40, "gold": 0.20, "satellite": 0.10}},
-            {"name": "target_reach", "weights": {"equity_cn": 0.55, "bond_cn": 0.20, "gold": 0.10, "satellite": 0.15}},
+            {"name": "closest_to_target", "weights": {"equity_cn": 0.40, "bond_cn": 0.35, "gold": 0.15, "satellite": 0.10}},
+            {"name": "same_distance_higher_success", "weights": {"equity_cn": 0.42, "bond_cn": 0.28, "gold": 0.20, "satellite": 0.10}},
+            {"name": "highest_success_farther", "weights": {"equity_cn": 0.60, "bond_cn": 0.15, "gold": 0.10, "satellite": 0.15}},
         ]
     }
     goal_solver_output = {
         "recommended_allocation": {
-            "name": "income_buffer",
-            "weights": {"equity_cn": 0.30, "bond_cn": 0.40, "gold": 0.20, "satellite": 0.10},
+            "name": "highest_success_farther",
+            "weights": {"equity_cn": 0.60, "bond_cn": 0.15, "gold": 0.10, "satellite": 0.15},
         },
         "recommended_result": {
-            "allocation_name": "income_buffer",
+            "allocation_name": "highest_success_farther",
             "implied_required_annual_return": 0.06,
-            "success_probability": 0.74,
-            "expected_annual_return": 0.04,
+            "success_probability": 0.82,
+            "expected_annual_return": 0.085,
         },
         "all_results": [
             {
-                "allocation_name": "income_buffer",
+                "allocation_name": "closest_to_target",
                 "implied_required_annual_return": 0.06,
-                "success_probability": 0.74,
-                "expected_annual_return": 0.04,
+                "success_probability": 0.68,
+                "expected_annual_return": 0.061,
+                "max_drawdown_p95": 0.06,
+                "terminal_value_p50": 120500.0,
             },
             {
-                "allocation_name": "target_reach",
+                "allocation_name": "same_distance_higher_success",
                 "implied_required_annual_return": 0.06,
-                "success_probability": 0.60,
-                "expected_annual_return": 0.065,
+                "success_probability": 0.79,
+                "expected_annual_return": 0.059,
+                "max_drawdown_p95": 0.05,
+                "terminal_value_p50": 120100.0,
+            },
+            {
+                "allocation_name": "highest_success_farther",
+                "implied_required_annual_return": 0.06,
+                "success_probability": 0.91,
+                "expected_annual_return": 0.085,
+                "max_drawdown_p95": 0.03,
+                "terminal_value_p50": 126000.0,
             },
         ],
-        "frontier_analysis": {"recommended": {"label": "income_buffer", "allocation_name": "income_buffer"}},
+        "frontier_analysis": {
+            "recommended": {"label": "highest_success_farther", "allocation_name": "highest_success_farther"},
+            "highest_probability": {"label": "highest_success_farther", "allocation_name": "highest_success_farther"},
+            "target_return_priority": {"label": "same_distance_higher_success", "allocation_name": "same_distance_higher_success"},
+        },
         "solver_notes": [],
     }
 
@@ -1533,9 +1550,11 @@ def test_v14_primary_reranking_prefers_target_meeting_candidate(monkeypatch):
         return ({"evidence_bundle_ref": f"evidence://contract/{allocation_name}"}, {})
 
     def _fake_probability_engine(sim_input):  # type: ignore[no-untyped-def]
-        if str(sim_input["evidence_bundle_ref"]).endswith("/income_buffer"):
-            return _probability_result(success_probability=0.22, cagr_p50=0.038, terminal_value_mean=115000.0)
-        return _probability_result(success_probability=0.68, cagr_p50=0.064, terminal_value_mean=121000.0)
+        if str(sim_input["evidence_bundle_ref"]).endswith("/closest_to_target"):
+            return _probability_result(success_probability=0.68, cagr_p50=0.061, terminal_value_mean=120500.0)
+        if str(sim_input["evidence_bundle_ref"]).endswith("/same_distance_higher_success"):
+            return _probability_result(success_probability=0.79, cagr_p50=0.059, terminal_value_mean=120100.0)
+        return _probability_result(success_probability=0.91, cagr_p50=0.085, terminal_value_mean=126000.0)
 
     monkeypatch.setattr(orchestrator_engine, "_build_probability_engine_run_input", _fake_build)
     monkeypatch.setattr(orchestrator_engine, "run_probability_engine", _fake_probability_engine)
@@ -1548,49 +1567,97 @@ def test_v14_primary_reranking_prefers_target_meeting_candidate(monkeypatch):
         goal_solver_output=goal_solver_output,
     )
 
-    assert updated_output["recommended_result"]["allocation_name"] == "target_reach"
-    assert updated_output["recommended_allocation"]["name"] == "target_reach"
-    assert updated_output["frontier_analysis"]["recommended"]["allocation_name"] == "target_reach"
-    assert probability_input["evidence_bundle_ref"].endswith("/target_reach")
+    assert updated_output["recommended_result"]["allocation_name"] == "same_distance_higher_success"
+    assert updated_output["recommended_allocation"]["name"] == "same_distance_higher_success"
+    assert updated_output["frontier_analysis"]["recommended"]["allocation_name"] == "same_distance_higher_success"
+    assert updated_output["frontier_analysis"]["target_return_priority"]["allocation_name"] == "closest_to_target"
+    assert updated_output["frontier_analysis"]["highest_probability"]["allocation_name"] == "highest_success_farther"
+    assert updated_output["frontier_analysis"]["scenario_status"]["target_return_priority"]["reason"] == "selected_meets_required_annual_return"
+    assert probability_input["evidence_bundle_ref"].endswith("/same_distance_higher_success")
     assert probability_result.output is not None
-    assert updated_output["v14_candidate_probability_ranking"]["target_reach"]["success_probability"] == pytest.approx(0.68)
+    assert updated_output["v14_candidate_probability_ranking"]["same_distance_higher_success"]["success_probability"] == pytest.approx(0.79)
 
 
 @pytest.mark.contract
-def test_v14_primary_reranking_prefers_highest_success_when_all_candidates_miss_required_return(monkeypatch):
+def test_v14_primary_reranking_uses_closest_required_return_before_success_probability(monkeypatch):
+    key = orchestrator_engine._candidate_probability_ranking_key
+    required_return = 0.06
+    summaries = {
+        "closest_lower_success": {
+            "run_outcome_status": "success",
+            "resolved_result_category": "formal_strict_result",
+            "success_probability": 0.62,
+            "cagr_p50": 0.061,
+            "max_drawdown_p95": 0.06,
+            "terminal_value_p50": 120200.0,
+        },
+        "same_distance_higher_success": {
+            "run_outcome_status": "success",
+            "resolved_result_category": "formal_strict_result",
+            "success_probability": 0.80,
+            "cagr_p50": 0.059,
+            "max_drawdown_p95": 0.05,
+            "terminal_value_p50": 120000.0,
+        },
+        "highest_success_farther": {
+            "run_outcome_status": "success",
+            "resolved_result_category": "formal_strict_result",
+            "success_probability": 0.95,
+            "cagr_p50": 0.085,
+            "max_drawdown_p95": 0.03,
+            "terminal_value_p50": 126000.0,
+        },
+    }
+
+    ranked = sorted(summaries, key=lambda name: key(summaries[name], required_return=required_return), reverse=True)
+
+    assert ranked == [
+        "same_distance_higher_success",
+        "closest_lower_success",
+        "highest_success_farther",
+    ]
+
+
+@pytest.mark.contract
+def test_v14_primary_reranking_falls_back_to_highest_success_when_required_return_is_missing(monkeypatch):
     goal_solver_input = {
         "candidate_allocations": [
-            {"name": "safer_shortfall", "weights": {"equity_cn": 0.35, "bond_cn": 0.35, "gold": 0.20, "satellite": 0.10}},
-            {"name": "closer_but_weaker", "weights": {"equity_cn": 0.45, "bond_cn": 0.25, "gold": 0.15, "satellite": 0.15}},
+            {"name": "balanced", "weights": {"equity_cn": 0.45, "bond_cn": 0.30, "gold": 0.15, "satellite": 0.10}},
+            {"name": "high_success", "weights": {"equity_cn": 0.35, "bond_cn": 0.40, "gold": 0.15, "satellite": 0.10}},
         ]
     }
     goal_solver_output = {
         "recommended_allocation": {
-            "name": "closer_but_weaker",
-            "weights": {"equity_cn": 0.45, "bond_cn": 0.25, "gold": 0.15, "satellite": 0.15},
+            "name": "balanced",
+            "weights": {"equity_cn": 0.45, "bond_cn": 0.30, "gold": 0.15, "satellite": 0.10},
         },
         "recommended_result": {
-            "allocation_name": "closer_but_weaker",
-            "implied_required_annual_return": 0.07,
-            "success_probability": 0.55,
-            "expected_annual_return": 0.06,
+            "allocation_name": "balanced",
+            "implied_required_annual_return": None,
+            "success_probability": 0.60,
+            "expected_annual_return": 0.05,
         },
         "all_results": [
             {
-                "allocation_name": "safer_shortfall",
-                "implied_required_annual_return": 0.07,
-                "success_probability": 0.55,
+                "allocation_name": "balanced",
+                "implied_required_annual_return": None,
+                "success_probability": 0.60,
                 "expected_annual_return": 0.05,
             },
             {
-                "allocation_name": "closer_but_weaker",
-                "implied_required_annual_return": 0.07,
-                "success_probability": 0.52,
-                "expected_annual_return": 0.06,
+                "allocation_name": "high_success",
+                "implied_required_annual_return": None,
+                "success_probability": 0.72,
+                "expected_annual_return": 0.04,
             },
         ],
         "frontier_analysis": {
-            "recommended": {"label": "closer_but_weaker", "allocation_name": "closer_but_weaker"}
+            "recommended": {"label": "balanced", "allocation_name": "balanced"},
+            "highest_probability": {"label": "high_success", "allocation_name": "high_success"},
+            "target_return_priority": {"label": "", "allocation_name": ""},
+            "scenario_status": {
+                "target_return_priority": {"available": False, "reason": "required_annual_return_not_provided"}
+            },
         },
         "solver_notes": [],
     }
@@ -1600,20 +1667,21 @@ def test_v14_primary_reranking_prefers_highest_success_when_all_candidates_miss_
         return ({"evidence_bundle_ref": f"evidence://contract/{allocation_name}"}, {})
 
     def _fake_probability_engine(sim_input):  # type: ignore[no-untyped-def]
-        if str(sim_input["evidence_bundle_ref"]).endswith("/safer_shortfall"):
+        if str(sim_input["evidence_bundle_ref"]).endswith("/balanced"):
             return _probability_result(success_probability=0.61, cagr_p50=0.051, terminal_value_mean=118000.0)
-        return _probability_result(success_probability=0.29, cagr_p50=0.059, terminal_value_mean=119000.0)
+        return _probability_result(success_probability=0.73, cagr_p50=0.041, terminal_value_mean=116500.0)
 
     monkeypatch.setattr(orchestrator_engine, "_build_probability_engine_run_input", _fake_build)
     monkeypatch.setattr(orchestrator_engine, "run_probability_engine", _fake_probability_engine)
 
     updated_output, _, _ = _rerank_goal_solver_output_with_v14_primary(
-        run_id="contract_rerank_success",
+        run_id="contract_rerank_no_required_return",
         envelope={},
         calibration_result={},
         goal_solver_input=goal_solver_input,
         goal_solver_output=goal_solver_output,
     )
 
-    assert updated_output["recommended_result"]["allocation_name"] == "safer_shortfall"
-    assert updated_output["recommended_allocation"]["name"] == "safer_shortfall"
+    assert updated_output["recommended_result"]["allocation_name"] == "high_success"
+    assert updated_output["frontier_analysis"]["highest_probability"]["allocation_name"] == "high_success"
+    assert updated_output["frontier_analysis"]["scenario_status"]["target_return_priority"]["reason"] == "required_annual_return_not_provided"
