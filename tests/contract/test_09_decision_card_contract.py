@@ -4,6 +4,7 @@ import pytest
 
 from decision_card.builder import build_decision_card
 from decision_card.types import DecisionCardBuildInput, DecisionCardType
+from orchestrator.engine import _build_execution_plan_summary
 
 
 def _probability_result_with_pressure_ladder() -> dict[str, object]:
@@ -395,39 +396,49 @@ def test_decision_card_does_not_promote_generic_items_to_requested_structure_res
 
 @pytest.mark.contract
 def test_decision_card_surfaces_recommendation_expansion_facts_from_execution_plan_summary():
-    canonical_recommendation_expansion = {
-        "search_expansion_level": "L0_compact",
-        "requested_search_expansion_level": "L1_expanded",
-        "why_this_level_was_run": "user_requested_deeper_search",
-        "why_search_stopped": "level_limit_requested_search_expansion_reached",
-        "new_product_ids_added": ["equity_l1", "gold_l1"],
-        "products_removed": ["equity_l0"],
-        "expanded_alternatives": [
-            {
-                "recommendation_kind": "same_allocation_search_expansion",
-                "allocation_name": "compact_primary",
-                "search_expansion_level": "L1_expanded",
-                "difference_basis": {
-                    "comparison_scope": "same_allocation_search_expansion",
-                    "reference_allocation_name": "compact_primary",
-                    "reference_search_expansion_level": "L0_compact",
-                },
-                "selected_product_ids": ["equity_l1", "gold_l1"],
-                "new_product_ids_added": ["equity_l1", "gold_l1"],
-                "products_removed": ["equity_l0"],
-                "recommended_result": {"allocation_name": "compact_primary"},
-                "recommended_allocation": {"weights": {"equity_cn": 0.55}},
-            }
-        ],
-    }
+    execution_plan_summary = _build_execution_plan_summary(
+        {
+            "plan_id": "plan_progressive",
+            "plan_version": 1,
+            "source_run_id": "run_progressive",
+            "source_allocation_id": "compact_primary",
+            "status": "draft",
+            "search_expansion_level": "L0_compact",
+            "recommendation_expansion": {
+                "requested_search_expansion_level": "L1_expanded",
+                "why_this_level_was_run": "user_requested_deeper_search",
+                "why_search_stopped": "",
+                "new_product_ids_added": [" equity_l1 ", "equity_l1", "", "gold_l1"],
+                "products_removed": ["equity_l0", "equity_l0", ""],
+                "expanded_alternatives": [
+                    {
+                        "recommendation_kind": "same_allocation_search_expansion",
+                        "allocation_name": "compact_primary",
+                        "search_expansion_level": "L1_expanded",
+                        "difference_basis": {
+                            "comparison_scope": "same_allocation_search_expansion",
+                            "reference_allocation_name": "compact_primary",
+                            "reference_search_expansion_level": "L0_compact",
+                        },
+                        "selected_product_ids": [" equity_l1 ", "equity_l1", "", "gold_l1"],
+                        "new_product_ids_added": [" equity_l1 ", "equity_l1", "", "gold_l1"],
+                        "products_removed": ["equity_l0", "equity_l0", ""],
+                        "recommended_result": {"allocation_name": "compact_primary"},
+                        "recommended_allocation": {"weights": {"equity_cn": 0.55}},
+                    },
+                    {},
+                ],
+            },
+            "items": [],
+        }
+    )
+    canonical_recommendation_expansion = execution_plan_summary["recommendation_expansion"]
     card = build_decision_card(
         DecisionCardBuildInput(
             card_type=DecisionCardType.RUNTIME_ACTION,
             workflow_type="monthly",
             runtime_result={"ev_report": {"recommended_action": {"type": "observe"}}},
-            execution_plan_summary={
-                "recommendation_expansion": canonical_recommendation_expansion
-            },
+            execution_plan_summary=execution_plan_summary,
         )
     )
 
@@ -435,7 +446,7 @@ def test_decision_card_surfaces_recommendation_expansion_facts_from_execution_pl
         "search_expansion_level": "L0_compact",
         "requested_search_expansion_level": "L1_expanded",
         "why_this_level_was_run": "user_requested_deeper_search",
-        "why_search_stopped": "level_limit_requested_search_expansion_reached",
+        "why_search_stopped": None,
         "new_product_ids_added": ["equity_l1", "gold_l1"],
         "products_removed": ["equity_l0"],
         "expanded_alternatives": [

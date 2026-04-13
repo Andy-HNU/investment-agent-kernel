@@ -15,7 +15,7 @@ from frontdesk.service import (
     run_frontdesk_onboarding,
 )
 from frontdesk.storage import FrontdeskExecutionPlanRecord, FrontdeskStore, _compare_execution_plans
-from orchestrator.engine import run_orchestrator
+from orchestrator.engine import _build_execution_plan_summary, run_orchestrator
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 from tests.support.formal_snapshot_helpers import (
     formal_market_raw_overrides as _support_formal_market_raw_overrides,
@@ -182,31 +182,43 @@ def test_frontdesk_summary_exposes_pressure_ladder_from_probability_engine_outpu
 
 @pytest.mark.contract
 def test_frontdesk_summary_surfaces_recommendation_expansion_facts_from_execution_plan_summary() -> None:
-    canonical_recommendation_expansion = {
-        "search_expansion_level": "L0_compact",
-        "requested_search_expansion_level": "L1_expanded",
-        "why_this_level_was_run": "user_requested_deeper_search",
-        "why_search_stopped": "level_limit_requested_search_expansion_reached",
-        "new_product_ids_added": ["equity_l1", "gold_l1"],
-        "products_removed": ["equity_l0"],
-        "expanded_alternatives": [
-            {
-                "recommendation_kind": "same_allocation_search_expansion",
-                "allocation_name": "compact_primary",
-                "search_expansion_level": "L1_expanded",
-                "difference_basis": {
-                    "comparison_scope": "same_allocation_search_expansion",
-                    "reference_allocation_name": "compact_primary",
-                    "reference_search_expansion_level": "L0_compact",
-                },
-                "selected_product_ids": ["equity_l1", "gold_l1"],
-                "new_product_ids_added": ["equity_l1", "gold_l1"],
-                "products_removed": ["equity_l0"],
-                "recommended_result": {"allocation_name": "compact_primary"},
-                "recommended_allocation": {"weights": {"equity_cn": 0.55}},
-            }
-        ],
-    }
+    execution_plan_summary = _build_execution_plan_summary(
+        {
+            "plan_id": "plan_progressive",
+            "plan_version": 1,
+            "source_run_id": "run_progressive",
+            "source_allocation_id": "compact_primary",
+            "status": "draft",
+            "search_expansion_level": "L0_compact",
+            "recommendation_expansion": {
+                "requested_search_expansion_level": "L1_expanded",
+                "why_this_level_was_run": "user_requested_deeper_search",
+                "why_search_stopped": "",
+                "new_product_ids_added": [" equity_l1 ", "equity_l1", "", "gold_l1"],
+                "products_removed": ["equity_l0", "equity_l0", ""],
+                "expanded_alternatives": [
+                    {
+                        "recommendation_kind": "same_allocation_search_expansion",
+                        "allocation_name": "compact_primary",
+                        "search_expansion_level": "L1_expanded",
+                        "difference_basis": {
+                            "comparison_scope": "same_allocation_search_expansion",
+                            "reference_allocation_name": "compact_primary",
+                            "reference_search_expansion_level": "L0_compact",
+                        },
+                        "selected_product_ids": [" equity_l1 ", "equity_l1", "", "gold_l1"],
+                        "new_product_ids_added": [" equity_l1 ", "equity_l1", "", "gold_l1"],
+                        "products_removed": ["equity_l0", "equity_l0", ""],
+                        "recommended_result": {"allocation_name": "compact_primary"},
+                        "recommended_allocation": {"weights": {"equity_cn": 0.55}},
+                    },
+                    {},
+                ],
+            },
+            "items": [],
+        }
+    )
+    canonical_recommendation_expansion = execution_plan_summary["recommendation_expansion"]
     summary = _frontdesk_summary(
         account_profile_id="recommendation_expansion_frontdesk",
         display_name="Andy",
@@ -218,9 +230,7 @@ def test_frontdesk_summary_surfaces_recommendation_expansion_facts_from_executio
             "run_outcome_status": "completed",
             "resolved_result_category": "formal_independent_result",
             "decision_card": {
-                "execution_plan_summary": {
-                    "recommendation_expansion": canonical_recommendation_expansion
-                }
+                "execution_plan_summary": execution_plan_summary
             },
         },
     )
@@ -229,7 +239,7 @@ def test_frontdesk_summary_surfaces_recommendation_expansion_facts_from_executio
         "search_expansion_level": "L0_compact",
         "requested_search_expansion_level": "L1_expanded",
         "why_this_level_was_run": "user_requested_deeper_search",
-        "why_search_stopped": "level_limit_requested_search_expansion_reached",
+        "why_search_stopped": None,
         "new_product_ids_added": ["equity_l1", "gold_l1"],
         "products_removed": ["equity_l0"],
         "expanded_alternatives": [

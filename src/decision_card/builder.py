@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from decision_card.types import DecisionCard, DecisionCardBuildInput, DecisionCardType
+from shared.execution_plan_summary import build_recommendation_expansion_view
 
 
 _SAFE_ACTION_TYPES = {"freeze", "observe"}
@@ -2202,82 +2203,11 @@ def _system_suggested_alternative_from_execution_summary(
     }
 
 
-def _recommendation_expansion_view_from_execution_summary(
-    execution_plan_summary: dict[str, Any],
-) -> dict[str, Any]:
-    payload = _obj(execution_plan_summary.get("recommendation_expansion") or {})
-    if not payload:
-        return {}
-
-    search_expansion_level = _metric(payload.get("search_expansion_level"))
-    requested_search_expansion_level = _metric(payload.get("requested_search_expansion_level"))
-    why_this_level_was_run = _metric(payload.get("why_this_level_was_run"))
-    why_search_stopped = _metric(payload.get("why_search_stopped"))
-    new_product_ids_added = _unique(_string_items(payload.get("new_product_ids_added")))
-    products_removed = _unique(_string_items(payload.get("products_removed")))
-
-    expanded_alternatives: list[dict[str, Any]] = []
-    for item in list(payload.get("expanded_alternatives") or []):
-        entry = _obj(item or {})
-        difference_basis_payload = _obj(entry.get("difference_basis") or {})
-        difference_basis = {
-            "comparison_scope": _metric(difference_basis_payload.get("comparison_scope")) or "",
-            "reference_allocation_name": _metric(difference_basis_payload.get("reference_allocation_name")) or "",
-            "reference_search_expansion_level": _metric(difference_basis_payload.get("reference_search_expansion_level")),
-        }
-        alternative = {
-            "recommendation_kind": _metric(entry.get("recommendation_kind")) or "",
-            "allocation_name": _metric(entry.get("allocation_name")) or "",
-            "search_expansion_level": _metric(entry.get("search_expansion_level")) or "",
-            "difference_basis": difference_basis,
-            "selected_product_ids": _unique(_string_items(entry.get("selected_product_ids"))),
-            "new_product_ids_added": _unique(_string_items(entry.get("new_product_ids_added"))),
-            "products_removed": _unique(_string_items(entry.get("products_removed"))),
-        }
-        if any(
-            (
-                alternative["recommendation_kind"],
-                alternative["allocation_name"],
-                alternative["search_expansion_level"],
-                alternative["selected_product_ids"],
-                alternative["new_product_ids_added"],
-                alternative["products_removed"],
-                difference_basis["comparison_scope"],
-                difference_basis["reference_allocation_name"],
-                difference_basis["reference_search_expansion_level"],
-            )
-        ):
-            expanded_alternatives.append(alternative)
-
-    if not any(
-        (
-            search_expansion_level,
-            requested_search_expansion_level,
-            why_this_level_was_run,
-            why_search_stopped,
-            new_product_ids_added,
-            products_removed,
-            expanded_alternatives,
-        )
-    ):
-        return {}
-
-    return {
-        "search_expansion_level": search_expansion_level,
-        "requested_search_expansion_level": requested_search_expansion_level,
-        "why_this_level_was_run": why_this_level_was_run,
-        "why_search_stopped": why_search_stopped,
-        "new_product_ids_added": new_product_ids_added,
-        "products_removed": products_removed,
-        "expanded_alternatives": expanded_alternatives,
-    }
-
-
 def _attach_structure_surfaces(rendered: dict[str, Any]) -> dict[str, Any]:
     execution_plan_summary = dict(rendered.get("execution_plan_summary") or {})
     requested_structure_result = _requested_structure_result_from_execution_summary(execution_plan_summary)
     system_suggested_alternative = _system_suggested_alternative_from_execution_summary(execution_plan_summary)
-    recommendation_expansion_view = _recommendation_expansion_view_from_execution_summary(execution_plan_summary)
+    recommendation_expansion_view = build_recommendation_expansion_view(execution_plan_summary)
 
     if requested_structure_result:
         rendered["requested_structure_result"] = requested_structure_result
