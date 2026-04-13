@@ -282,6 +282,23 @@ def test_product_display_label_uses_name_only_and_venue() -> None:
 
 
 @pytest.mark.contract
+def test_product_display_label_uses_code_only_and_venue() -> None:
+    from shared.product_display import build_product_display
+
+    payload = build_product_display(
+        {
+            "provider_symbol": "510300",
+            "wrapper_type": "etf",
+        }
+    )
+
+    assert payload["display_name"] is None
+    assert payload["display_code"] == "510300"
+    assert payload["trading_venue_label"] == "场内ETF"
+    assert payload["display_label"] == "510300 (场内ETF)"
+
+
+@pytest.mark.contract
 def test_product_display_label_handles_none_payload() -> None:
     from shared.product_display import build_product_display
 
@@ -296,13 +313,13 @@ def test_product_display_label_handles_none_payload() -> None:
 
 
 @pytest.mark.contract
-def test_product_display_label_falls_back_for_unknown_wrapper() -> None:
+def test_product_display_label_uses_other_wrapper_mapping() -> None:
     from shared.product_display import build_product_display
 
     payload = build_product_display(
         {
             "product_name": "沪深300ETF",
-            "wrapper_type": "mystery",
+            "wrapper_type": "other",
         }
     )
 
