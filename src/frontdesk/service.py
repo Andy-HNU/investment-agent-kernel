@@ -1697,14 +1697,13 @@ def _system_suggested_alternative(
     return payload
 
 
-def _recommendation_expansion_summary(execution_plan_summary: dict[str, Any]) -> dict[str, Any]:
+def _recommendation_expansion_view(execution_plan_summary: dict[str, Any]) -> dict[str, Any]:
     payload = _as_dict(execution_plan_summary.get("recommendation_expansion"))
     if not payload:
         return {}
 
-    search_expansion_level = str(
-        payload.get("requested_search_expansion_level") or payload.get("search_expansion_level") or ""
-    ).strip()
+    search_expansion_level = str(payload.get("search_expansion_level") or "").strip()
+    requested_search_expansion_level = str(payload.get("requested_search_expansion_level") or "").strip()
     why_this_level_was_run = str(payload.get("why_this_level_was_run") or "").strip()
     why_search_stopped_value = payload.get("why_search_stopped")
     why_search_stopped = None if why_search_stopped_value in (None, "") else str(why_search_stopped_value).strip()
@@ -1726,7 +1725,7 @@ def _recommendation_expansion_summary(execution_plan_summary: dict[str, Any]) ->
         alternative = {
             "recommendation_kind": str(entry.get("recommendation_kind") or "").strip(),
             "allocation_name": str(entry.get("allocation_name") or "").strip(),
-            "search_expansion_level": str(entry.get("search_expansion_level") or search_expansion_level or "").strip(),
+            "search_expansion_level": str(entry.get("search_expansion_level") or "").strip(),
             "difference_basis": {
                 "comparison_scope": str(difference_basis_payload.get("comparison_scope") or "").strip(),
                 "reference_allocation_name": str(difference_basis_payload.get("reference_allocation_name") or "").strip(),
@@ -1770,6 +1769,7 @@ def _recommendation_expansion_summary(execution_plan_summary: dict[str, Any]) ->
     if not any(
         (
             search_expansion_level,
+            requested_search_expansion_level,
             why_this_level_was_run,
             why_search_stopped,
             new_product_ids_added,
@@ -1781,6 +1781,7 @@ def _recommendation_expansion_summary(execution_plan_summary: dict[str, Any]) ->
 
     return {
         "search_expansion_level": search_expansion_level,
+        "requested_search_expansion_level": requested_search_expansion_level,
         "why_this_level_was_run": why_this_level_was_run,
         "why_search_stopped": why_search_stopped,
         "new_product_ids_added": new_product_ids_added,
@@ -1934,17 +1935,15 @@ def _frontdesk_summary(
         user_state=user_state,
     )
     decision_card_execution_summary = dict(decision_card.get("execution_plan_summary") or {})
-    recommendation_expansion = _recommendation_expansion_summary(decision_card_execution_summary)
+    recommendation_expansion_view = _recommendation_expansion_view(decision_card_execution_summary)
     if requested_structure_result:
         decision_card_execution_summary["requested_structure_result"] = deepcopy(requested_structure_result)
         decision_card["requested_structure_result"] = deepcopy(requested_structure_result)
     if system_suggested_alternative:
         decision_card_execution_summary["system_suggested_alternative"] = deepcopy(system_suggested_alternative)
         decision_card["system_suggested_alternative"] = deepcopy(system_suggested_alternative)
-    if recommendation_expansion or "recommendation_expansion" in decision_card_execution_summary:
-        if recommendation_expansion:
-            decision_card["recommendation_expansion"] = deepcopy(recommendation_expansion)
-        decision_card_execution_summary["recommendation_expansion"] = deepcopy(recommendation_expansion)
+    if recommendation_expansion_view:
+        decision_card["recommendation_expansion_view"] = deepcopy(recommendation_expansion_view)
     for key, payload in (
         ("bucket_construction_explanations", bucket_construction_explanations),
         ("product_explanations", product_explanations),
@@ -1984,7 +1983,7 @@ def _frontdesk_summary(
         "requested_structure": result_payload.get("requested_structure"),
         "requested_structure_result": requested_structure_result,
         "system_suggested_alternative": system_suggested_alternative,
-        "recommendation_expansion": recommendation_expansion,
+        "recommendation_expansion_view": recommendation_expansion_view,
         "unknown_product_resolution": dict(result_payload.get("unknown_product_resolution") or {}),
         "decision_card": decision_card,
         "key_metrics": decision_card.get("key_metrics", {}),

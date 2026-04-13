@@ -2202,16 +2202,15 @@ def _system_suggested_alternative_from_execution_summary(
     }
 
 
-def _recommendation_expansion_from_execution_summary(
+def _recommendation_expansion_view_from_execution_summary(
     execution_plan_summary: dict[str, Any],
 ) -> dict[str, Any]:
     payload = _obj(execution_plan_summary.get("recommendation_expansion") or {})
     if not payload:
         return {}
 
-    search_expansion_level = _metric(
-        payload.get("requested_search_expansion_level") or payload.get("search_expansion_level")
-    )
+    search_expansion_level = _metric(payload.get("search_expansion_level"))
+    requested_search_expansion_level = _metric(payload.get("requested_search_expansion_level"))
     why_this_level_was_run = _metric(payload.get("why_this_level_was_run"))
     why_search_stopped = _metric(payload.get("why_search_stopped"))
     new_product_ids_added = _unique(_string_items(payload.get("new_product_ids_added")))
@@ -2229,7 +2228,7 @@ def _recommendation_expansion_from_execution_summary(
         alternative = {
             "recommendation_kind": _metric(entry.get("recommendation_kind")) or "",
             "allocation_name": _metric(entry.get("allocation_name")) or "",
-            "search_expansion_level": _metric(entry.get("search_expansion_level")) or search_expansion_level or "",
+            "search_expansion_level": _metric(entry.get("search_expansion_level")) or "",
             "difference_basis": difference_basis,
             "selected_product_ids": _unique(_string_items(entry.get("selected_product_ids"))),
             "new_product_ids_added": _unique(_string_items(entry.get("new_product_ids_added"))),
@@ -2253,6 +2252,7 @@ def _recommendation_expansion_from_execution_summary(
     if not any(
         (
             search_expansion_level,
+            requested_search_expansion_level,
             why_this_level_was_run,
             why_search_stopped,
             new_product_ids_added,
@@ -2264,6 +2264,7 @@ def _recommendation_expansion_from_execution_summary(
 
     return {
         "search_expansion_level": search_expansion_level,
+        "requested_search_expansion_level": requested_search_expansion_level,
         "why_this_level_was_run": why_this_level_was_run,
         "why_search_stopped": why_search_stopped,
         "new_product_ids_added": new_product_ids_added,
@@ -2276,7 +2277,7 @@ def _attach_structure_surfaces(rendered: dict[str, Any]) -> dict[str, Any]:
     execution_plan_summary = dict(rendered.get("execution_plan_summary") or {})
     requested_structure_result = _requested_structure_result_from_execution_summary(execution_plan_summary)
     system_suggested_alternative = _system_suggested_alternative_from_execution_summary(execution_plan_summary)
-    recommendation_expansion = _recommendation_expansion_from_execution_summary(execution_plan_summary)
+    recommendation_expansion_view = _recommendation_expansion_view_from_execution_summary(execution_plan_summary)
 
     if requested_structure_result:
         rendered["requested_structure_result"] = requested_structure_result
@@ -2284,10 +2285,8 @@ def _attach_structure_surfaces(rendered: dict[str, Any]) -> dict[str, Any]:
     if system_suggested_alternative:
         rendered["system_suggested_alternative"] = system_suggested_alternative
         execution_plan_summary["system_suggested_alternative"] = system_suggested_alternative
-    if recommendation_expansion or "recommendation_expansion" in execution_plan_summary:
-        if recommendation_expansion:
-            rendered["recommendation_expansion"] = recommendation_expansion
-        execution_plan_summary["recommendation_expansion"] = recommendation_expansion
+    if recommendation_expansion_view:
+        rendered["recommendation_expansion_view"] = recommendation_expansion_view
 
     for key in ("bucket_construction_explanations", "product_explanations", "product_group_explanations"):
         payload = deepcopy(execution_plan_summary.get(key) or {})

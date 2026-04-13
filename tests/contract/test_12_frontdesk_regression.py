@@ -182,6 +182,31 @@ def test_frontdesk_summary_exposes_pressure_ladder_from_probability_engine_outpu
 
 @pytest.mark.contract
 def test_frontdesk_summary_surfaces_recommendation_expansion_facts_from_execution_plan_summary() -> None:
+    canonical_recommendation_expansion = {
+        "search_expansion_level": "L0_compact",
+        "requested_search_expansion_level": "L1_expanded",
+        "why_this_level_was_run": "user_requested_deeper_search",
+        "why_search_stopped": "level_limit_requested_search_expansion_reached",
+        "new_product_ids_added": ["equity_l1", "gold_l1"],
+        "products_removed": ["equity_l0"],
+        "expanded_alternatives": [
+            {
+                "recommendation_kind": "same_allocation_search_expansion",
+                "allocation_name": "compact_primary",
+                "search_expansion_level": "L1_expanded",
+                "difference_basis": {
+                    "comparison_scope": "same_allocation_search_expansion",
+                    "reference_allocation_name": "compact_primary",
+                    "reference_search_expansion_level": "L0_compact",
+                },
+                "selected_product_ids": ["equity_l1", "gold_l1"],
+                "new_product_ids_added": ["equity_l1", "gold_l1"],
+                "products_removed": ["equity_l0"],
+                "recommended_result": {"allocation_name": "compact_primary"},
+                "recommended_allocation": {"weights": {"equity_cn": 0.55}},
+            }
+        ],
+    }
     summary = _frontdesk_summary(
         account_profile_id="recommendation_expansion_frontdesk",
         display_name="Andy",
@@ -194,37 +219,15 @@ def test_frontdesk_summary_surfaces_recommendation_expansion_facts_from_executio
             "resolved_result_category": "formal_independent_result",
             "decision_card": {
                 "execution_plan_summary": {
-                    "recommendation_expansion": {
-                        "requested_search_expansion_level": "L1_expanded",
-                        "why_this_level_was_run": "user_requested_deeper_search",
-                        "why_search_stopped": "level_limit_requested_search_expansion_reached",
-                        "new_product_ids_added": ["equity_l1", "gold_l1"],
-                        "products_removed": ["equity_l0"],
-                        "expanded_alternatives": [
-                            {
-                                "recommendation_kind": "same_allocation_search_expansion",
-                                "allocation_name": "compact_primary",
-                                "search_expansion_level": "L1_expanded",
-                                "difference_basis": {
-                                    "comparison_scope": "same_allocation_search_expansion",
-                                    "reference_allocation_name": "compact_primary",
-                                    "reference_search_expansion_level": "L0_compact",
-                                },
-                                "selected_product_ids": ["equity_l1", "gold_l1"],
-                                "new_product_ids_added": ["equity_l1", "gold_l1"],
-                                "products_removed": ["equity_l0"],
-                                "recommended_result": {"allocation_name": "compact_primary"},
-                                "recommended_allocation": {"weights": {"equity_cn": 0.55}},
-                            }
-                        ],
-                    }
+                    "recommendation_expansion": canonical_recommendation_expansion
                 }
             },
         },
     )
 
-    expected = {
-        "search_expansion_level": "L1_expanded",
+    expected_view = {
+        "search_expansion_level": "L0_compact",
+        "requested_search_expansion_level": "L1_expanded",
         "why_this_level_was_run": "user_requested_deeper_search",
         "why_search_stopped": "level_limit_requested_search_expansion_reached",
         "new_product_ids_added": ["equity_l1", "gold_l1"],
@@ -246,9 +249,10 @@ def test_frontdesk_summary_surfaces_recommendation_expansion_facts_from_executio
         ],
     }
 
-    assert summary["recommendation_expansion"] == expected
-    assert summary["decision_card"]["recommendation_expansion"] == expected
-    assert summary["decision_card"]["execution_plan_summary"]["recommendation_expansion"] == expected
+    assert summary["recommendation_expansion_view"] == expected_view
+    assert summary["decision_card"]["recommendation_expansion_view"] == expected_view
+    assert summary["decision_card"]["execution_plan_summary"]["recommendation_expansion"] == canonical_recommendation_expansion
+    assert "recommendation_expansion_view" not in summary["decision_card"]["execution_plan_summary"]
 
 
 @pytest.mark.contract

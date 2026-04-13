@@ -395,42 +395,45 @@ def test_decision_card_does_not_promote_generic_items_to_requested_structure_res
 
 @pytest.mark.contract
 def test_decision_card_surfaces_recommendation_expansion_facts_from_execution_plan_summary():
+    canonical_recommendation_expansion = {
+        "search_expansion_level": "L0_compact",
+        "requested_search_expansion_level": "L1_expanded",
+        "why_this_level_was_run": "user_requested_deeper_search",
+        "why_search_stopped": "level_limit_requested_search_expansion_reached",
+        "new_product_ids_added": ["equity_l1", "gold_l1"],
+        "products_removed": ["equity_l0"],
+        "expanded_alternatives": [
+            {
+                "recommendation_kind": "same_allocation_search_expansion",
+                "allocation_name": "compact_primary",
+                "search_expansion_level": "L1_expanded",
+                "difference_basis": {
+                    "comparison_scope": "same_allocation_search_expansion",
+                    "reference_allocation_name": "compact_primary",
+                    "reference_search_expansion_level": "L0_compact",
+                },
+                "selected_product_ids": ["equity_l1", "gold_l1"],
+                "new_product_ids_added": ["equity_l1", "gold_l1"],
+                "products_removed": ["equity_l0"],
+                "recommended_result": {"allocation_name": "compact_primary"},
+                "recommended_allocation": {"weights": {"equity_cn": 0.55}},
+            }
+        ],
+    }
     card = build_decision_card(
         DecisionCardBuildInput(
             card_type=DecisionCardType.RUNTIME_ACTION,
             workflow_type="monthly",
             runtime_result={"ev_report": {"recommended_action": {"type": "observe"}}},
             execution_plan_summary={
-                "recommendation_expansion": {
-                    "requested_search_expansion_level": "L1_expanded",
-                    "why_this_level_was_run": "user_requested_deeper_search",
-                    "why_search_stopped": "level_limit_requested_search_expansion_reached",
-                    "new_product_ids_added": ["equity_l1", "gold_l1"],
-                    "products_removed": ["equity_l0"],
-                    "expanded_alternatives": [
-                        {
-                            "recommendation_kind": "same_allocation_search_expansion",
-                            "allocation_name": "compact_primary",
-                            "search_expansion_level": "L1_expanded",
-                            "difference_basis": {
-                                "comparison_scope": "same_allocation_search_expansion",
-                                "reference_allocation_name": "compact_primary",
-                                "reference_search_expansion_level": "L0_compact",
-                            },
-                            "selected_product_ids": ["equity_l1", "gold_l1"],
-                            "new_product_ids_added": ["equity_l1", "gold_l1"],
-                            "products_removed": ["equity_l0"],
-                            "recommended_result": {"allocation_name": "compact_primary"},
-                            "recommended_allocation": {"weights": {"equity_cn": 0.55}},
-                        }
-                    ],
-                }
+                "recommendation_expansion": canonical_recommendation_expansion
             },
         )
     )
 
-    expected = {
-        "search_expansion_level": "L1_expanded",
+    expected_view = {
+        "search_expansion_level": "L0_compact",
+        "requested_search_expansion_level": "L1_expanded",
         "why_this_level_was_run": "user_requested_deeper_search",
         "why_search_stopped": "level_limit_requested_search_expansion_reached",
         "new_product_ids_added": ["equity_l1", "gold_l1"],
@@ -452,8 +455,9 @@ def test_decision_card_surfaces_recommendation_expansion_facts_from_execution_pl
         ],
     }
 
-    assert card["recommendation_expansion"] == expected
-    assert card["execution_plan_summary"]["recommendation_expansion"] == expected
+    assert card["recommendation_expansion_view"] == expected_view
+    assert card["execution_plan_summary"]["recommendation_expansion"] == canonical_recommendation_expansion
+    assert "recommendation_expansion_view" not in card["execution_plan_summary"]
 
 
 @pytest.mark.contract
