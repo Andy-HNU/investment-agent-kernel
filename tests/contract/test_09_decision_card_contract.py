@@ -246,6 +246,23 @@ def test_build_decision_card_requires_formal_input_object():
         )
 
 
+def test_product_display_label_uses_name_code_and_venue() -> None:
+    from shared.product_display import build_product_display
+
+    payload = build_product_display(
+        {
+            "product_name": "沪深300ETF",
+            "provider_symbol": "510300",
+            "wrapper_type": "etf",
+        }
+    )
+
+    assert payload["display_name"] == "沪深300ETF"
+    assert payload["display_code"] == "510300"
+    assert payload["trading_venue_label"] == "场内ETF"
+    assert payload["display_label"] == "沪深300ETF (510300, 场内ETF)"
+
+
 @pytest.mark.contract
 def test_runtime_action_card_surfaces_low_confidence_and_review_conditions():
     card = build_decision_card(
