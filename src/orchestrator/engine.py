@@ -1318,23 +1318,24 @@ def _apply_progressive_recommendation_expansion(
         compact_context=compact_primary_context,
         expanded_context=expanded_primary_context,
     )
-    why_search_stopped = resolve_search_stop_reason(
-        success_improvement=0.0,
-        target_distance_improvement=0.0,
-        drawdown_improvement=0.0,
-        hard_stop_reason=(
-            "level_limit_requested_search_expansion_reached"
-            if new_product_ids_added or products_removed
-            else "level_limit_requested_search_expansion_reached_without_product_delta"
-        ),
-        consecutive_small_gain_count=0,
+    has_real_delta = bool(new_product_ids_added or products_removed)
+    why_search_stopped = (
+        resolve_search_stop_reason(
+            success_improvement=0.0,
+            target_distance_improvement=0.0,
+            drawdown_improvement=0.0,
+            hard_stop_reason="level_limit_requested_search_expansion_reached",
+            consecutive_small_gain_count=0,
+        )
+        if has_real_delta
+        else "no_new_products_found_at_requested_level"
     )
     search_expansion_recommendation = SearchExpansionRecommendation(
         search_expansion_level=requested_level,
         why_this_level_was_run=why_this_level_was_run or "explicit_opt_in_requested_level",
         why_search_stopped=why_search_stopped,
-        new_product_ids_added=new_product_ids_added,
-        products_removed=products_removed,
+        new_product_ids_added=new_product_ids_added if has_real_delta else [],
+        products_removed=products_removed if has_real_delta else [],
     )
 
     expanded_results = _goal_solver_result_by_allocation_name(expanded_goal_output)
@@ -1344,38 +1345,39 @@ def _apply_progressive_recommendation_expansion(
 
     alternatives: list[dict[str, Any]] = []
 
-    def _append_alternative(allocation_name: str, recommendation_kind: str) -> None:
-        result_payload = _as_dict(expanded_results.get(allocation_name))
-        if not result_payload:
-            return
-        allocation_payload = _as_dict(candidate_allocations_by_name.get(allocation_name))
-        if not allocation_payload and allocation_name == expanded_primary_name:
-            allocation_payload = _as_dict(expanded_goal_output.get("recommended_allocation"))
-        comparison_scope = (
-            "same_allocation_search_expansion"
-            if allocation_name == compact_primary_name
-            else "cross_allocation_vs_compact_primary"
-        )
-        alternatives.append(
-            _search_expansion_alternative_payload(
-                recommendation_kind=recommendation_kind,
-                allocation_name=allocation_name,
-                search_expansion_level=requested_level,
-                why_this_level_was_run=search_expansion_recommendation.why_this_level_was_run,
-                why_search_stopped=why_search_stopped,
-                reference_context=compact_primary_context,
-                reference_allocation_name=compact_primary_name,
-                reference_search_expansion_level=SearchExpansionLevels.L0_COMPACT,
-                comparison_scope=comparison_scope,
-                candidate_context=_as_dict(expanded_contexts.get(allocation_name)),
-                result_payload=result_payload,
-                allocation_payload=allocation_payload,
+    if has_real_delta:
+        def _append_alternative(allocation_name: str, recommendation_kind: str) -> None:
+            result_payload = _as_dict(expanded_results.get(allocation_name))
+            if not result_payload:
+                return
+            allocation_payload = _as_dict(candidate_allocations_by_name.get(allocation_name))
+            if not allocation_payload and allocation_name == expanded_primary_name:
+                allocation_payload = _as_dict(expanded_goal_output.get("recommended_allocation"))
+            comparison_scope = (
+                "same_allocation_search_expansion"
+                if allocation_name == compact_primary_name
+                else "cross_allocation_vs_compact_primary"
             )
-        )
+            alternatives.append(
+                _search_expansion_alternative_payload(
+                    recommendation_kind=recommendation_kind,
+                    allocation_name=allocation_name,
+                    search_expansion_level=requested_level,
+                    why_this_level_was_run=search_expansion_recommendation.why_this_level_was_run,
+                    why_search_stopped=why_search_stopped,
+                    reference_context=compact_primary_context,
+                    reference_allocation_name=compact_primary_name,
+                    reference_search_expansion_level=SearchExpansionLevels.L0_COMPACT,
+                    comparison_scope=comparison_scope,
+                    candidate_context=_as_dict(expanded_contexts.get(allocation_name)),
+                    result_payload=result_payload,
+                    allocation_payload=allocation_payload,
+                )
+            )
 
-    _append_alternative(expanded_primary_name, "expanded_primary")
-    if highest_success_name is not None and highest_success_name != expanded_primary_name:
-        _append_alternative(highest_success_name, "highest_success_alternative")
+        _append_alternative(expanded_primary_name, "expanded_primary")
+        if highest_success_name is not None and highest_success_name != expanded_primary_name:
+            _append_alternative(highest_success_name, "highest_success_alternative")
 
     recommendation_expansion = {
         "search_expansion_level": SearchExpansionLevels.L0_COMPACT,

@@ -164,6 +164,34 @@ def test_search_expansion_result_requires_visible_delta_fields():
 
 
 @pytest.mark.contract
+def test_materialize_recommendation_expansion_preserves_explicit_empty_no_delta_lists() -> None:
+    from product_mapping.engine import _materialize_recommendation_expansion
+
+    result = _materialize_recommendation_expansion(
+        {
+            "requested_search_expansion_level": "L1_expanded",
+            "why_this_level_was_run": "user_requested_deeper_search",
+            "why_search_stopped": "no_new_products_found_at_requested_level",
+            "new_product_ids_added": [],
+            "products_removed": [],
+            "expanded_alternatives": [],
+        },
+        fallback_search_expansion_recommendation=SearchExpansionRecommendation(
+            search_expansion_level="L1_expanded",
+            why_this_level_was_run="user_requested_deeper_search",
+            why_search_stopped="level_limit_requested_search_expansion_reached",
+            new_product_ids_added=["equity_l1"],
+            products_removed=["equity_l0"],
+        ),
+    )
+
+    assert result["why_search_stopped"] == "no_new_products_found_at_requested_level"
+    assert result["new_product_ids_added"] == []
+    assert result["products_removed"] == []
+    assert result["expanded_alternatives"] == []
+
+
+@pytest.mark.contract
 @pytest.mark.parametrize("bucket", [None, "mystery_bucket"])
 def test_candidate_pool_limit_rejects_invalid_bucket(bucket):
     with pytest.raises(ValueError, match="invalid bucket"):

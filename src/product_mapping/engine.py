@@ -1543,6 +1543,15 @@ def _materialize_recommendation_expansion(
             "expanded_alternatives": [],
         }
 
+    def _materialize_string_list(key: str, fallback_values: list[str]) -> list[str]:
+        if key in payload:
+            return [
+                str(product_id).strip()
+                for product_id in list(payload.get(key) or [])
+                if str(product_id).strip()
+            ]
+        return list(fallback_values)
+
     requested_level = payload.get("requested_search_expansion_level")
     if requested_level is None and fallback_search_expansion_recommendation is not None:
         requested_level = fallback_search_expansion_recommendation.search_expansion_level
@@ -1602,22 +1611,14 @@ def _materialize_recommendation_expansion(
             if payload.get("why_search_stopped") in (None, "")
             else str(payload.get("why_search_stopped")).strip()
         ),
-        "new_product_ids_added": [
-            str(product_id).strip()
-            for product_id in list(
-                payload.get("new_product_ids_added")
-                or ([] if fallback_search_expansion_recommendation is None else fallback_search_expansion_recommendation.new_product_ids_added)
-            )
-            if str(product_id).strip()
-        ],
-        "products_removed": [
-            str(product_id).strip()
-            for product_id in list(
-                payload.get("products_removed")
-                or ([] if fallback_search_expansion_recommendation is None else fallback_search_expansion_recommendation.products_removed)
-            )
-            if str(product_id).strip()
-        ],
+        "new_product_ids_added": _materialize_string_list(
+            "new_product_ids_added",
+            [] if fallback_search_expansion_recommendation is None else fallback_search_expansion_recommendation.new_product_ids_added,
+        ),
+        "products_removed": _materialize_string_list(
+            "products_removed",
+            [] if fallback_search_expansion_recommendation is None else fallback_search_expansion_recommendation.products_removed,
+        ),
         "expanded_alternatives": alternatives,
     }
 

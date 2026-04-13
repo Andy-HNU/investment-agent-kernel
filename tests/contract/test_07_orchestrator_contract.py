@@ -1867,6 +1867,116 @@ def test_progressive_recommendation_expansion_adds_expanded_alternatives_without
 
 
 @pytest.mark.contract
+def test_progressive_recommendation_expansion_uses_no_delta_stop_reason_for_requested_level_no_product_delta(
+    monkeypatch,
+):
+    goal_solver_input = {
+        "candidate_allocations": [{"name": "compact_primary", "weights": {"equity_cn": 0.55, "bond_cn": 0.35}}],
+        "candidate_product_contexts": {
+            "compact_primary": {
+                "allocation_name": "compact_primary",
+                "selected_product_ids": ["equity_l0", "bond_l0"],
+            }
+        },
+    }
+    goal_solver_output = {
+        "recommended_allocation": {
+            "name": "compact_primary",
+            "weights": {"equity_cn": 0.55, "bond_cn": 0.35},
+        },
+        "recommended_result": {
+            "allocation_name": "compact_primary",
+            "success_probability": 0.67,
+            "expected_annual_return": 0.056,
+            "implied_required_annual_return": 0.06,
+        },
+        "all_results": [
+            {
+                "allocation_name": "compact_primary",
+                "success_probability": 0.67,
+                "expected_annual_return": 0.056,
+                "implied_required_annual_return": 0.06,
+            }
+        ],
+        "frontier_analysis": {
+            "recommended": {"allocation_name": "compact_primary"},
+            "highest_probability": {"allocation_name": "compact_primary"},
+            "target_return_priority": {"allocation_name": "compact_primary"},
+            "scenario_status": {},
+        },
+        "solver_notes": [],
+    }
+
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "_build_solver_candidate_product_contexts",
+        lambda **_kwargs: {
+            "compact_primary": {
+                "allocation_name": "compact_primary",
+                "selected_product_ids": ["equity_l0", "bond_l0"],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator_engine,
+        "_rerank_goal_solver_output_with_v14_primary",
+        lambda **_kwargs: (
+            {
+                "recommended_allocation": {
+                    "name": "compact_primary",
+                    "weights": {"equity_cn": 0.55, "bond_cn": 0.35},
+                },
+                "recommended_result": {
+                    "allocation_name": "compact_primary",
+                    "success_probability": 0.67,
+                    "expected_annual_return": 0.056,
+                    "implied_required_annual_return": 0.06,
+                },
+                "all_results": [
+                    {
+                        "allocation_name": "compact_primary",
+                        "success_probability": 0.67,
+                        "expected_annual_return": 0.056,
+                        "implied_required_annual_return": 0.06,
+                    }
+                ],
+                "frontier_analysis": {
+                    "recommended": {"allocation_name": "compact_primary"},
+                    "highest_probability": {"allocation_name": "compact_primary"},
+                    "target_return_priority": {"allocation_name": "compact_primary"},
+                    "scenario_status": {},
+                },
+            },
+            {"evidence_bundle_ref": "evidence://contract/compact_primary"},
+            _probability_result(success_probability=0.67, cagr_p50=0.056, terminal_value_mean=120000.0),
+        ),
+    )
+
+    updated_output, recommendation_expansion = _apply_progressive_recommendation_expansion(
+        run_id="contract_progressive_no_delta",
+        envelope={"search_expansion_level": "L1_expanded", "why_this_level_was_run": "user_requested_deeper_search"},
+        snapshot_bundle=None,
+        calibration_result={},
+        goal_solver_input=goal_solver_input,
+        goal_solver_output=goal_solver_output,
+        formal_path_required=False,
+        execution_policy="formal_estimation_allowed",
+    )
+
+    expansion = updated_output["frontier_diagnostics"]["recommendation_expansion"]
+
+    assert recommendation_expansion["requested_search_expansion_level"] == "L1_expanded"
+    assert recommendation_expansion["why_search_stopped"] == "no_new_products_found_at_requested_level"
+    assert recommendation_expansion["new_product_ids_added"] == []
+    assert recommendation_expansion["products_removed"] == []
+    assert recommendation_expansion["expanded_alternatives"] == []
+    assert expansion["why_search_stopped"] == "no_new_products_found_at_requested_level"
+    assert expansion["new_product_ids_added"] == []
+    assert expansion["products_removed"] == []
+    assert expansion["expanded_alternatives"] == []
+
+
+@pytest.mark.contract
 def test_progressive_recommendation_expansion_keeps_closest_target_primary_and_highest_success_as_alternative_when_no_candidate_meets_return(
     monkeypatch,
 ):
