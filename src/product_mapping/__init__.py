@@ -1,6 +1,7 @@
 from .catalog import load_builtin_catalog
 from .cardinality import resolve_bucket_count
 from .explanations import build_portfolio_explanation_surfaces, validate_product_scenario_metrics
+from .search_expansion import candidate_pool_limit, normalize_search_expansion_level, resolve_search_stop_reason
 from .types import (
     BucketCardinalityPreference,
     BucketConstructionExplanation,
@@ -13,6 +14,7 @@ from .types import (
     ProductProxySpec,
     ProductScenarioMetrics,
     ProxyUniverseSummary,
+    SearchExpansionRecommendation,
 )
 
 
@@ -40,10 +42,14 @@ __all__ = [
     "ProductProxySpec",
     "ProductScenarioMetrics",
     "ProxyUniverseSummary",
+    "SearchExpansionRecommendation",
     "build_candidate_product_context",
     "build_execution_plan",
     "build_portfolio_explanation_surfaces",
+    "candidate_pool_limit",
     "load_builtin_catalog",
+    "normalize_search_expansion_level",
     "resolve_bucket_count",
+    "resolve_search_stop_reason",
     "validate_product_scenario_metrics",
 ]

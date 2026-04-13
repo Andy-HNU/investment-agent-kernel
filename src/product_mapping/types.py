@@ -377,6 +377,18 @@ class ExecutionPlan:
         }
 
 
+@dataclass(frozen=True)
+class SearchExpansionRecommendation:
+    search_expansion_level: str
+    why_this_level_was_run: str
+    why_search_stopped: str | None
+    new_product_ids_added: list[str] = field(default_factory=list)
+    products_removed: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(asdict(self))
+
+
 from .cardinality import BucketCardinalityPreference, BucketCountResolution
 from .explanations import (
     BucketConstructionExplanation,
