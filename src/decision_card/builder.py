@@ -6,6 +6,7 @@ from typing import Any
 
 from decision_card.types import DecisionCard, DecisionCardBuildInput, DecisionCardType
 from shared.execution_plan_summary import build_recommendation_expansion_view
+from shared.product_display import build_product_display
 
 
 _SAFE_ACTION_TYPES = {"freeze", "observe"}
@@ -1397,6 +1398,8 @@ def _build_product_contributions(
     for product_id in selected_product_ids:
         item = item_index.get(str(product_id), {})
         bucket = _metric(item.get("asset_bucket")) or ""
+        product_payload = dict(item.get("primary_product") or {})
+        product_payload.update(build_product_display(product_payload))
         adjustment = _float_metric(adjustments.get(bucket)) or 0.0
         vol_multiplier = _float_metric(vol_multipliers.get(bucket)) or 1.0
         if bucket in {"bond_cn", "gold", "cash_liquidity"}:
@@ -1412,7 +1415,8 @@ def _build_product_contributions(
         contributions.append(
             {
                 "product_id": str(product_id),
-                "product_name": _metric(item.get("primary_product_name")) or "",
+                "product_name": product_payload.get("display_name") or _metric(item.get("primary_product_name")) or "",
+                "product_label": product_payload.get("display_label") or _metric(item.get("primary_product_name")) or "",
                 "asset_bucket": bucket,
                 "success_role": success_role,
                 "expected_return_adjustment": f"{adjustment * 100:.2f}%",

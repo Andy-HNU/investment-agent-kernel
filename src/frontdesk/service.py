@@ -34,6 +34,7 @@ from shared.product_defaults import (
 from shared.onboarding import UserOnboardingProfile, build_user_onboarding_inputs
 from shared.execution_plan_summary import build_recommendation_expansion_view
 from shared.profile_parser import parse_profile_semantics
+from shared.product_display import build_product_display
 from shared.providers.tinyshare import has_token as tinyshare_has_token
 
 from frontdesk.adapter import FrontdeskExternalSnapshotAdapter
@@ -224,6 +225,24 @@ def _serialize_result(result: Any) -> dict[str, Any]:
     if hasattr(result, "to_dict"):
         return result.to_dict()
     return dict(result)
+
+
+def _render_execution_plan_item(item: Any) -> dict[str, Any]:
+    rendered_item = _as_dict(item)
+    product_payload = dict(rendered_item.get("primary_product") or {})
+    if product_payload:
+        product_payload.update(build_product_display(product_payload))
+        rendered_item["primary_product"] = product_payload
+    return rendered_item
+
+
+def _render_execution_plan(payload: Any) -> dict[str, Any] | None:
+    plan = _as_dict(payload)
+    if not plan:
+        return None
+    rendered_plan = dict(plan)
+    rendered_plan["items"] = [_render_execution_plan_item(item) for item in list(plan.get("items") or [])]
+    return rendered_plan
 
 
 def _annotate_user_portfolio_input_provenance(raw_inputs: dict[str, Any]) -> None:
@@ -1654,7 +1673,11 @@ def _requested_structure_result(
     if requested_structure is None and requested_structure_visibility:
         requested_structure = deepcopy(requested_structure_visibility.get("requested_structure"))
     include_plan_details = evaluation_mode == "user_specified_portfolio"
-    items = list(pending_execution_plan.get("items") or []) if include_plan_details else []
+    items = (
+        [_render_execution_plan_item(item) for item in list(pending_execution_plan.get("items") or [])]
+        if include_plan_details
+        else []
+    )
     return {
         "status": "evaluated" if include_plan_details else "visibility_only",
         "evaluation_mode": evaluation_mode,
@@ -1902,7 +1925,7 @@ def _frontdesk_summary(
         "formal_path_visibility": formal_path_visibility,
         "refresh_summary": refresh_summary,
         "active_execution_plan": user_state.get("active_execution_plan"),
-        "pending_execution_plan": user_state.get("pending_execution_plan"),
+        "pending_execution_plan": _render_execution_plan(user_state.get("pending_execution_plan")),
         "execution_plan_comparison": user_state.get("execution_plan_comparison"),
         "execution_feedback": user_state.get("execution_feedback"),
         "execution_feedback_summary": user_state.get("execution_feedback_summary"),

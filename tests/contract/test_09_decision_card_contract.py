@@ -247,6 +247,92 @@ def test_build_decision_card_requires_formal_input_object():
 
 
 @pytest.mark.contract
+def test_decision_card_product_contributions_prefer_market_facing_labels() -> None:
+    from decision_card.builder import build_decision_card
+    from decision_card.types import DecisionCardBuildInput
+
+    card = build_decision_card(
+        DecisionCardBuildInput(
+            card_type=DecisionCardType.GOAL_BASELINE,
+            workflow_type="onboarding",
+            goal_solver_output={
+                "recommended_allocation": {
+                    "name": "balanced_progression__moderate__02",
+                    "display_name": "平衡推进方案",
+                },
+                "recommended_result": {
+                    "allocation_name": "balanced_progression__moderate__02",
+                    "success_probability": 0.68,
+                    "bucket_success_probability": 0.61,
+                    "product_proxy_adjusted_success_probability": 0.64,
+                    "product_independent_success_probability": 0.68,
+                    "product_probability_method": "product_independent_path",
+                    "expected_annual_return": 0.061,
+                    "expected_terminal_value": 1_030_000.0,
+                    "risk_summary": {
+                        "max_drawdown_90pct": 0.16,
+                        "shortfall_probability": 0.28,
+                    },
+                },
+                "candidate_menu": [
+                    {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "success_probability": 0.68,
+                        "bucket_success_probability": 0.61,
+                        "product_proxy_adjusted_success_probability": 0.64,
+                        "product_independent_success_probability": 0.68,
+                        "product_probability_method": "product_independent_path",
+                        "expected_annual_return": 0.061,
+                        "expected_terminal_value": 1_030_000.0,
+                        "risk_summary": {
+                            "max_drawdown_90pct": 0.16,
+                            "shortfall_probability": 0.28,
+                        },
+                        "weights": {
+                            "equity_cn": 0.60,
+                        },
+                        "is_feasible": True,
+                    }
+                ],
+                "frontier_analysis": {
+                    "recommended": {
+                        "allocation_name": "balanced_progression__moderate__02",
+                        "display_name": "平衡推进方案",
+                        "bucket_success_probability": 0.61,
+                        "product_proxy_adjusted_success_probability": 0.64,
+                        "product_independent_success_probability": 0.68,
+                        "product_probability_method": "product_independent_path",
+                        "expected_terminal_value": 1_030_000.0,
+                        "expected_annual_return": 0.061,
+                        "max_drawdown_90pct": 0.16,
+                        "why_selected": "逐产品独立路径下当前推荐仍最均衡。",
+                    },
+                },
+            },
+            execution_plan_summary={
+                "items": [
+                    {
+                        "primary_product_id": "cn_equity_csi300_etf",
+                        "primary_product_name": "沪深300ETF",
+                        "primary_product": {
+                            "product_id": "cn_equity_csi300_etf",
+                            "product_name": "沪深300ETF",
+                            "provider_symbol": "510300",
+                            "wrapper_type": "etf",
+                        },
+                        "target_weight": 0.6,
+                    }
+                ]
+            }
+        )
+    )
+
+    contribution = card["probability_explanation"]["product_contributions"][0]
+    assert contribution["product_label"] == "沪深300ETF (510300, 场内ETF)"
+
+
+@pytest.mark.contract
 def test_product_display_label_uses_name_code_and_venue() -> None:
     from shared.product_display import build_product_display
 

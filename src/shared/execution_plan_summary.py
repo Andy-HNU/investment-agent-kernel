@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from shared.product_display import build_product_display
+
 
 def _as_dict(value: Any) -> dict[str, Any]:
     if value is None:
@@ -53,6 +55,19 @@ def _has_meaningful_value(value: Any) -> bool:
     return True
 
 
+def _attach_product_display(product: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(product or {})
+    payload.update(build_product_display(payload))
+    return payload
+
+
+def _attach_product_display_list(products: Any) -> list[dict[str, Any]]:
+    rendered: list[dict[str, Any]] = []
+    for product in list(products or []):
+        rendered.append(_attach_product_display(_as_dict(product)))
+    return rendered
+
+
 def build_recommendation_expansion_view(execution_plan_summary: dict[str, Any] | None) -> dict[str, Any]:
     summary = _as_dict(execution_plan_summary)
     payload = _as_dict(summary.get("recommendation_expansion"))
@@ -78,6 +93,12 @@ def build_recommendation_expansion_view(execution_plan_summary: dict[str, Any] |
             "new_product_ids_added": _unique_string_list(entry.get("new_product_ids_added")),
             "products_removed": _unique_string_list(entry.get("products_removed")),
         }
+        primary_product = _attach_product_display(_as_dict(entry.get("primary_product"))) if entry.get("primary_product") else {}
+        if primary_product:
+            alternative["primary_product"] = primary_product
+        recommended_products = _attach_product_display_list(entry.get("recommended_products"))
+        if recommended_products:
+            alternative["recommended_products"] = recommended_products
         if _has_meaningful_value(alternative):
             expanded_alternatives.append(alternative)
 

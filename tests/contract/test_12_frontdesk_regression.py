@@ -346,6 +346,38 @@ def test_frontdesk_persists_user_portfolio_evaluation_state(monkeypatch, tmp_pat
 
 
 @pytest.mark.contract
+def test_frontdesk_summary_uses_market_facing_product_labels_for_pending_items() -> None:
+    from frontdesk.service import _frontdesk_summary
+
+    summary = _frontdesk_summary(
+        account_profile_id="market_label_frontdesk",
+        display_name="Andy",
+        db_path=Path("/tmp/market_label_frontdesk.sqlite"),
+        user_state={
+            "pending_execution_plan": {
+                "items": [
+                    {
+                        "primary_product_id": "cn_equity_dividend_etf",
+                        "primary_product": {
+                            "product_id": "cn_equity_dividend_etf",
+                            "product_name": "红利ETF",
+                            "provider_symbol": "510880",
+                            "wrapper_type": "etf",
+                        },
+                    }
+                ]
+            }
+        },
+        result_payload={},
+    )
+
+    assert (
+        summary["pending_execution_plan"]["items"][0]["primary_product"]["display_label"]
+        == "红利ETF (510880, 场内ETF)"
+    )
+
+
+@pytest.mark.contract
 def test_frontdesk_repeated_onboarding_and_monthly_keep_history(tmp_path):
     profile = _profile(account_profile_id="history_user")
     db_path = tmp_path / "frontdesk.sqlite"
