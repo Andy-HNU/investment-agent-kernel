@@ -246,6 +246,7 @@ def test_build_decision_card_requires_formal_input_object():
         )
 
 
+@pytest.mark.contract
 def test_product_display_label_uses_name_code_and_venue() -> None:
     from shared.product_display import build_product_display
 

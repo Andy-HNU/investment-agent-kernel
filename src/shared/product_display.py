@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 _WRAPPER_TO_VENUE = {
     "etf": "场内ETF",
     "stock": "场内股票",
@@ -12,21 +10,12 @@ _WRAPPER_TO_VENUE = {
 }
 
 
-def build_product_display(payload: dict[str, Any] | None) -> dict[str, Any]:
-    data = dict(payload or {})
-    display_name = str(data.get("product_name") or "").strip() or None
-    display_code = str(data.get("provider_symbol") or "").strip() or None
-    wrapper_type = str(data.get("wrapper_type") or "other").strip() or "other"
-    trading_venue_label = _WRAPPER_TO_VENUE.get(wrapper_type, "其他产品")
-
-    if display_name and display_code:
-        display_label = f"{display_name} ({display_code}, {trading_venue_label})"
-    elif display_name:
-        display_label = f"{display_name} ({trading_venue_label})"
-    elif display_code:
-        display_label = f"{display_code} ({trading_venue_label})"
-    else:
-        display_label = trading_venue_label
+def build_product_display(payload):
+    display_name = str(payload.get("product_name") or "").strip()
+    display_code = str(payload.get("provider_symbol") or "").strip()
+    wrapper_type = str(payload.get("wrapper_type") or "other").strip()
+    trading_venue_label = _WRAPPER_TO_VENUE[wrapper_type]
+    display_label = f"{display_name} ({display_code}, {trading_venue_label})"
 
     return {
         "display_name": display_name,
