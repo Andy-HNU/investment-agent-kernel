@@ -1519,6 +1519,103 @@ def _materialize_search_expansion_recommendation(
     )
 
 
+def _materialize_recommendation_expansion(
+    value: dict[str, Any] | None,
+    *,
+    fallback_search_expansion_recommendation: SearchExpansionRecommendation | None = None,
+) -> dict[str, Any]:
+    payload = dict(value or {})
+    if not payload and fallback_search_expansion_recommendation is None:
+        return {}
+    if not payload and fallback_search_expansion_recommendation is not None:
+        payload = {
+            "requested_search_expansion_level": fallback_search_expansion_recommendation.search_expansion_level,
+            "why_this_level_was_run": fallback_search_expansion_recommendation.why_this_level_was_run,
+            "why_search_stopped": fallback_search_expansion_recommendation.why_search_stopped,
+            "new_product_ids_added": list(fallback_search_expansion_recommendation.new_product_ids_added),
+            "products_removed": list(fallback_search_expansion_recommendation.products_removed),
+            "expanded_alternatives": [],
+        }
+
+    requested_level = payload.get("requested_search_expansion_level")
+    if requested_level is None and fallback_search_expansion_recommendation is not None:
+        requested_level = fallback_search_expansion_recommendation.search_expansion_level
+    normalized_level = None if requested_level in (None, "") else normalize_search_expansion_level(requested_level)
+
+    alternatives: list[dict[str, Any]] = []
+    for item in list(payload.get("expanded_alternatives") or []):
+        entry = dict(item or {})
+        difference_basis = dict(entry.get("difference_basis") or {})
+        alternatives.append(
+            {
+                "recommendation_kind": str(entry.get("recommendation_kind") or "").strip(),
+                "allocation_name": str(entry.get("allocation_name") or "").strip(),
+                "search_expansion_level": normalize_search_expansion_level(
+                    entry.get("search_expansion_level", normalized_level or SearchExpansionLevels.L0_COMPACT)
+                ),
+                "difference_basis": {
+                    "comparison_scope": str(difference_basis.get("comparison_scope") or "").strip(),
+                    "reference_allocation_name": str(difference_basis.get("reference_allocation_name") or "").strip(),
+                    "reference_search_expansion_level": (
+                        None
+                        if difference_basis.get("reference_search_expansion_level") in (None, "")
+                        else normalize_search_expansion_level(difference_basis.get("reference_search_expansion_level"))
+                    ),
+                },
+                "selected_product_ids": [
+                    str(product_id).strip()
+                    for product_id in list(entry.get("selected_product_ids") or [])
+                    if str(product_id).strip()
+                ],
+                "new_product_ids_added": [
+                    str(product_id).strip()
+                    for product_id in list(entry.get("new_product_ids_added") or [])
+                    if str(product_id).strip()
+                ],
+                "products_removed": [
+                    str(product_id).strip()
+                    for product_id in list(entry.get("products_removed") or [])
+                    if str(product_id).strip()
+                ],
+                "recommended_result": dict(entry.get("recommended_result") or {}),
+                "recommended_allocation": dict(entry.get("recommended_allocation") or {}),
+            }
+        )
+
+    return {
+        "requested_search_expansion_level": normalized_level,
+        "why_this_level_was_run": str(
+            payload.get("why_this_level_was_run")
+            or (
+                None if fallback_search_expansion_recommendation is None else fallback_search_expansion_recommendation.why_this_level_was_run
+            )
+            or ""
+        ).strip(),
+        "why_search_stopped": (
+            None
+            if payload.get("why_search_stopped") in (None, "")
+            else str(payload.get("why_search_stopped")).strip()
+        ),
+        "new_product_ids_added": [
+            str(product_id).strip()
+            for product_id in list(
+                payload.get("new_product_ids_added")
+                or ([] if fallback_search_expansion_recommendation is None else fallback_search_expansion_recommendation.new_product_ids_added)
+            )
+            if str(product_id).strip()
+        ],
+        "products_removed": [
+            str(product_id).strip()
+            for product_id in list(
+                payload.get("products_removed")
+                or ([] if fallback_search_expansion_recommendation is None else fallback_search_expansion_recommendation.products_removed)
+            )
+            if str(product_id).strip()
+        ],
+        "expanded_alternatives": alternatives,
+    }
+
+
 def _build_execution_realism_summary(
     *,
     items: list[ExecutionPlanItem],
@@ -1842,6 +1939,7 @@ def build_execution_plan(
     wrapper_slippage_rate: dict[str, float] | None = None,
     search_expansion_level: str = SearchExpansionLevels.L0_COMPACT,
     search_expansion_recommendation: SearchExpansionRecommendation | dict[str, Any] | None = None,
+    recommendation_expansion: dict[str, Any] | None = None,
     formal_path_required: bool = False,
     execution_policy: ExecutionPolicy | str | None = None,
 ) -> ExecutionPlan:
@@ -1975,6 +2073,10 @@ def build_execution_plan(
     normalized_search_expansion_level = normalize_search_expansion_level(search_expansion_level)
     materialized_search_expansion_recommendation = _materialize_search_expansion_recommendation(
         search_expansion_recommendation
+    )
+    materialized_recommendation_expansion = _materialize_recommendation_expansion(
+        recommendation_expansion,
+        fallback_search_expansion_recommendation=materialized_search_expansion_recommendation,
     )
     for bucket, target_weight in adjusted_targets.items():
         if target_weight <= 0:
@@ -2145,6 +2247,7 @@ def build_execution_plan(
         source_allocation_id=source_allocation_id,
         search_expansion_level=normalized_search_expansion_level,
         search_expansion_recommendation=materialized_search_expansion_recommendation,
+        recommendation_expansion=materialized_recommendation_expansion,
         items=items,
         bucket_construction_explanations=bucket_explanations,
         bucket_construction_suggestions=bucket_suggestions,

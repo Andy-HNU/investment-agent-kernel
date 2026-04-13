@@ -25,7 +25,7 @@ from probability_engine.portfolio_policy import (
     apply_daily_cashflows_and_rebalance,
 )
 from probability_engine.recipes import PRIMARY_RECIPE_V14
-from product_mapping import BucketCardinalityPreference, SearchExpansionRecommendation, build_execution_plan
+from product_mapping import BucketCardinalityPreference, build_execution_plan
 from orchestrator.engine import (
     _build_execution_plan_summary,
     _build_probability_engine_run_input,
@@ -505,20 +505,54 @@ def test_execution_plan_summary_threads_search_expansion_metadata_for_compact_pr
         current_market_pressure_score=28.0,
         implied_required_annual_return=0.08,
         search_expansion_level="L0_compact",
-        search_expansion_recommendation=SearchExpansionRecommendation(
-            search_expansion_level="L1_expanded",
-            why_this_level_was_run="user_requested_deeper_search",
-            why_search_stopped="requested_search_expansion_level_reached",
-            new_product_ids_added=["cn_equity_low_vol_fund"],
-            products_removed=["cn_equity_dividend_etf"],
-        ),
+        recommendation_expansion={
+            "requested_search_expansion_level": "L1_expanded",
+            "why_this_level_was_run": "user_requested_deeper_search",
+            "why_search_stopped": "level_limit_requested_search_expansion_reached",
+            "new_product_ids_added": ["cn_equity_low_vol_fund"],
+            "products_removed": ["cn_equity_dividend_etf"],
+            "expanded_alternatives": [
+                {
+                    "recommendation_kind": "expanded_primary",
+                    "allocation_name": "allocation_search_expansion_summary",
+                    "search_expansion_level": "L1_expanded",
+                    "difference_basis": {
+                        "comparison_scope": "same_allocation_search_expansion",
+                        "reference_allocation_name": "allocation_search_expansion_summary",
+                        "reference_search_expansion_level": "L0_compact",
+                    },
+                    "selected_product_ids": ["cn_equity_low_vol_fund", "cn_bond_gov_etf"],
+                    "new_product_ids_added": ["cn_equity_low_vol_fund"],
+                    "products_removed": ["cn_equity_dividend_etf"],
+                },
+                {
+                    "recommendation_kind": "highest_success_alternative",
+                    "allocation_name": "high_success_alt",
+                    "search_expansion_level": "L1_expanded",
+                    "difference_basis": {
+                        "comparison_scope": "cross_allocation_vs_compact_primary",
+                        "reference_allocation_name": "allocation_search_expansion_summary",
+                        "reference_search_expansion_level": "L0_compact",
+                    },
+                    "selected_product_ids": ["high_success_equity", "high_success_bond"],
+                    "new_product_ids_added": ["high_success_equity"],
+                    "products_removed": ["cn_equity_dividend_etf"],
+                },
+            ],
+        },
     )
 
     summary = _build_execution_plan_summary(plan)
 
     assert summary["search_expansion_level"] == "L0_compact"
-    assert summary["search_expansion_recommendation"]["search_expansion_level"] == "L1_expanded"
-    assert summary["search_expansion_recommendation"]["new_product_ids_added"] == ["cn_equity_low_vol_fund"]
+    assert summary["recommendation_expansion"]["requested_search_expansion_level"] == "L1_expanded"
+    assert summary["recommendation_expansion"]["new_product_ids_added"] == ["cn_equity_low_vol_fund"]
+    assert summary["recommendation_expansion"]["expanded_alternatives"][0]["difference_basis"]["comparison_scope"] == (
+        "same_allocation_search_expansion"
+    )
+    assert summary["recommendation_expansion"]["expanded_alternatives"][1]["difference_basis"]["comparison_scope"] == (
+        "cross_allocation_vs_compact_primary"
+    )
 
 
 def test_same_month_twenty_trading_day_path_accepts_horizon_months_one() -> None:

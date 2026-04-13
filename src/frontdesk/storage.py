@@ -214,6 +214,7 @@ def _compact_result_payload_for_persistence(payload: dict[str, Any] | None) -> d
                 "source_run_id": execution_plan_record.get("source_run_id"),
                 "source_allocation_id": execution_plan_record.get("source_allocation_id"),
                 "status": execution_plan_record.get("status"),
+                "summary": _compact_execution_plan_like(dict(execution_plan_record.get("summary") or {})),
                 "payload": _compact_execution_plan_like(dict(execution_plan_record.get("payload") or {})),
             }
         snapshot_bundle_record = dict(artifact_records.get("snapshot_bundle") or {})
@@ -510,6 +511,9 @@ def _execution_plan_summary(payload: dict[str, Any] | None) -> dict[str, Any] | 
         "source_run_id": payload.get("source_run_id"),
         "source_allocation_id": payload.get("source_allocation_id"),
         "status": payload.get("status"),
+        "search_expansion_level": payload.get("search_expansion_level"),
+        "search_expansion_recommendation": dict(payload.get("search_expansion_recommendation") or {}),
+        "recommendation_expansion": dict(payload.get("recommendation_expansion") or {}),
         "item_count": len(items),
         "items": item_summaries,
         "confirmation_required": bool(payload.get("confirmation_required", True)),

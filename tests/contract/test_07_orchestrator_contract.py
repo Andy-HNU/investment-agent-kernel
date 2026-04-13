@@ -12,6 +12,7 @@ from allocation_engine.types import AllocationEngineResult
 from decision_card.types import DecisionCardType
 from orchestrator.engine import (
     _apply_progressive_recommendation_expansion,
+    _build_persistence_plan,
     _rerank_goal_solver_output_with_v14_primary,
     run_orchestrator,
 )
@@ -1839,7 +1840,7 @@ def test_progressive_recommendation_expansion_adds_expanded_alternatives_without
         ),
     )
 
-    updated_output, recommendation = _apply_progressive_recommendation_expansion(
+    updated_output, recommendation_expansion = _apply_progressive_recommendation_expansion(
         run_id="contract_progressive_expansion",
         envelope={"search_expansion_level": "L1_expanded", "why_this_level_was_run": "user_requested_deeper_search"},
         snapshot_bundle=None,
@@ -1853,14 +1854,16 @@ def test_progressive_recommendation_expansion_adds_expanded_alternatives_without
     expansion = updated_output["frontier_diagnostics"]["recommendation_expansion"]
 
     assert updated_output["recommended_result"]["allocation_name"] == "compact_primary"
-    assert recommendation.search_expansion_level == "L1_expanded"
-    assert recommendation.why_this_level_was_run == "user_requested_deeper_search"
-    assert recommendation.new_product_ids_added == ["equity_l1", "gold_l1"]
-    assert recommendation.products_removed == ["equity_l0"]
-    assert expansion["primary_recommendation_level"] == "L0_compact"
+    assert recommendation_expansion["requested_search_expansion_level"] == "L1_expanded"
+    assert recommendation_expansion["why_this_level_was_run"] == "user_requested_deeper_search"
+    assert recommendation_expansion["new_product_ids_added"] == ["equity_l1", "gold_l1"]
+    assert recommendation_expansion["products_removed"] == ["equity_l0"]
+    assert expansion["search_expansion_level"] == "L0_compact"
     assert expansion["requested_search_expansion_level"] == "L1_expanded"
     assert expansion["alternatives"][0]["recommended_result"]["allocation_name"] == "compact_primary"
     assert expansion["alternatives"][0]["new_product_ids_added"] == ["equity_l1", "gold_l1"]
+    assert expansion["alternatives"][0]["difference_basis"]["comparison_scope"] == "same_allocation_search_expansion"
+    assert expansion["alternatives"][0]["difference_basis"]["reference_search_expansion_level"] == "L0_compact"
 
 
 @pytest.mark.contract
@@ -1952,7 +1955,7 @@ def test_progressive_recommendation_expansion_keeps_closest_target_primary_and_h
     monkeypatch.setattr(orchestrator_engine, "_build_probability_engine_run_input", _fake_build)
     monkeypatch.setattr(orchestrator_engine, "run_probability_engine", _fake_probability_engine)
 
-    updated_output, recommendation = _apply_progressive_recommendation_expansion(
+    updated_output, recommendation_expansion = _apply_progressive_recommendation_expansion(
         run_id="contract_progressive_no_target_match",
         envelope={"search_expansion_level": "L1_expanded", "why_this_level_was_run": "user_requested_deeper_search"},
         snapshot_bundle=None,
@@ -1965,7 +1968,75 @@ def test_progressive_recommendation_expansion_keeps_closest_target_primary_and_h
 
     expansion = updated_output["frontier_diagnostics"]["recommendation_expansion"]
     alternative_names = [item["recommended_result"]["allocation_name"] for item in expansion["alternatives"]]
+    highest_success_alternative = expansion["alternatives"][1]
 
     assert updated_output["recommended_result"]["allocation_name"] == "closest_to_target"
-    assert recommendation.search_expansion_level == "L1_expanded"
+    assert recommendation_expansion["requested_search_expansion_level"] == "L1_expanded"
     assert alternative_names == ["closest_to_target", "highest_success"]
+    assert highest_success_alternative["difference_basis"]["comparison_scope"] == "cross_allocation_vs_compact_primary"
+    assert highest_success_alternative["difference_basis"]["reference_allocation_name"] == "closest_to_target"
+    assert highest_success_alternative["new_product_ids_added"] == ["highest_l1"]
+    assert highest_success_alternative["products_removed"] == ["closest_l0"]
+
+
+@pytest.mark.contract
+def test_build_persistence_plan_carries_execution_plan_summary_recommendation_expansion_fields():
+    execution_plan = {
+        "plan_id": "plan_progressive",
+        "plan_version": 1,
+        "source_run_id": "run_progressive",
+        "source_allocation_id": "compact_primary",
+        "status": "draft",
+        "search_expansion_level": "L0_compact",
+        "recommendation_expansion": {
+            "requested_search_expansion_level": "L1_expanded",
+            "why_this_level_was_run": "user_requested_deeper_search",
+            "why_search_stopped": "level_limit_requested_search_expansion_reached",
+            "new_product_ids_added": ["equity_l1"],
+            "products_removed": ["equity_l0"],
+            "expanded_alternatives": [
+                {
+                    "allocation_name": "compact_primary",
+                    "difference_basis": {
+                        "comparison_scope": "same_allocation_search_expansion",
+                        "reference_allocation_name": "compact_primary",
+                        "reference_search_expansion_level": "L0_compact",
+                    },
+                }
+            ],
+        },
+        "items": [],
+    }
+
+    persistence_plan = _build_persistence_plan(
+        run_id="run_progressive",
+        requested_workflow=WorkflowType.ONBOARDING,
+        workflow_type=WorkflowType.ONBOARDING,
+        status=WorkflowStatus.COMPLETED,
+        bundle_id="bundle_progressive",
+        calibration_id="calibration_progressive",
+        solver_snapshot_id="snapshot_progressive",
+        snapshot_bundle={},
+        calibration_result={},
+        goal_solver_output={},
+        runtime_result=None,
+        execution_plan=execution_plan,
+        decision_card={},
+        workflow_decision=orchestrator_engine.WorkflowDecision(
+            requested_workflow_type=WorkflowType.ONBOARDING,
+            selected_workflow_type=WorkflowType.ONBOARDING,
+        ),
+        runtime_restriction=orchestrator_engine.RuntimeRestriction(),
+        blocking_reasons=[],
+        degraded_notes=[],
+        escalation_reasons=[],
+        control_flags={"manual_override_requested": False, "manual_review_requested": False},
+    )
+
+    persisted_summary = persistence_plan.artifact_records["execution_plan"]["summary"]
+
+    assert persisted_summary["search_expansion_level"] == "L0_compact"
+    assert persisted_summary["recommendation_expansion"]["requested_search_expansion_level"] == "L1_expanded"
+    assert persisted_summary["recommendation_expansion"]["expanded_alternatives"][0]["difference_basis"][
+        "comparison_scope"
+    ] == "same_allocation_search_expansion"

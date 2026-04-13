@@ -321,6 +321,7 @@ class ExecutionPlan:
     status: Literal["draft", "user_review", "approved", "superseded", "cancelled"] = "draft"
     search_expansion_level: str = "L0_compact"
     search_expansion_recommendation: "SearchExpansionRecommendation | None" = None
+    recommendation_expansion: dict[str, Any] = field(default_factory=dict)
     items: list[ExecutionPlanItem] = field(default_factory=list)
     bucket_construction_explanations: dict[str, "BucketConstructionExplanation"] = field(default_factory=dict)
     bucket_construction_suggestions: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -365,6 +366,7 @@ class ExecutionPlan:
                 if self.search_expansion_recommendation is None
                 else self.search_expansion_recommendation.to_dict()
             ),
+            "recommendation_expansion": dict(self.recommendation_expansion or {}),
             "item_count": len(self.items),
             "bucket_construction_explanations": {
                 bucket: explanation.to_dict()
