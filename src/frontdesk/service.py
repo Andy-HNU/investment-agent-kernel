@@ -1697,6 +1697,98 @@ def _system_suggested_alternative(
     return payload
 
 
+def _recommendation_expansion_summary(execution_plan_summary: dict[str, Any]) -> dict[str, Any]:
+    payload = _as_dict(execution_plan_summary.get("recommendation_expansion"))
+    if not payload:
+        return {}
+
+    search_expansion_level = str(
+        payload.get("requested_search_expansion_level") or payload.get("search_expansion_level") or ""
+    ).strip()
+    why_this_level_was_run = str(payload.get("why_this_level_was_run") or "").strip()
+    why_search_stopped_value = payload.get("why_search_stopped")
+    why_search_stopped = None if why_search_stopped_value in (None, "") else str(why_search_stopped_value).strip()
+    new_product_ids_added = [
+        str(product_id).strip()
+        for product_id in list(payload.get("new_product_ids_added") or [])
+        if str(product_id).strip()
+    ]
+    products_removed = [
+        str(product_id).strip()
+        for product_id in list(payload.get("products_removed") or [])
+        if str(product_id).strip()
+    ]
+
+    expanded_alternatives: list[dict[str, Any]] = []
+    for item in list(payload.get("expanded_alternatives") or []):
+        entry = _as_dict(item)
+        difference_basis_payload = _as_dict(entry.get("difference_basis"))
+        alternative = {
+            "recommendation_kind": str(entry.get("recommendation_kind") or "").strip(),
+            "allocation_name": str(entry.get("allocation_name") or "").strip(),
+            "search_expansion_level": str(entry.get("search_expansion_level") or search_expansion_level or "").strip(),
+            "difference_basis": {
+                "comparison_scope": str(difference_basis_payload.get("comparison_scope") or "").strip(),
+                "reference_allocation_name": str(difference_basis_payload.get("reference_allocation_name") or "").strip(),
+                "reference_search_expansion_level": (
+                    None
+                    if difference_basis_payload.get("reference_search_expansion_level") in (None, "")
+                    else str(difference_basis_payload.get("reference_search_expansion_level")).strip()
+                ),
+            },
+            "selected_product_ids": [
+                str(product_id).strip()
+                for product_id in list(entry.get("selected_product_ids") or [])
+                if str(product_id).strip()
+            ],
+            "new_product_ids_added": [
+                str(product_id).strip()
+                for product_id in list(entry.get("new_product_ids_added") or [])
+                if str(product_id).strip()
+            ],
+            "products_removed": [
+                str(product_id).strip()
+                for product_id in list(entry.get("products_removed") or [])
+                if str(product_id).strip()
+            ],
+        }
+        if any(
+            (
+                alternative["recommendation_kind"],
+                alternative["allocation_name"],
+                alternative["search_expansion_level"],
+                alternative["selected_product_ids"],
+                alternative["new_product_ids_added"],
+                alternative["products_removed"],
+                alternative["difference_basis"]["comparison_scope"],
+                alternative["difference_basis"]["reference_allocation_name"],
+                alternative["difference_basis"]["reference_search_expansion_level"],
+            )
+        ):
+            expanded_alternatives.append(alternative)
+
+    if not any(
+        (
+            search_expansion_level,
+            why_this_level_was_run,
+            why_search_stopped,
+            new_product_ids_added,
+            products_removed,
+            expanded_alternatives,
+        )
+    ):
+        return {}
+
+    return {
+        "search_expansion_level": search_expansion_level,
+        "why_this_level_was_run": why_this_level_was_run,
+        "why_search_stopped": why_search_stopped,
+        "new_product_ids_added": new_product_ids_added,
+        "products_removed": products_removed,
+        "expanded_alternatives": expanded_alternatives,
+    }
+
+
 def _frontdesk_summary(
     *,
     account_profile_id: str,
@@ -1842,12 +1934,17 @@ def _frontdesk_summary(
         user_state=user_state,
     )
     decision_card_execution_summary = dict(decision_card.get("execution_plan_summary") or {})
+    recommendation_expansion = _recommendation_expansion_summary(decision_card_execution_summary)
     if requested_structure_result:
         decision_card_execution_summary["requested_structure_result"] = deepcopy(requested_structure_result)
         decision_card["requested_structure_result"] = deepcopy(requested_structure_result)
     if system_suggested_alternative:
         decision_card_execution_summary["system_suggested_alternative"] = deepcopy(system_suggested_alternative)
         decision_card["system_suggested_alternative"] = deepcopy(system_suggested_alternative)
+    if recommendation_expansion or "recommendation_expansion" in decision_card_execution_summary:
+        if recommendation_expansion:
+            decision_card["recommendation_expansion"] = deepcopy(recommendation_expansion)
+        decision_card_execution_summary["recommendation_expansion"] = deepcopy(recommendation_expansion)
     for key, payload in (
         ("bucket_construction_explanations", bucket_construction_explanations),
         ("product_explanations", product_explanations),
@@ -1887,6 +1984,7 @@ def _frontdesk_summary(
         "requested_structure": result_payload.get("requested_structure"),
         "requested_structure_result": requested_structure_result,
         "system_suggested_alternative": system_suggested_alternative,
+        "recommendation_expansion": recommendation_expansion,
         "unknown_product_resolution": dict(result_payload.get("unknown_product_resolution") or {}),
         "decision_card": decision_card,
         "key_metrics": decision_card.get("key_metrics", {}),

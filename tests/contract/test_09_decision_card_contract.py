@@ -394,6 +394,69 @@ def test_decision_card_does_not_promote_generic_items_to_requested_structure_res
 
 
 @pytest.mark.contract
+def test_decision_card_surfaces_recommendation_expansion_facts_from_execution_plan_summary():
+    card = build_decision_card(
+        DecisionCardBuildInput(
+            card_type=DecisionCardType.RUNTIME_ACTION,
+            workflow_type="monthly",
+            runtime_result={"ev_report": {"recommended_action": {"type": "observe"}}},
+            execution_plan_summary={
+                "recommendation_expansion": {
+                    "requested_search_expansion_level": "L1_expanded",
+                    "why_this_level_was_run": "user_requested_deeper_search",
+                    "why_search_stopped": "level_limit_requested_search_expansion_reached",
+                    "new_product_ids_added": ["equity_l1", "gold_l1"],
+                    "products_removed": ["equity_l0"],
+                    "expanded_alternatives": [
+                        {
+                            "recommendation_kind": "same_allocation_search_expansion",
+                            "allocation_name": "compact_primary",
+                            "search_expansion_level": "L1_expanded",
+                            "difference_basis": {
+                                "comparison_scope": "same_allocation_search_expansion",
+                                "reference_allocation_name": "compact_primary",
+                                "reference_search_expansion_level": "L0_compact",
+                            },
+                            "selected_product_ids": ["equity_l1", "gold_l1"],
+                            "new_product_ids_added": ["equity_l1", "gold_l1"],
+                            "products_removed": ["equity_l0"],
+                            "recommended_result": {"allocation_name": "compact_primary"},
+                            "recommended_allocation": {"weights": {"equity_cn": 0.55}},
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    expected = {
+        "search_expansion_level": "L1_expanded",
+        "why_this_level_was_run": "user_requested_deeper_search",
+        "why_search_stopped": "level_limit_requested_search_expansion_reached",
+        "new_product_ids_added": ["equity_l1", "gold_l1"],
+        "products_removed": ["equity_l0"],
+        "expanded_alternatives": [
+            {
+                "recommendation_kind": "same_allocation_search_expansion",
+                "allocation_name": "compact_primary",
+                "search_expansion_level": "L1_expanded",
+                "difference_basis": {
+                    "comparison_scope": "same_allocation_search_expansion",
+                    "reference_allocation_name": "compact_primary",
+                    "reference_search_expansion_level": "L0_compact",
+                },
+                "selected_product_ids": ["equity_l1", "gold_l1"],
+                "new_product_ids_added": ["equity_l1", "gold_l1"],
+                "products_removed": ["equity_l0"],
+            }
+        ],
+    }
+
+    assert card["recommendation_expansion"] == expected
+    assert card["execution_plan_summary"]["recommendation_expansion"] == expected
+
+
+@pytest.mark.contract
 def test_runtime_action_card_requires_recommended_action_or_ranked_actions():
     with pytest.raises(ValueError, match="recommended_action or ranked_actions"):
         build_decision_card(

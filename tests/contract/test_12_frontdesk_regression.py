@@ -181,6 +181,77 @@ def test_frontdesk_summary_exposes_pressure_ladder_from_probability_engine_outpu
 
 
 @pytest.mark.contract
+def test_frontdesk_summary_surfaces_recommendation_expansion_facts_from_execution_plan_summary() -> None:
+    summary = _frontdesk_summary(
+        account_profile_id="recommendation_expansion_frontdesk",
+        display_name="Andy",
+        db_path=Path("/tmp/recommendation_expansion_frontdesk.sqlite"),
+        result_payload={
+            "run_id": "run_recommendation_expansion_frontdesk",
+            "workflow_type": "onboarding",
+            "status": "completed",
+            "run_outcome_status": "completed",
+            "resolved_result_category": "formal_independent_result",
+            "decision_card": {
+                "execution_plan_summary": {
+                    "recommendation_expansion": {
+                        "requested_search_expansion_level": "L1_expanded",
+                        "why_this_level_was_run": "user_requested_deeper_search",
+                        "why_search_stopped": "level_limit_requested_search_expansion_reached",
+                        "new_product_ids_added": ["equity_l1", "gold_l1"],
+                        "products_removed": ["equity_l0"],
+                        "expanded_alternatives": [
+                            {
+                                "recommendation_kind": "same_allocation_search_expansion",
+                                "allocation_name": "compact_primary",
+                                "search_expansion_level": "L1_expanded",
+                                "difference_basis": {
+                                    "comparison_scope": "same_allocation_search_expansion",
+                                    "reference_allocation_name": "compact_primary",
+                                    "reference_search_expansion_level": "L0_compact",
+                                },
+                                "selected_product_ids": ["equity_l1", "gold_l1"],
+                                "new_product_ids_added": ["equity_l1", "gold_l1"],
+                                "products_removed": ["equity_l0"],
+                                "recommended_result": {"allocation_name": "compact_primary"},
+                                "recommended_allocation": {"weights": {"equity_cn": 0.55}},
+                            }
+                        ],
+                    }
+                }
+            },
+        },
+    )
+
+    expected = {
+        "search_expansion_level": "L1_expanded",
+        "why_this_level_was_run": "user_requested_deeper_search",
+        "why_search_stopped": "level_limit_requested_search_expansion_reached",
+        "new_product_ids_added": ["equity_l1", "gold_l1"],
+        "products_removed": ["equity_l0"],
+        "expanded_alternatives": [
+            {
+                "recommendation_kind": "same_allocation_search_expansion",
+                "allocation_name": "compact_primary",
+                "search_expansion_level": "L1_expanded",
+                "difference_basis": {
+                    "comparison_scope": "same_allocation_search_expansion",
+                    "reference_allocation_name": "compact_primary",
+                    "reference_search_expansion_level": "L0_compact",
+                },
+                "selected_product_ids": ["equity_l1", "gold_l1"],
+                "new_product_ids_added": ["equity_l1", "gold_l1"],
+                "products_removed": ["equity_l0"],
+            }
+        ],
+    }
+
+    assert summary["recommendation_expansion"] == expected
+    assert summary["decision_card"]["recommendation_expansion"] == expected
+    assert summary["decision_card"]["execution_plan_summary"]["recommendation_expansion"] == expected
+
+
+@pytest.mark.contract
 def test_frontdesk_onboarding_enforces_formal_execution_policy(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
